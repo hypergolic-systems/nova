@@ -1,11 +1,16 @@
 # Nova
 
-A Kerbal Space Program 1.x core mod that overhauls resource and vessel simulation to support persistent, true background multi-mission operations. The resource flow is solved as a linear program (Google OR-Tools GLOP) over a graph of virtual components, so consumption, storage and production stay consistent across the entire game state — not just the active vessel.
+> ⚠️ **Early development.** Nova is pre-release and under active, breaking churn. Only the **macOS / Apple Silicon** path is implemented today — Intel Macs, Linux, and Windows are not yet supported. Expect sharp edges.
 
-Nova is part of the **HGS** mod family. Sibling mods:
+Welcome to KSP Nova! This is an ambitious project for KSP 1.x to overhaul the game's core mechanics and unlock its full potential.
 
-- [Dragonglass](../dragonglass) — CEF + web UI for KSP. Owns custom UI delivery.
-- [kspcli](../hgs/kspcli) — agentic bridge for scripted KSP introspection.
+Nova starts with a redesign of the core spacecraft simulation engine, with a focus on the spacecraft as a cohesive set of systems. Multi-vessel simulation is a core feature, so the system scales from small suborbital rockets to large space stations or even colonies (potentially).
+
+Nova emphasizes science gathering over time. Missions and experiments build on each other to increase your understanding of the universe, and unlock new capabilities along the way.
+
+Science also drives simulation capabilities, which play a core role in your space program. Initially, exploratory missions are shots in the dark, but as you gather information about the planets, your ability to simulate future missions and validate designs grows. The most ambitious missions should always be pushing the limits and carry that element of risk and excitement.
+
+Supporting these shifts is an overhaul of the game's UI, leveraging [Dragonglass](https://github.com/hypergolic-systems/dragonglass) to replace stock's UI with a from-scratch modern interface.
 
 ## Build
 
