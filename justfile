@@ -1,7 +1,58 @@
 # Nova — top-level build orchestration
 
+# Sibling Dragonglass checkout. Required for stub sync, UI build, and
+# anything that crosses repo boundaries. Set in your shell rc:
+#   export DRAGONGLASS_PATH=~/dev/dragonglass
+dragonglass_path := env_var_or_default('DRAGONGLASS_PATH', '')
+
 default:
     @just --list
+
+# --- Cross-repo (~/dev/dragonglass via $DRAGONGLASS_PATH) ---
+
+# Validate $DRAGONGLASS_PATH points at a real Dragonglass checkout.
+# Used as a dependency by sync-dragonglass-stubs and ui-bootstrap.
+_dragonglass-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{dragonglass_path}}" ]; then
+        echo "error: DRAGONGLASS_PATH not set" >&2
+        exit 1
+    fi
+    if [ ! -d "{{dragonglass_path}}/ui/packages/instruments" ]; then
+        echo "error: DRAGONGLASS_PATH={{dragonglass_path}} doesn't look like a Dragonglass checkout" >&2
+        exit 1
+    fi
+
+# Copy fresh Dragonglass DLLs into stubs/dragonglass/. Run after
+# Dragonglass-side changes to refresh Nova's build references.
+sync-dragonglass-stubs: _dragonglass-check
+    mkdir -p stubs/dragonglass
+    cp "{{dragonglass_path}}/mod/Dragonglass.Hud/build/Dragonglass.Hud.dll" stubs/dragonglass/
+    cp "{{dragonglass_path}}/mod/Dragonglass.Telemetry/build/Dragonglass.Telemetry.dll" stubs/dragonglass/
+    @echo "Synced Dragonglass DLLs from {{dragonglass_path}}"
+
+# --- UI (ui/) ---
+
+# One-time setup: symlink Dragonglass into ui/external/, then npm install
+# the workspace. Re-run after switching DRAGONGLASS_PATH.
+ui-bootstrap: _dragonglass-check
+    mkdir -p ui/external
+    ln -sfn "{{dragonglass_path}}" ui/external/dragonglass
+    cd ui && npm install
+
+# Vite library-mode build → ui/apps/nova/dist/hud.js (deployed to
+# GameData/Nova/UI/ by `just dist`).
+ui-build: ui-bootstrap
+    cd ui && npm run build
+
+# Vite dev server (handy for iterating on Hud.svelte standalone;
+# real integration test still requires `just install` + KSP launch).
+ui-dev: ui-bootstrap
+    cd ui && npm run dev
+
+ui-typecheck: ui-bootstrap
+    cd ui && npm run typecheck
 
 # --- Proto (proto/ → mod/Nova.Core/Persistence/Protos/Generated/) ---
 
@@ -55,12 +106,13 @@ save-cli-install:
 #   0Harmony.dll (KSP doesn't bundle Harmony)
 #   Google.OrTools managed + osx-x64 native dylib
 #   ModuleManager Patches/
-dist: (mod-build "Release")
+#   UI/ — Vite-built Dragonglass UI bundle (hud.js + chunks)
+dist: (mod-build "Release") ui-build
     #!/usr/bin/env bash
     set -euo pipefail
     stage=$(mktemp -d)
     root="$stage/GameData/Nova"
-    mkdir -p "$root/Patches"
+    mkdir -p "$root/Patches" "$root/UI"
 
     # Managed assemblies
     cp mod/Nova.Core/build/Nova.Core.dll  "$root/"
@@ -85,6 +137,9 @@ dist: (mod-build "Release")
 
     # ModuleManager config overrides
     cp -R configs/overrides/. "$root/Patches/"
+
+    # UI bundle — Dragonglass importmap exposes these as @nova/<file>
+    cp -R ui/apps/nova/dist/. "$root/UI/"
 
     cp LICENSE "$root/"
 

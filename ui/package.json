@@ -1,0 +1,14 @@
+{
+  "name": "nova-ui",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "external/dragonglass/ui/packages/*"
+  ],
+  "scripts": {
+    "dev": "npm -w @nova/app run dev",
+    "build": "npm -w @nova/app run build",
+    "typecheck": "tsc -b"
+  }
+}

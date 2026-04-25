@@ -28,6 +28,8 @@
 
     <!-- KSP/Unity stubs live at $(repoRoot)/stubs/ -->
     <KspStubs>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'stubs'))</KspStubs>
+    <!-- Dragonglass DLLs vendored by `just sync-dragonglass-stubs` -->
+    <DragonglassStubs>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'stubs', 'dragonglass'))</DragonglassStubs>
   </PropertyGroup>
 
   <ItemGroup>
@@ -142,6 +144,20 @@
     <!-- Ship 0Harmony.dll alongside Nova.dll: KSP doesn't provide Harmony,
          and we patch stock types at runtime. -->
     <PackageReference Include="Lib.Harmony" Version="2.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Dragonglass — hard runtime dep. Telemetry for topic types,
+         Hud for SidecarHost.OverrideEntry. Private=False because
+         Dragonglass installs these; Nova does not ship them. -->
+    <Reference Include="Dragonglass.Hud">
+      <HintPath>$(DragonglassStubs)/Dragonglass.Hud.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Dragonglass.Telemetry">
+      <HintPath>$(DragonglassStubs)/Dragonglass.Telemetry.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

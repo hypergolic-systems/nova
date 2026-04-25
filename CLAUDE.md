@@ -13,14 +13,17 @@ Nova was previously named "Hypergolic Systems" — HGS now refers to the umbrell
 ## Build & run
 
 ```
-just proto             # regenerate C# bindings from proto/nova.proto
-just mod-build         # build everything (proto + Nova.Core, Nova, Nova.Tests)
-just test              # run MSTest suite
-just dist              # produce release/Nova.zip
-just install ~/KSP_osx # build + install into a KSP directory
+just proto                      # regenerate C# bindings from proto/nova.proto
+just sync-dragonglass-stubs     # vendor Dragonglass DLLs into stubs/dragonglass/
+just mod-build                  # build everything (proto + Nova.Core, Nova, Nova.Tests)
+just test                       # run MSTest suite
+just ui-bootstrap               # symlink Dragonglass + npm install ui/
+just ui-build                   # Vite library build → ui/apps/nova/dist/
+just dist                       # produce release/Nova.zip (mod + UI)
+just install ~/KSP_osx          # build + install into a KSP directory
 ```
 
-`mod-build` depends on `proto`, so a fresh checkout just needs `just mod-build`.
+`mod-build` depends on `proto`, so a fresh checkout just needs `just mod-build`. Anything that crosses into Dragonglass — `sync-dragonglass-stubs`, `ui-bootstrap`, and the targets that depend on them — requires `$DRAGONGLASS_PATH` set in the environment (e.g. `export DRAGONGLASS_PATH=~/dev/dragonglass`).
 
 ## Project layout
 
@@ -30,11 +33,16 @@ mod/
   Nova.Core/            # engine — no KSP/Unity refs, testable
   Nova/                 # KSP integration — KSPAddon, Harmony, behaviors
   Nova.Tests/           # MSTest, references Nova.Core only
+ui/                     # Svelte UI app, deployed to GameData/Nova/UI/
+  apps/nova/            # @nova/app — Vite library build, single entry hud.ts
+  packages/             # @nova/* shared libs (placeholder)
+  external/dragonglass  # symlink → $DRAGONGLASS_PATH (gitignored)
 crates/                 # Cargo workspace (members = crates/*)
   save-cli/             # nova-save-cli — inspector for .hgs / .hgc files
 proto/nova.proto        # persistence schema, source-of-truth for both C# and Rust
 configs/overrides/      # ModuleManager .cfg patches → GameData/Nova/Patches/
 stubs/                  # KSP/Unity managed DLLs (KSP 1.12.5)
+  dragonglass/          # vendored Dragonglass.{Hud,Telemetry}.dll
 justfile
 ```
 
@@ -121,6 +129,15 @@ ModuleManager patches that strip stock modules and inject Nova's. Module names m
 - **Lib.Harmony 2.2.2** — runtime KSP patching. Bundled with `Nova.dll`.
 - **protobuf-net 2.4.8** — binary serialization for `.hgs`/`.hgc` files. Bindings generated from `proto/nova.proto` by `protobuf-net.protogen`.
 - **Moq 4.20.70** — mocking, tests only.
+- **Dragonglass** (`~/dev/dragonglass` via `$DRAGONGLASS_PATH`) — hard runtime dep. `Dragonglass.Telemetry.dll` for telemetry topic types; `Dragonglass.Hud.dll` for `SidecarHost.OverrideEntry`. DLLs vendored into `stubs/dragonglass/` by `just sync-dragonglass-stubs`. Nova does NOT ship them — Dragonglass installs them from its own deploy.
+
+## UI (Dragonglass integration)
+
+Nova's UI is a Svelte app under `ui/apps/nova/`, built via Vite library mode → `ui/apps/nova/dist/hud.js`, deployed to `GameData/Nova/UI/hud.js` by `just dist`. Dragonglass's CEF sidecar walks `GameData/*/UI/` at startup, exposes `@<modname>/<file>` import-map specifiers, and the synthesized shell imports whichever specifier its `--entry=` arg names.
+
+`NovaUiOverrideAddon` (Startup.Instantly) calls `Dragonglass.Hud.SidecarHost.OverrideEntry("@nova/hud")` so the sidecar boots into Nova's UI instead of `@dragonglass/stock`. Dragonglass's `SidecarBootstrap` yields one frame between `Awake` and the actual sidecar spawn, so any `Startup.Instantly` addon can register before `--entry=` is frozen.
+
+Nova's bundle externalizes `svelte`, `three`, `@threlte/core`, and every `@dragonglass/*` specifier — they resolve at runtime through Dragonglass's importmap to the same emitted runtime, giving Nova a shared Svelte runtime instance with stock and any other UI mod (per `~/dev/dragonglass/docs/mod-ui.md`). Don't bundle Svelte; doing so would break that sharing. The npm-workspace `external/dragonglass` symlink is used at build time *only* for typechecking and editor goto-definition — bundle output never includes Dragonglass code.
 
 ## Game introspection
 
