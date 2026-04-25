@@ -22,7 +22,12 @@ mod-clean:
     cd mod && dotnet clean Nova.sln
     rm -rf mod/Nova.Core/build mod/Nova/build mod/Nova.Tests/bin mod/Nova.Tests/obj
 
-test config="Release": (mod-build config)
+# Run all test suites — C# (mod/) + Rust (crates/).
+test config="Release": (mod-build config) save-cli-test
+    cd mod && dotnet test Nova.sln -c {{config}} --no-build
+
+# C#-only tests.
+mod-test config="Release": (mod-build config)
     cd mod && dotnet test Nova.sln -c {{config}} --no-build
 
 # --- Rust (crates/) ---
@@ -108,4 +113,4 @@ install ksp_path: dist
 
 build: mod-build save-cli-build
 
-check: (mod-build "Release") test save-cli-test
+check: build test
