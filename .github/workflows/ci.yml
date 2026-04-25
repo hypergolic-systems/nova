@@ -10,6 +10,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Sibling Dragonglass checkout. Both the C# and UI jobs need it:
+# Nova references Dragonglass.{Hud,Telemetry}.dll for KSPAddon
+# integration and pulls @dragonglass/* npm packages for typecheck.
+# Single env var keeps the path consistent across jobs.
+env:
+  DRAGONGLASS_PATH: ${{ github.workspace }}/dragonglass
+
 jobs:
   mod:
     name: C# build + tests
@@ -22,6 +29,11 @@ jobs:
       VSTEST_CONNECTION_TIMEOUT: "300"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hypergolic-systems/dragonglass
+          path: dragonglass
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -30,6 +42,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mono-complete
 
       - uses: extractions/setup-just@v2
+
+      # Build Dragonglass first to produce Dragonglass.{Hud,Telemetry}.dll,
+      # then sync them into Nova's stubs/dragonglass/ for the
+      # <Reference> resolution Nova.csproj relies on.
+      - name: Build Dragonglass mod (sibling)
+        working-directory: dragonglass
+        run: just mod-build
+
+      - name: Sync Dragonglass stubs
+        run: just sync-dragonglass-stubs
 
       # Mono PInvoke for [DllImport("google-ortools-native")] resolves
       # via the assembly directory + LD_LIBRARY_PATH. The csproj copies
@@ -43,6 +65,36 @@ jobs:
 
       - name: Test
         run: just mod-test
+
+  ui:
+    name: UI typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hypergolic-systems/dragonglass
+          path: dragonglass
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: extractions/setup-just@v2
+
+      # ui-bootstrap creates the ui/external/dragonglass symlink to
+      # $DRAGONGLASS_PATH and runs `npm install` over the workspace
+      # (which includes external/dragonglass/ui/packages/* as
+      # workspaces, so @dragonglass/instruments and @dragonglass/
+      # telemetry resolve as real packages for typecheck).
+      - name: Bootstrap UI workspace
+        run: just ui-bootstrap
+
+      - name: Typecheck
+        run: just ui-typecheck
+
+      - name: Build
+        run: just ui-build
 
   rust:
     name: Rust save-cli build + tests

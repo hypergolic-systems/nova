@@ -25,6 +25,15 @@ just install ~/KSP_osx          # build + install into a KSP directory
 
 `mod-build` depends on `proto`, so a fresh checkout just needs `just mod-build`. Anything that crosses into Dragonglass — `sync-dragonglass-stubs`, `ui-bootstrap`, and the targets that depend on them — requires `$DRAGONGLASS_PATH` set in the environment (e.g. `export DRAGONGLASS_PATH=~/dev/dragonglass`).
 
+### Cross-repo commit ordering
+
+CI checks out Dragonglass at `main` (sibling-checkout convention extended to GitHub Actions; see `.github/workflows/ci.yml`). When a Nova change depends on a Dragonglass change — new API surface, refactored types, importmap entries, anything the C# `<Reference>` or the UI typecheck/bundle pulls — the Dragonglass change must be pushed to `main` *before* Nova's CI run. Otherwise the sibling checkout pulls a Dragonglass tree without the new code and Nova's build fails. The intended workflow:
+
+1. Land the Dragonglass-side change on Dragonglass `main`.
+2. Push the matching Nova change.
+
+If the Dragonglass change isn't ready to ship yet, hold the Nova-side commit until it is — both repos co-evolve in lockstep on `main`. There's no per-PR ref override yet; if you need one, plumb a `dragonglass-ref` workflow input and a matching `with: ref:` on the sibling `actions/checkout`.
+
 ## Project layout
 
 ```
