@@ -29,6 +29,15 @@ public static class FlightGlobalsPersistencePatches {
       if (vessel == null) continue;
       if (!vessel.packed)
         vessel.GoOnRails();
+      // Tear down FLIGHT-only MonoBehaviours that stock would normally
+      // destroy when the active vessel goes inactive. Without this they
+      // keep ticking on the persisted vessel.gameObject in non-FLIGHT
+      // scenes (OrbitTargeter.LateUpdate spams NREs every frame).
+      // We bypass Vessel.DetachPatchedConicsSolver because it touches
+      // orbitRenderer unconditionally, and OrbitRenderer self-destroys on
+      // every scene change (OrbitRenderer.OnSceneChange) — so by the time
+      // OnSceneLoaded fires here, orbitRenderer is already null.
+      DetachFlightOnlyComponents(vessel);
       // Keep loaded=true — parts stay alive. Setting loaded=false would
       // cause Vessel.Load/MakeActive to call protoVessel.LoadObjects()
       // and duplicate all parts on next FLIGHT entry.
@@ -84,6 +93,22 @@ public static class FlightGlobalsPersistencePatches {
     // Clear old vessel list so its OnDestroy doesn't interfere
     old.vessels?.Clear();
     Object.Destroy(old.gameObject);
+  }
+
+  static readonly System.Reflection.PropertyInfo patchedConicsAttachedProp =
+    typeof(Vessel).GetProperty("PatchedConicsAttached");
+
+  static void DetachFlightOnlyComponents(Vessel vessel) {
+    if (!vessel.PatchedConicsAttached) return;
+    if (vessel.orbitTargeter != null) Object.Destroy(vessel.orbitTargeter);
+    if (vessel.patchedConicRenderer != null) Object.Destroy(vessel.patchedConicRenderer);
+    if (vessel.patchedConicSolver != null) Object.Destroy(vessel.patchedConicSolver);
+    vessel.orbitTargeter = null;
+    vessel.patchedConicRenderer = null;
+    vessel.patchedConicSolver = null;
+    // Reset the flag so re-entering FLIGHT re-attaches the components
+    // (AttachPatchedConicsSolver early-returns if PatchedConicsAttached==true).
+    patchedConicsAttachedProp.SetValue(vessel, false);
   }
 
   static void EnsureSceneEventHooked() {
