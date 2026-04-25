@@ -30,6 +30,9 @@ mod/
   Nova.Core/            # engine — no KSP/Unity refs, testable
   Nova/                 # KSP integration — KSPAddon, Harmony, behaviors
   Nova.Tests/           # MSTest, references Nova.Core only
+crates/                 # Cargo workspace (members = crates/*)
+  save-cli/             # nova-save-cli — inspector for .hgs / .hgc files
+proto/nova.proto        # persistence schema, source-of-truth for both C# and Rust
 configs/overrides/      # ModuleManager .cfg patches → GameData/Nova/Patches/
 stubs/                  # KSP/Unity managed DLLs (KSP 1.12.5)
 justfile
@@ -133,9 +136,16 @@ just run -- eval <expression>
 
 Don't add bridge/CLI commands inside Nova — they live in kspcli.
 
-## Future work
+## save-cli (Rust)
 
-- **SaveCLI** — the old HGS C# `SaveCLI` was dropped during migration. A Rust replacement is planned but not yet built.
+`crates/save-cli/` produces the `nova-save-cli` binary — a stand-alone inspector for the binary `.hgs` / `.hgc` files Nova writes. It auto-detects file type from the HGS magic-byte header and prints the decoded proto tree to stdout.
+
+```
+just save-cli-build
+just save-cli -- dump path/to/some.hgs
+```
+
+The build script (`crates/save-cli/build.rs`) compiles `proto/nova.proto` via `prost-build`, so the Rust types stay in lockstep with the C# bindings — `proto/nova.proto` is the single source of truth for both. When you add a field to the proto, both `just proto` (C# regen) and `cargo build` (Rust regen) need to run.
 
 ## KSP API reference
 

@@ -25,6 +25,24 @@ mod-clean:
 test config="Release": (mod-build config)
     cd mod && dotnet test Nova.sln -c {{config}} --no-build
 
+# --- Rust (crates/) ---
+
+# Build the save-cli binary in release mode.
+save-cli-build:
+    cargo build --release -p nova-save-cli
+
+# Run save-cli (forward args, e.g. `just save-cli -- dump some.hgs`).
+save-cli *args: save-cli-build
+    target/release/nova-save-cli {{args}}
+
+# Run save-cli's Rust tests (smoke tests for the dump pipeline).
+save-cli-test:
+    cargo test --release -p nova-save-cli
+
+# Install nova-save-cli to ~/.cargo/bin/ for use anywhere on PATH.
+save-cli-install:
+    cargo install --path crates/save-cli
+
 # --- Release packaging ---
 
 # Stage GameData/Nova/ into a zip for distribution. Includes:
@@ -88,6 +106,6 @@ install ksp_path: dist
 
 # --- All ---
 
-build: mod-build
+build: mod-build save-cli-build
 
-check: (mod-build "Release") test
+check: (mod-build "Release") test save-cli-test

@@ -1,0 +1,19 @@
+[package]
+name = "nova-save-cli"
+description = "Inspector for Nova .hgs (save) and .hgc (craft) binary files."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nova-save-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true

@@ -9,11 +9,12 @@ Nova is part of the **HGS** mod family. Sibling mods:
 
 ## Build
 
-Requires `dotnet`, `just`, and a copy of KSP 1.12.5 (for `just install`).
+Requires `dotnet`, `cargo`, `just`, and a copy of KSP 1.12.5 (for `just install`).
 
 ```sh
-just mod-build         # build everything
+just mod-build         # build the C# mod (Nova.Core + Nova + Nova.Tests)
 just test              # run the test suite
+just save-cli-build    # build the Rust save-file inspector
 just dist              # produce release/Nova.zip
 just install ~/KSP_osx # build + install into a KSP directory
 ```
@@ -21,6 +22,8 @@ just install ~/KSP_osx # build + install into a KSP directory
 ## Layout
 
 - `mod/` — C# (Nova.Core, Nova, Nova.Tests).
+- `crates/save-cli/` — Rust binary (`nova-save-cli`) for inspecting `.hgs` / `.hgc` files.
+- `proto/nova.proto` — persistence schema, single source of truth for both C# and Rust bindings.
 - `configs/overrides/` — ModuleManager patches that swap stock modules for Nova's.
 - `stubs/` — stripped KSP/Unity managed DLLs used as build references.
 
