@@ -1,14 +1,19 @@
 <script lang="ts">
   import { useGame } from '@dragonglass/telemetry/svelte';
+  import FlightHud from './FlightHud.svelte';
 
   const game = useGame();
   const label = $derived(game.scene ? game.scene.toLowerCase() : 'connecting…');
 </script>
 
-<div class="placeholder">
-  <div class="placeholder__brand">NOVA</div>
-  <div class="placeholder__scene">{label}</div>
-</div>
+{#if game.scene === 'FLIGHT'}
+  <FlightHud />
+{:else}
+  <div class="placeholder">
+    <div class="placeholder__brand">NOVA</div>
+    <div class="placeholder__scene">{label}</div>
+  </div>
+{/if}
 
 <style>
   .placeholder {
