@@ -31,26 +31,13 @@ jobs:
 
       - uses: extractions/setup-just@v2
 
+      # Mono PInvoke for [DllImport("google-ortools-native")] resolves
+      # via the assembly directory + LD_LIBRARY_PATH. The csproj copies
+      # the .so into the test bin dir; pinning LD_LIBRARY_PATH ensures
+      # the testhost subprocess inherits it.
       - name: Build
         run: just mod-build
 
-      # Diagnostic: did the linux-x64 OR-Tools runtime package even
-      # restore? And did its .so files copy into the test output dir?
-      - name: Inspect NuGet cache + test output directory
-        run: |
-          echo "--- NuGet OR-Tools runtime packages ---"
-          ls -la ~/.nuget/packages/ | grep -i ortools || echo "(none found)"
-          for pkg in ~/.nuget/packages/google.ortools.runtime.linux-x64/*/runtimes/linux-x64/native/; do
-            echo "--- $pkg ---"
-            ls -la "$pkg" 2>/dev/null || echo "(not found)"
-          done
-          echo ""
-          echo "--- Test output dir ---"
-          ls -la mod/Nova.Tests/bin/Release/
-
-      # Mono's PInvoke search picks up `libgoogle-ortools-native.so` if
-      # it's in LD_LIBRARY_PATH. The shim rpaths libortools.so.9 from
-      # @loader_path-equivalent, so adding the bin dir is enough.
       - name: Pin LD_LIBRARY_PATH to the test bin directory
         run: echo "LD_LIBRARY_PATH=$PWD/mod/Nova.Tests/bin/Release:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
