@@ -15,10 +15,7 @@ jobs:
     name: C# build + tests
     runs-on: ubuntu-latest
     # Tests run through Mono's net48 testhost so we exercise the
-    # same runtime KSP uses. MONO_LOG_LEVEL surfaces missing-assembly
-    # / load failures that would otherwise be silent under vstest's
-    # protocol-negotiation timeout. VSTEST_CONNECTION_TIMEOUT pads
-    # the handshake window past the default 90s.
+    # same runtime KSP uses.
     env:
       MONO_LOG_LEVEL: warning
       MONO_LOG_MASK: asm,dll,cfg
@@ -29,13 +26,28 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # mono-complete: full Mono BCL + tools. mono-runtime is too
-      # minimal for vstest's testhost (System.Configuration etc.).
       - name: Install Mono (net48 test host)
         run: sudo apt-get update && sudo apt-get install -y mono-complete
 
       - uses: extractions/setup-just@v2
-      - run: just mod-test
+
+      - name: Build
+        run: just mod-build
+
+      # Diagnostic: confirm OR-Tools native libs landed where Mono will
+      # look for them. The csproj copies linux-x64 .so files via the
+      # <None Include … CopyToOutputDirectory> rule.
+      - name: Inspect test output directory
+        run: ls -la mod/Nova.Tests/bin/Release/
+
+      # Mono's PInvoke search picks up `libgoogle-ortools-native.so` if
+      # it's in LD_LIBRARY_PATH. The shim rpaths libortools.so.9 from
+      # @loader_path-equivalent, so adding the bin dir is enough.
+      - name: Pin LD_LIBRARY_PATH to the test bin directory
+        run: echo "LD_LIBRARY_PATH=$PWD/mod/Nova.Tests/bin/Release:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: just mod-test
 
   rust:
     name: Rust save-cli build + tests
