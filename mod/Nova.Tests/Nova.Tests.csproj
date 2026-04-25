@@ -16,6 +16,18 @@
     <DebugSymbols>true</DebugSymbols>
     <Optimize>false</Optimize>
     <MonoSymbolFile>true</MonoSymbolFile>
+
+    <!-- Pick the OR-Tools native runtime that matches the host running
+         the tests. Tests are local/CI-only — production deploy uses the
+         osx-x64 runtime declared in Nova.Core.csproj. -->
+    <OrToolsVersion>9.8.3296</OrToolsVersion>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">osx-arm64</OrToolsRid>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'X64'">osx-x64</OrToolsRid>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('LINUX'))">linux-x64</OrToolsRid>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">win-x64</OrToolsRid>
+    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('OSX'))">dylib</OrToolsNativeExt>
+    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('LINUX'))">so</OrToolsNativeExt>
+    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">dll</OrToolsNativeExt>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,27 +36,38 @@
     <PackageReference Include="MSTest.TestFramework" Version="3.1.1" />
     <PackageReference Include="Moq" Version="4.20.70" />
 
-    <!-- OR-Tools — host-arch native runtime so tests can run on the build machine.
-         Production deploy uses osx-x64 (Nova.Core.csproj), so this is local-only. -->
-    <PackageReference Include="Google.OrTools" Version="9.8.3296" />
-    <PackageReference Include="Google.OrTools.runtime.osx-arm64" Version="9.8.3296" />
+    <PackageReference Include="Google.OrTools" Version="$(OrToolsVersion)" />
+
+    <!-- One runtime package per host. NuGet only restores the matching one. -->
+    <PackageReference Include="Google.OrTools.runtime.osx-arm64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'osx-arm64'" />
+    <PackageReference Include="Google.OrTools.runtime.osx-x64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'osx-x64'" />
+    <PackageReference Include="Google.OrTools.runtime.linux-x64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'linux-x64'" />
+    <PackageReference Include="Google.OrTools.runtime.win-x64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'win-x64'" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
   </ItemGroup>
 
-  <!-- OR-Tools native libraries → output dir, plus libgoogle-ortools-native.dylib alias. -->
+  <!-- Copy the host's OR-Tools native lib(s) to the test output directory. -->
   <ItemGroup>
-    <None Include="$(NuGetPackageRoot)google.ortools.runtime.osx-arm64\9.8.3296\runtimes\osx-arm64\native\*.dylib">
+    <None Include="$(NuGetPackageRoot)google.ortools.runtime.$(OrToolsRid)\$(OrToolsVersion)\runtimes\$(OrToolsRid)\native\*.$(OrToolsNativeExt)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>%(Filename)%(Extension)</Link>
     </None>
   </ItemGroup>
 
-  <Target Name="CreateOrToolsSymlink" AfterTargets="Build">
-    <Exec Command="if [ -f '$(OutputPath)google-ortools-native.dylib' ] &amp;&amp; [ ! -f '$(OutputPath)libgoogle-ortools-native.dylib' ]; then cp '$(OutputPath)google-ortools-native.dylib' '$(OutputPath)libgoogle-ortools-native.dylib'; fi"
-          Condition="'$(OS)' == 'Unix'" />
+  <!-- macOS-only PInvoke alias: the package ships google-ortools-native.dylib
+       (no lib prefix), but Mono PInvoke wants libgoogle-ortools-native.dylib.
+       Linux ships libgoogle-ortools-native.so already; Windows uses the
+       .dll name as-is. -->
+  <Target Name="CreateOrToolsSymlink" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Exec Command="if [ -f '$(OutputPath)google-ortools-native.dylib' ] &amp;&amp; [ ! -f '$(OutputPath)libgoogle-ortools-native.dylib' ]; then cp '$(OutputPath)google-ortools-native.dylib' '$(OutputPath)libgoogle-ortools-native.dylib'; fi" />
   </Target>
 
 </Project>

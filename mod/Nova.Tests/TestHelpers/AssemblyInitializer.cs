@@ -34,42 +34,53 @@ public static class AssemblyInitializer {
 
       Console.WriteLine($"Test assembly directory: {assemblyDir}");
 
-      // Check for native libraries
-      string[] expectedLibraries = new[]
-      {
-                    "google-ortools-native.dylib",
-                    "libgoogle-ortools-native.dylib",
-                    "libortools.9.dylib"
-                };
-
+      // Diagnostic: surface which native libs the host should pick up.
+      // The csproj copies whatever the host RID's runtime package ships.
+      string[] expectedLibraries = ExpectedNativeLibraries();
       foreach (var libName in expectedLibraries) {
         string libPath = Path.Combine(assemblyDir, libName);
         bool exists = File.Exists(libPath);
         Console.WriteLine($"  {libName}: {(exists ? "FOUND" : "NOT FOUND")}");
-
         if (exists) {
-          var info = new FileInfo(libPath);
-          Console.WriteLine($"    Size: {info.Length} bytes");
+          Console.WriteLine($"    Size: {new FileInfo(libPath).Length} bytes");
         }
       }
 
-      // Add assembly directory to PATH for native library resolution
-      string currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
-      if (!currentPath.Contains(assemblyDir)) {
-        Environment.SetEnvironmentVariable("PATH",
-            assemblyDir + Path.PathSeparator + currentPath);
-        Console.WriteLine($"Added {assemblyDir} to PATH");
-      }
-
-      // Also set DYLD_LIBRARY_PATH for macOS
-      string dyldPath = Environment.GetEnvironmentVariable("DYLD_LIBRARY_PATH") ?? "";
-      if (!dyldPath.Contains(assemblyDir)) {
-        Environment.SetEnvironmentVariable("DYLD_LIBRARY_PATH",
-            assemblyDir + Path.PathSeparator + dyldPath);
-        Console.WriteLine($"Added {assemblyDir} to DYLD_LIBRARY_PATH");
+      // Add assembly directory to PATH (Windows) and platform-specific
+      // dylib search-path env var (DYLD on macOS, LD on Linux). Belt &
+      // suspenders — Mono usually picks up native libs from the assembly
+      // directory automatically, but the env vars cost nothing.
+      PrependEnv("PATH", assemblyDir);
+      switch (Environment.OSVersion.Platform) {
+        case PlatformID.Unix:
+          PrependEnv(IsMacOS() ? "DYLD_LIBRARY_PATH" : "LD_LIBRARY_PATH", assemblyDir);
+          break;
       }
     } catch (Exception ex) {
       Console.WriteLine($"Error setting up native library paths: {ex.Message}");
+    }
+  }
+
+  private static string[] ExpectedNativeLibraries() {
+    if (IsMacOS())
+      return new[] { "google-ortools-native.dylib", "libgoogle-ortools-native.dylib", "libortools.9.dylib" };
+    if (Environment.OSVersion.Platform == PlatformID.Unix)
+      return new[] { "libgoogle-ortools-native.so", "libortools.so.9" };
+    return new[] { "google-ortools-native.dll", "ortools.dll" };
+  }
+
+  private static bool IsMacOS() {
+    // .NET 4.x: PlatformID.MacOSX exists but is rarely reported; the
+    // Mono runtime returns Unix even on macOS. Disambiguate by file.
+    return Environment.OSVersion.Platform == PlatformID.MacOSX
+        || (Environment.OSVersion.Platform == PlatformID.Unix && Directory.Exists("/Applications"));
+  }
+
+  private static void PrependEnv(string name, string dir) {
+    string current = Environment.GetEnvironmentVariable(name) ?? "";
+    if (!current.Contains(dir)) {
+      Environment.SetEnvironmentVariable(name, dir + Path.PathSeparator + current);
+      Console.WriteLine($"Added {dir} to {name}");
     }
   }
 
