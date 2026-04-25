@@ -38,6 +38,19 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      # Caches both regular package references AND `dotnet tool
+      # restore` binaries (the protobuf-net.protogen tool's package
+      # lives under ~/.nuget/packages/ like any other restore). Hash
+      # over both repos' csprojs (Nova + sibling Dragonglass) plus
+      # the dotnet-tools manifest so a dep bump anywhere busts the
+      # cache.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '.config/dotnet-tools.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
       - name: Install Mono (net48 test host)
         run: sudo apt-get update && sudo apt-get install -y mono-complete
 
@@ -76,9 +89,15 @@ jobs:
           repository: hypergolic-systems/dragonglass
           path: dragonglass
 
+      # setup-node's built-in npm cache caches ~/.npm (the registry
+      # tarball cache) keyed on the lockfile. `npm install` still
+      # runs to populate node_modules, but it pulls from disk
+      # instead of the network.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'ui/package-lock.json'
 
       - uses: extractions/setup-just@v2
 
