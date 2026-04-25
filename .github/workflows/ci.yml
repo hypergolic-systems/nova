@@ -19,13 +19,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      # `dotnet test` for a net48 assembly on Linux launches its test
+      # host via Mono. ubuntu-latest doesn't pre-install Mono.
+      - name: Install Mono (net48 test host)
+        run: sudo apt-get update && sudo apt-get install -y mono-runtime
+
       - uses: extractions/setup-just@v2
 
-      # `just test` is the unified entry point: it depends on
-      # `mod-build` (which runs `proto` first) and chains into
-      # `save-cli-test`. We split into separate jobs here so the C#
-      # and Rust suites run in parallel — `mod-test` is the C#-only
-      # variant.
+      # `just test` is the unified entry point; we use `mod-test` here
+      # so the C# and Rust jobs run in parallel.
       - run: just mod-test
 
   rust:
@@ -37,5 +40,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+
+      # prost-build invokes the system `protoc` binary at compile time
+      # to translate proto/nova.proto into the generated Rust module.
+      - name: Install protoc (prost-build dep)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - uses: extractions/setup-just@v2
       - run: just save-cli-test
