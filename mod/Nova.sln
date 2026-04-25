@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nova.Core", "Nova.Core\Nova.Core.csproj", "{20AF73B6-3740-4CC0-BD0E-BBADE6B81E7B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nova", "Nova\Nova.csproj", "{D501549C-C1BD-4036-810F-4DB143F02C33}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nova.Tests", "Nova.Tests\Nova.Tests.csproj", "{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{20AF73B6-3740-4CC0-BD0E-BBADE6B81E7B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{20AF73B6-3740-4CC0-BD0E-BBADE6B81E7B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{20AF73B6-3740-4CC0-BD0E-BBADE6B81E7B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{20AF73B6-3740-4CC0-BD0E-BBADE6B81E7B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D501549C-C1BD-4036-810F-4DB143F02C33}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D501549C-C1BD-4036-810F-4DB143F02C33}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D501549C-C1BD-4036-810F-4DB143F02C33}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D501549C-C1BD-4036-810F-4DB143F02C33}.Release|Any CPU.Build.0 = Release|Any CPU
+		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

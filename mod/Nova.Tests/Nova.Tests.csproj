@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Nova.Tests</AssemblyName>
+    <RootNamespace>Nova.Tests</RootNamespace>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>false</Optimize>
+    <MonoSymbolFile>true</MonoSymbolFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.1.1" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.1.1" />
+    <PackageReference Include="Moq" Version="4.20.70" />
+
+    <!-- OR-Tools — host-arch native runtime so tests can run on the build machine.
+         Production deploy uses osx-x64 (Nova.Core.csproj), so this is local-only. -->
+    <PackageReference Include="Google.OrTools" Version="9.8.3296" />
+    <PackageReference Include="Google.OrTools.runtime.osx-arm64" Version="9.8.3296" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
+  </ItemGroup>
+
+  <!-- OR-Tools native libraries → output dir, plus libgoogle-ortools-native.dylib alias. -->
+  <ItemGroup>
+    <None Include="$(NuGetPackageRoot)google.ortools.runtime.osx-arm64\9.8.3296\runtimes\osx-arm64\native\*.dylib">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <Target Name="CreateOrToolsSymlink" AfterTargets="Build">
+    <Exec Command="if [ -f '$(OutputPath)google-ortools-native.dylib' ] &amp;&amp; [ ! -f '$(OutputPath)libgoogle-ortools-native.dylib' ]; then cp '$(OutputPath)google-ortools-native.dylib' '$(OutputPath)libgoogle-ortools-native.dylib'; fi"
+          Condition="'$(OS)' == 'Unix'" />
+  </Target>
+
+</Project>

@@ -1,0 +1,151 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Nova mod — KSP integration layer.
+    Implements KSP-side adapters around Nova.Core, applies Harmony patches,
+    and wires up the mod lifecycle. Targets net48 to match KSP 1.12.5.
+    References stripped KSP/Unity stubs from stubs/ (KSP 1.12.5 managed DLLs).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Nova</RootNamespace>
+    <AssemblyName>Nova</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>build/</OutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <MonoSymbolFile>true</MonoSymbolFile>
+
+    <!-- KSP/Unity stubs live at $(repoRoot)/stubs/ -->
+    <KspStubs>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'stubs'))</KspStubs>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- KSP core assemblies -->
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(KspStubs)/Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass">
+      <HintPath>$(KspStubs)/Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="KSPAssets">
+      <HintPath>$(KspStubs)/KSPAssets.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+
+    <!-- Unity -->
+    <Reference Include="UnityEngine">
+      <HintPath>$(KspStubs)/UnityEngine.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(KspStubs)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(KspStubs)/UnityEngine.UI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(KspStubs)/UnityEngine.UIModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIElementsModule">
+      <HintPath>$(KspStubs)/UnityEngine.UIElementsModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(KspStubs)/UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(KspStubs)/UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(KspStubs)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.Physics2DModule">
+      <HintPath>$(KspStubs)/UnityEngine.Physics2DModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(KspStubs)/UnityEngine.AnimationModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(KspStubs)/UnityEngine.AudioModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(KspStubs)/UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputModule">
+      <HintPath>$(KspStubs)/UnityEngine.InputModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>$(KspStubs)/UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(KspStubs)/UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(KspStubs)/UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(KspStubs)/UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>$(KspStubs)/UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+
+    <!-- BCL -->
+    <Reference Include="System">
+      <HintPath>$(KspStubs)/System.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(KspStubs)/System.Core.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Xml">
+      <HintPath>$(KspStubs)/System.Xml.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="mscorlib">
+      <HintPath>$(KspStubs)/mscorlib.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ship 0Harmony.dll alongside Nova.dll: KSP doesn't provide Harmony,
+         and we patch stock types at runtime. -->
+    <PackageReference Include="Lib.Harmony" Version="2.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
+  </ItemGroup>
+
+</Project>

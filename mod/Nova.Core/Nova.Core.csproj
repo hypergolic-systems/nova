@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Nova.Core — platform-agnostic simulation engine.
+    No KSP/Unity references. All KSP integration lives in Nova.dll.
+    Targets net48 to match KSP 1.12.5's bundled Mono runtime.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Nova.Core</RootNamespace>
+    <AssemblyName>Nova.Core</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <!-- KSP's AssemblyLoader parses AssemblyInformationalVersion with System.Version,
+         which chokes on the "+<git-sha>" suffix the SDK appends by default. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>build/</OutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <!-- Mono debugging: full PDBs + .mdb so exceptions in KSP carry line numbers. -->
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <MonoSymbolFile>true</MonoSymbolFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.OrTools" Version="9.8.3296" />
+    <PackageReference Include="Google.OrTools.runtime.osx-x64" Version="9.8.3296" />
+    <PackageReference Include="protobuf-net" Version="2.4.8" />
+  </ItemGroup>
+
+  <!--
+    Persistence/Protos/ holds only generated bindings from proto/nova.proto;
+    `just proto` writes them to Persistence/Protos/Generated/. The default
+    .cs glob already picks them up.
+  -->
+
+</Project>
