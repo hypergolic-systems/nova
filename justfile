@@ -1,5 +1,7 @@
 # Nova — top-level build orchestration
 
+set positional-arguments
+
 # Sibling Dragonglass checkout. Required for stub sync, UI build, and
 # anything that crosses repo boundaries. Set in your shell rc:
 #   export DRAGONGLASS_PATH=~/dev/dragonglass
@@ -87,9 +89,9 @@ mod-test config="Release": (mod-build config)
 save-cli-build:
     cargo build --release -p nova-save-cli
 
-# Run save-cli (forward args, e.g. `just save-cli -- dump some.hgs`).
+# Run save-cli (forward args, e.g. `just save-cli dump some.hgs`).
 save-cli *args: save-cli-build
-    target/release/nova-save-cli {{args}}
+    target/release/nova-save-cli "$@"
 
 # Run save-cli's Rust tests (smoke tests for the dump pipeline).
 save-cli-test:
