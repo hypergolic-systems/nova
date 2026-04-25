@@ -53,21 +53,44 @@
     <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
   </ItemGroup>
 
-  <!-- Copy the host's OR-Tools native lib(s) to the test output directory. -->
+  <!--
+    Copy the host's OR-Tools native lib(s) to the test output directory.
+    The runtime package layout is the same across RIDs but the file
+    extensions differ:
+      osx-arm64/osx-x64 — google-ortools-native.dylib + libortools.<n>.dylib
+      linux-x64        — google-ortools-native.so    + libortools.so.<n>
+      win-x64          — google-ortools-native.dll   + ortools.dll
+    The shim is shipped without the `lib` prefix on every Unix-y RID,
+    so we also alias it as libgoogle-ortools-native.<ext> for Mono
+    PInvoke. Forward slashes in the source path — backslashes do not
+    survive MSBuild's glob expansion on Linux.
+  -->
   <ItemGroup>
-    <None Include="$(NuGetPackageRoot)google.ortools.runtime.$(OrToolsRid)\$(OrToolsVersion)\runtimes\$(OrToolsRid)\native\*.$(OrToolsNativeExt)">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>%(Filename)%(Extension)</Link>
-    </None>
+    <_OrToolsNativeFile Include="$(NuGetPackageRoot)google.ortools.runtime.$(OrToolsRid)/$(OrToolsVersion)/runtimes/$(OrToolsRid)/native/*"
+                        Condition="'$(OrToolsRid)' != ''" />
   </ItemGroup>
 
-  <!-- macOS-only PInvoke alias: the package ships google-ortools-native.dylib
-       (no lib prefix), but Mono PInvoke wants libgoogle-ortools-native.dylib.
-       Linux ships libgoogle-ortools-native.so already; Windows uses the
-       .dll name as-is. -->
-  <Target Name="CreateOrToolsSymlink" AfterTargets="Build"
-          Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-    <Exec Command="if [ -f '$(OutputPath)google-ortools-native.dylib' ] &amp;&amp; [ ! -f '$(OutputPath)libgoogle-ortools-native.dylib' ]; then cp '$(OutputPath)google-ortools-native.dylib' '$(OutputPath)libgoogle-ortools-native.dylib'; fi" />
+  <Target Name="CopyOrToolsNative" AfterTargets="Build"
+          Condition="'$(OrToolsRid)' != ''"
+          Inputs="@(_OrToolsNativeFile)"
+          Outputs="@(_OrToolsNativeFile -> '$(OutputPath)%(Filename)%(Extension)')">
+    <Copy SourceFiles="@(_OrToolsNativeFile)"
+          DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- PInvoke alias: package ships google-ortools-native.{dylib,so,dll}
+       (no `lib` prefix); Mono on Unix wants the `lib` prefix. macOS and
+       Linux both need the alias; Windows uses the .dll name as-is. -->
+  <Target Name="AliasOrToolsShim" AfterTargets="CopyOrToolsNative"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) OR $([MSBuild]::IsOSPlatform('LINUX'))">
+    <PropertyGroup>
+      <_ShimSrc>$(OutputPath)google-ortools-native.$(OrToolsNativeExt)</_ShimSrc>
+      <_ShimDst>$(OutputPath)libgoogle-ortools-native.$(OrToolsNativeExt)</_ShimDst>
+    </PropertyGroup>
+    <Copy SourceFiles="$(_ShimSrc)" DestinationFiles="$(_ShimDst)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_ShimSrc)')" />
   </Target>
 
 </Project>
