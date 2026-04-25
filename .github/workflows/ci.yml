@@ -34,11 +34,19 @@ jobs:
       - name: Build
         run: just mod-build
 
-      # Diagnostic: confirm OR-Tools native libs landed where Mono will
-      # look for them. The csproj copies linux-x64 .so files via the
-      # <None Include … CopyToOutputDirectory> rule.
-      - name: Inspect test output directory
-        run: ls -la mod/Nova.Tests/bin/Release/
+      # Diagnostic: did the linux-x64 OR-Tools runtime package even
+      # restore? And did its .so files copy into the test output dir?
+      - name: Inspect NuGet cache + test output directory
+        run: |
+          echo "--- NuGet OR-Tools runtime packages ---"
+          ls -la ~/.nuget/packages/ | grep -i ortools || echo "(none found)"
+          for pkg in ~/.nuget/packages/google.ortools.runtime.linux-x64/*/runtimes/linux-x64/native/; do
+            echo "--- $pkg ---"
+            ls -la "$pkg" 2>/dev/null || echo "(not found)"
+          done
+          echo ""
+          echo "--- Test output dir ---"
+          ls -la mod/Nova.Tests/bin/Release/
 
       # Mono's PInvoke search picks up `libgoogle-ortools-native.so` if
       # it's in LD_LIBRARY_PATH. The shim rpaths libortools.so.9 from
