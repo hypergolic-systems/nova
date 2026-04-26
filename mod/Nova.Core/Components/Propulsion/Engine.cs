@@ -8,10 +8,16 @@ using Nova.Core.Utils;
 namespace Nova.Core.Components.Propulsion;
 
 public class Engine : VirtualComponent {
-  public double Thrust; // kN (vacuum)
+  public double Thrust; // kN (vacuum) — also serves as MaxThrust on the wire
   public double Isp; // s (vacuum)
   public double Throttle;
   public double AlternatorRate; // EC/s at full output (0 = no alternator)
+
+  // Runtime state mirroring KSP's ignition/flameout flags. Written
+  // by NovaEngineModule each tick; read by NovaEngineTopic to drive
+  // the wire's status byte.
+  public bool Ignited;
+  public bool Flameout;
 
   public double Satisfaction => device != null ? device.Satisfaction : 0;
   public double NormalizedOutput => device != null ? device.Activity : 0;

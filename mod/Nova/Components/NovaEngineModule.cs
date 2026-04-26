@@ -49,6 +49,7 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus {
 
   public override void OnActive() {
     activated = true;
+    if (engine != null) engine.Ignited = true;
   }
 
   public void FixedUpdate() {
@@ -92,8 +93,15 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus {
     }
 
     // Flameout: was flowing, now starved while throttle is still up.
-    if (wasFlowing && !flowing && engine.Throttle > 0) {
+    // Surface to the virtual component so NovaEngineTopic samples it
+    // from a single source. Cleared when the engine recovers (next
+    // frame where flow ≥ epsilon) or when throttle drops to zero.
+    bool flamedOut = wasFlowing && !flowing && engine.Throttle > 0;
+    if (flamedOut) {
       flameoutGroup?.Burst();
+      engine.Flameout = true;
+    } else if (flowing || engine.Throttle <= 0) {
+      engine.Flameout = false;
     }
     wasFlowing = flowing;
   }
