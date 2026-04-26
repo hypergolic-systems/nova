@@ -10,12 +10,8 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   [KSPField]
   public bool retractable = true;
 
-  // Default to extended so a freshly-placed editor part agrees with
-  // its prefab's extended visual pose. Mirrors stock's typical
-  // deployState=EXTENDED default for solar panels — players who want
-  // launch-stowed panels right-click Retract in editor before saving.
   [KSPField(isPersistant = true)]
-  public bool isExtended = true;
+  public bool isExtended;
 
   private Animation anim;
   private bool animating;
@@ -41,11 +37,7 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     // gets a toggle (retractable) or a one-shot open button.
     solarPanel.IsRetractable = retractable;
 
-    // Drive the model pose from isExtended only — no editor-only
-    // force-extend. With isExtended defaulting to true, fresh editor
-    // parts still pose extended, but a player who retracts in the
-    // editor sees the actual closed pose instead of a lying visual.
-    if (isExtended) {
+    if (state == StartState.Editor || isExtended) {
       SetAnimationPosition(1f);
       solarPanel.IsDeployed = true;
     } else {
