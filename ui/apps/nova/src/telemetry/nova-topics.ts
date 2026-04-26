@@ -119,7 +119,9 @@ export interface NovaPartStruct {
   /** KSP internal name (e.g. "solarPanels3"). Useful for matching
    *  against ModuleManager configs and for debugging. */
   name: string;
-  /** Player-facing display title (e.g. "OX-STAT Photovoltaic Panels"). */
+  /** Player-facing display title, with redundant category suffixes
+   *  ("Photovoltaic Panels", "Rechargeable Battery Pack", …) stripped
+   *  by `shortenPartTitle` so rows stay readable. */
   title: string;
   parentId: string | null;
   tags: SystemTag[];
@@ -143,6 +145,23 @@ export const NovaPartTopic = (partId: string): Topic<NovaPartFrame> =>
 
 // ---------- Decoders -------------------------------------------
 
+// Stock parts repeat their category in the title ("OX-STAT Photovoltaic
+// Panels", "Z-100 Rechargeable Battery Pack"). Strip the redundant tail
+// at the decode boundary so every consumer gets pre-shortened titles.
+const TITLE_SUFFIXES = [
+  'Photovoltaic Panels',
+  'Liquid Fuel Engine',
+  'Rechargeable Battery Pack',
+  'Radioisotope Thermoelectric Generator',
+];
+
+function shortenPartTitle(title: string): string {
+  for (const s of TITLE_SUFFIXES) {
+    if (title.endsWith(s)) return title.slice(0, -s.length).trimEnd();
+  }
+  return title;
+}
+
 export function decodeStructure(
   f: NovaVesselStructureFrame,
 ): NovaVesselStructure {
@@ -153,7 +172,7 @@ export function decodeStructure(
     parts: parts.map(([id, partName, partTitle, parentId, tags]) => ({
       id,
       name: partName,
-      title: partTitle,
+      title: shortenPartTitle(partTitle),
       parentId,
       tags,
     })),
