@@ -4,9 +4,14 @@
   // header. Each row binds to the live NovaPart state via the
   // useNovaPartsByTag hook — the hook subscribes per-part on
   // structure changes and tears down when the view unmounts.
+  //
+  // When the vessel carries multiple solar panels, they collapse into
+  // a SOLAR sub-group inside Generation so the section's eye-line
+  // doesn't drown in identical-looking rows.
 
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
 
   interface Props {
     vesselId: string;
@@ -54,6 +59,42 @@
     return total;
   }
 
+  // Per-row icon choice. State-driven when loaded; falls back to the
+  // section's dominant kind so first-frame rows aren't iconless.
+  function genKind(p: NovaTaggedPart): ComponentKind {
+    if (p.state && p.state.engine.length > 0 && p.state.solar.length === 0) return 'engine';
+    return 'solar';
+  }
+  function consumeKind(p: NovaTaggedPart): ComponentKind {
+    if (p.state && p.state.light.length > 0 && p.state.wheel.length === 0) return 'light';
+    return 'wheel';
+  }
+
+  // A part is "solar" for grouping purposes when it carries solar
+  // components and no engine alternator. Engine-with-alternator parts
+  // stay top-level so they don't get hidden inside a SOLAR header.
+  function isSolarPart(p: NovaTaggedPart): boolean {
+    return !!p.state && p.state.solar.length > 0 && p.state.engine.length === 0;
+  }
+
+  const genGroups = $derived.by(() => {
+    const solar: NovaTaggedPart[] = [];
+    const other: NovaTaggedPart[] = [];
+    for (const p of generators.current) {
+      (isSolarPart(p) ? solar : other).push(p);
+    }
+    const groupSolar = solar.length > 1;
+    return {
+      solar,
+      other,
+      groupSolar,
+      // When solar isn't grouped, fold it back into the inline list
+      // so render order matches the original (solar parts first).
+      inline: groupSolar ? other : [...solar, ...other],
+      solarTotal: solar.reduce((a, p) => a + generationRate(p), 0),
+    };
+  });
+
   const totals = $derived({
     gen: generators.current.reduce((a, p) => a + generationRate(p), 0),
     consume: consumers.current.reduce((a, p) => a + consumptionRate(p), 0),
@@ -88,8 +129,34 @@
     <p class="pwr__empty">No generators on this vessel.</p>
   {:else}
     <ul class="pwr__rows">
-      {#each generators.current as p (p.struct.id)}
+      {#if genGroups.groupSolar}
+        <li class="pwr__subgroup">
+          <header class="pwr__subgroup-head">
+            <span class="pwr__row-icon"><ComponentIcon kind="solar" /></span>
+            <span class="pwr__subgroup-title">
+              SOLAR <em>· {genGroups.solar.length}</em>
+            </span>
+            <span class="pwr__row-rate"
+                  class:pwr__row-rate--zero={genGroups.solarTotal <= 0}>
+              {fmtRate(genGroups.solarTotal)}<em>EC/s</em>
+            </span>
+          </header>
+          <ul class="pwr__rows pwr__rows--nested">
+            {#each genGroups.solar as p (p.struct.id)}
+              <li class="pwr__row pwr__row--nested">
+                <span class="pwr__row-icon"><ComponentIcon kind="solar" /></span>
+                <span class="pwr__row-name">{p.struct.title}</span>
+                <span class="pwr__row-rate">
+                  {fmtRate(generationRate(p))}<em>EC/s</em>
+                </span>
+              </li>
+            {/each}
+          </ul>
+        </li>
+      {/if}
+      {#each genGroups.inline as p (p.struct.id)}
         <li class="pwr__row">
+          <span class="pwr__row-icon"><ComponentIcon kind={genKind(p)} /></span>
           <span class="pwr__row-name">{p.struct.title}</span>
           <span class="pwr__row-rate">
             {fmtRate(generationRate(p))}<em>EC/s</em>
@@ -112,6 +179,7 @@
     <ul class="pwr__rows">
       {#each consumers.current as p (p.struct.id)}
         <li class="pwr__row">
+          <span class="pwr__row-icon"><ComponentIcon kind={consumeKind(p)} /></span>
           <span class="pwr__row-name">{p.struct.title}</span>
           <span class="pwr__row-rate pwr__row-rate--neg">
             {fmtRate(consumptionRate(p))}<em>EC/s</em>
@@ -135,6 +203,7 @@
     <ul class="pwr__rows">
       {#each storage.current as p (p.struct.id)}
         <li class="pwr__row">
+          <span class="pwr__row-icon"><ComponentIcon kind="battery" /></span>
           <span class="pwr__row-name">{p.struct.title}</span>
           <span class="pwr__row-rate">
             {fmtSoc(batteryStored(p), batteryCapacity(p))}
@@ -197,14 +266,20 @@
   }
   .pwr__row {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
     padding: 3px 0;
     border-bottom: 1px dashed rgba(26, 35, 53, 0.6);
   }
   .pwr__row:last-child {
     border-bottom: 0;
+  }
+  .pwr__row-icon {
+    flex: 0 0 12px;
+    display: inline-flex;
+    align-items: center;
+    color: var(--fg-mute);
   }
   .pwr__row-name {
     flex: 1 1 auto;
@@ -226,12 +301,56 @@
   .pwr__row-rate--neg {
     color: var(--warn);
   }
+  .pwr__row-rate--zero {
+    color: var(--fg-mute);
+  }
   .pwr__row-rate em {
     font-style: normal;
     font-size: 8px;
     color: var(--fg-mute);
     margin-left: 2px;
     letter-spacing: 0.12em;
+  }
+
+  /* Solar sub-group: a soft header inside Generation, then panels
+     listed beneath at the same row rhythm but indented to advertise
+     the hierarchy. Borrow accent tint on the icon to set it apart
+     from the row icons below. */
+  .pwr__subgroup {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-bottom: 1px dashed rgba(26, 35, 53, 0.6);
+  }
+  .pwr__subgroup-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+  }
+  .pwr__subgroup-head .pwr__row-icon {
+    color: var(--accent);
+  }
+  .pwr__subgroup-title {
+    flex: 1 1 auto;
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--fg-dim);
+  }
+  .pwr__subgroup-title em {
+    font-style: normal;
+    color: var(--fg-mute);
+    letter-spacing: 0.12em;
+    margin-left: 2px;
+  }
+  .pwr__rows--nested {
+    padding-left: 14px;
+    border-left: 1px solid var(--line);
+    margin: 0 0 2px 5px;
+  }
+  .pwr__row--nested .pwr__row-name {
+    color: var(--fg-dim);
   }
 
   .pwr__empty {
