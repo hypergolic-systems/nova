@@ -22,9 +22,17 @@ public class SystemTagsTests {
   }
 
   [TestMethod]
-  public void Battery_TagsPowerStore() {
+  public void Battery_TagsPowerStoreAndStorage() {
     var tags = SystemTags.For(new VirtualComponent[] { new Battery() });
-    CollectionAssert.AreEqual(new List<string> { SystemTags.PowerStore }, tags);
+    CollectionAssert.AreEqual(
+      new List<string> { SystemTags.PowerStore, SystemTags.Storage },
+      tags);
+  }
+
+  [TestMethod]
+  public void TankVolume_TagsStorage() {
+    var tags = SystemTags.For(new VirtualComponent[] { new TankVolume() });
+    CollectionAssert.AreEqual(new List<string> { SystemTags.Storage }, tags);
   }
 
   [TestMethod]
@@ -61,7 +69,9 @@ public class SystemTagsTests {
   [TestMethod]
   public void MixedComponents_DedupeAndOrderDeterministically() {
     // A pod-like part with battery + reaction wheel + light + solar.
-    // Expected canonical order: power-gen, power-consume, power-store, attitude.
+    // Expected canonical order: power-gen, power-consume, power-store,
+    // attitude, storage (battery contributes both power-store and
+    // storage).
     var components = new VirtualComponent[] {
       new Light(),
       new Battery(),
@@ -75,6 +85,7 @@ public class SystemTagsTests {
         SystemTags.PowerConsume,
         SystemTags.PowerStore,
         SystemTags.Attitude,
+        SystemTags.Storage,
       },
       tags);
   }
@@ -87,6 +98,8 @@ public class SystemTagsTests {
       new Battery(),
     };
     var tags = SystemTags.For(components);
-    CollectionAssert.AreEqual(new List<string> { SystemTags.PowerStore }, tags);
+    CollectionAssert.AreEqual(
+      new List<string> { SystemTags.PowerStore, SystemTags.Storage },
+      tags);
   }
 }

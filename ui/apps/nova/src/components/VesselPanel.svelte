@@ -13,6 +13,7 @@
   import { FloatingWindow } from '@dragonglass/windows';
   import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
   import PowerView from './power/PowerView.svelte';
+  import ResourceView from './resource/ResourceView.svelte';
 
   const MIN_W = 300;
   const MIN_H = 260;
@@ -27,7 +28,7 @@
   const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'power' | 'propulsion' | 'rcs' | 'attitude';
+  type TabId = 'power' | 'resource' | 'propulsion' | 'rcs' | 'attitude';
 
   interface Tab {
     id: TabId;
@@ -38,6 +39,7 @@
 
   const tabs: Tab[] = [
     { id: 'power',      short: 'PWR', label: 'Power',      enabled: true  },
+    { id: 'resource',   short: 'RES', label: 'Resources',  enabled: true  },
     { id: 'propulsion', short: 'PRP', label: 'Propulsion', enabled: false },
     { id: 'rcs',        short: 'RCS', label: 'RCS',        enabled: false },
     { id: 'attitude',   short: 'ATT', label: 'Attitude',   enabled: false },
@@ -89,6 +91,8 @@
   <div class="vp__body">
     {#if activeTab === 'power' && flight.vesselId}
       <PowerView vesselId={flight.vesselId} />
+    {:else if activeTab === 'resource' && flight.vesselId}
+      <ResourceView vesselId={flight.vesselId} />
     {/if}
   </div>
 </FloatingWindow>

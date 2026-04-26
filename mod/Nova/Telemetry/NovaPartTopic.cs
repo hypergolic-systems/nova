@@ -5,6 +5,7 @@ using Nova.Components;
 using Nova.Core.Components;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Resources;
 using UnityEngine;
 // Disambiguate against UnityEngine.Light.
 using NovaLight = Nova.Core.Components.Electrical.Light;
@@ -26,6 +27,10 @@ namespace Nova.Telemetry;
 //    [ [resourceId, rate, satisfaction], ... ],
 //    [ [kind, ...], ... ]
 //   ]
+//
+// Resource frames (one per Buffer on a part — TankVolume tanks and
+// Battery cells both contribute):
+//   [resourceName, amount, capacity, currentRate]
 //
 // Component frames:
 //   ["S", currentEcRate, deployed, sunlit, retractable]  SolarPanel
@@ -133,7 +138,7 @@ public sealed class NovaPartTopic : Topic {
     var virt = ResolveVirtualVessel();
 
     JsonWriter.Sep(sb, ref first);
-    WriteResources(sb);
+    WriteResources(sb, virt);
 
     JsonWriter.Sep(sb, ref first);
     WriteComponents(sb, virt);
@@ -147,12 +152,46 @@ public sealed class NovaPartTopic : Topic {
     return vm != null ? vm.Virtual : null;
   }
 
-  private void WriteResources(StringBuilder sb) {
-    // Per-part resource flow is not yet a first-class signal in the
-    // Nova solver (rates aggregate at the node level, and a node may
-    // hold multiple parts). Reserve the slot — emit an empty array
-    // for now so the wire shape is stable as we wire in real data.
+  private void WriteResources(StringBuilder sb, VirtualVessel virt) {
     JsonWriter.Begin(sb, '[');
+    bool first = true;
+    if (virt != null) {
+      foreach (var c in virt.GetComponents(_part.persistentId)) {
+        foreach (var buf in EnumerateBuffers(c)) {
+          if (buf == null || buf.Capacity <= 0) continue;
+          JsonWriter.Sep(sb, ref first);
+          WriteResource(sb, buf);
+        }
+      }
+    }
+    JsonWriter.End(sb, ']');
+  }
+
+  // Buffer-bearing components contribute their buffers to the part's
+  // resource list. Add new cases here when new component kinds gain
+  // buffers; the Resource view will pick them up for free.
+  private static IEnumerable<Buffer> EnumerateBuffers(VirtualComponent c) {
+    switch (c) {
+      case Battery b:
+        yield return b.Buffer;
+        break;
+      case TankVolume t:
+        foreach (var tank in t.Tanks) yield return tank;
+        break;
+    }
+  }
+
+  private static void WriteResource(StringBuilder sb, Buffer buf) {
+    JsonWriter.Begin(sb, '[');
+    bool first = true;
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteString(sb, buf.Resource?.Name ?? "");
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, buf.Contents);
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, buf.Capacity);
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, buf.Rate);
     JsonWriter.End(sb, ']');
   }
 

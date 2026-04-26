@@ -18,14 +18,16 @@ export type SystemTag =
   | 'power-store'
   | 'propulsion'
   | 'rcs'
-  | 'attitude';
+  | 'attitude'
+  | 'storage';
 
 // ---------- Wire (frame) types ---------------------------------
 
 export type NovaResourceFrame = [
   resourceId: string,
+  amount: number,
+  capacity: number,
   rate: number,
-  satisfaction: number,
 ];
 
 // One named tuple per kind so visualization code can import the
@@ -66,9 +68,16 @@ export type NovaVesselStructureFrame = [
 // ---------- UI-facing types ------------------------------------
 
 export interface NovaResourceFlow {
+  /** Canonical resource name as registered in Nova.Core.Resources
+   *  (e.g. "Electric Charge", "Liquid Hydrogen"). The UI maps this to
+   *  a short code via `resource-codes.ts` for in-row display. */
   resourceId: string;
+  /** Current units stored. */
+  amount: number;
+  /** Maximum units (>0 — zero-capacity buffers are filtered upstream). */
+  capacity: number;
+  /** Live flow rate in units/s; positive = filling, negative = draining. */
   rate: number;
-  satisfaction: number;
 }
 
 export interface SolarState {
@@ -208,10 +217,11 @@ export function decodePart(f: NovaPartFrame): NovaPart {
   const [id, resources, components] = f;
   const out: NovaPart = {
     id,
-    resources: resources.map(([resourceId, rate, satisfaction]) => ({
+    resources: resources.map(([resourceId, amount, capacity, rate]) => ({
       resourceId,
+      amount,
+      capacity,
       rate,
-      satisfaction,
     })),
     solar: [],
     battery: [],

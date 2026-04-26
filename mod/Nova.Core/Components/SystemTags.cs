@@ -17,6 +17,10 @@ public static class SystemTags {
   public const string Propulsion   = "propulsion";
   public const string Rcs          = "rcs";
   public const string Attitude     = "attitude";
+  // Any part holding a non-zero-capacity Buffer — batteries, tanks,
+  // monoprop pods. Drives the Resource view, where every storage-bearing
+  // part shows up regardless of which subsystem it serves.
+  public const string Storage      = "storage";
 
   /// <summary>
   /// Compute the deterministic, deduplicated tag list for the given
@@ -32,6 +36,7 @@ public static class SystemTags {
           break;
         case Battery _:
           set.Add(PowerStore);
+          set.Add(Storage);
           break;
         case Light _:
           set.Add(PowerConsume);
@@ -47,6 +52,9 @@ public static class SystemTags {
         case Rcs _:
           set.Add(Rcs);
           break;
+        case TankVolume _:
+          set.Add(Storage);
+          break;
       }
     }
     var result = new List<string>(set.Count);
@@ -58,6 +66,6 @@ public static class SystemTags {
 
   // Canonical ordering used by `For` so list equality is meaningful.
   private static readonly string[] Order = new[] {
-    PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude,
+    PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude, Storage,
   };
 }
