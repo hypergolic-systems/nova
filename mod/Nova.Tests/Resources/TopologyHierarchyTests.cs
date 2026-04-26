@@ -16,8 +16,9 @@ public class TopologyHierarchyTests {
     var child = solver.AddNode();
     solver.AddEdge(root, child);
 
-    var converter = root.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, 100);
+    var producer = root.AddDevice(ResourceSolver.Priority.Low);
+    producer.AddOutput(Resource.ElectricCharge, 100);
+    producer.Demand = 1.0;
 
     var d = child.AddDevice(ResourceSolver.Priority.Low);
     d.AddInput(Resource.ElectricCharge, 50);
@@ -35,8 +36,9 @@ public class TopologyHierarchyTests {
     var child = solver.AddNode();
     solver.AddEdge(root, child, new HashSet<Resource>());
 
-    var converter = root.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, 100);
+    var producer = root.AddDevice(ResourceSolver.Priority.Low);
+    producer.AddOutput(Resource.ElectricCharge, 100);
+    producer.Demand = 1.0;
 
     var d = child.AddDevice(ResourceSolver.Priority.Low);
     d.AddInput(Resource.ElectricCharge, 50);
@@ -54,11 +56,13 @@ public class TopologyHierarchyTests {
     var child = solver.AddNode();
     solver.AddEdge(root, child, new HashSet<Resource> { Resource.ElectricCharge });
 
-    var ecConverter = root.AddConverter();
-    ecConverter.AddOutput(Resource.ElectricCharge, 100);
+    var ecProducer = root.AddDevice(ResourceSolver.Priority.Low);
+    ecProducer.AddOutput(Resource.ElectricCharge, 100);
+    ecProducer.Demand = 1.0;
 
-    var rp1Converter = root.AddConverter();
-    rp1Converter.AddOutput(Resource.RP1, 100);
+    var rp1Producer = root.AddDevice(ResourceSolver.Priority.Low);
+    rp1Producer.AddOutput(Resource.RP1, 100);
+    rp1Producer.Demand = 1.0;
 
     var ecDevice = child.AddDevice(ResourceSolver.Priority.Low);
     ecDevice.AddInput(Resource.ElectricCharge, 50);

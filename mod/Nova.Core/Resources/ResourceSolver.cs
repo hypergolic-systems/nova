@@ -10,12 +10,12 @@ public class ResourceSolver {
   // ── Public API types ─────────────────────────────────────────────────
 
   public enum Priority { Critical, High, Low }
+  private const int PriorityCount = 3;
 
   public class Node {
     internal long id;
     public long Id => id;
     internal List<Device> devices = new();
-    internal List<Converter> converters = new();
     internal List<Buffer> buffers = new();
 
     public double DryMass;
@@ -23,19 +23,12 @@ public class ResourceSolver {
     public int DrainPriority;
 
     public IReadOnlyList<Device> Devices => devices;
-    public IReadOnlyList<Converter> Converters => converters;
     public IReadOnlyList<Buffer> Buffers => buffers;
 
     public Device AddDevice(Priority priority) {
       var device = new Device { node = this, priority = priority };
       devices.Add(device);
       return device;
-    }
-
-    public Converter AddConverter() {
-      var converter = new Converter { node = this };
-      converters.Add(converter);
-      return converter;
     }
 
     public Buffer AddBuffer(Resource resource, double capacity) {
@@ -83,30 +76,30 @@ public class ResourceSolver {
     }
   }
 
+  // Unified Device — handles both consumers (inputs only) and producers
+  // (outputs only) and hybrids (both — fuel cells). Activity ∈ [0, demand]
+  // is maximized by the priority sum-max objective. Optional `parent`
+  // gates activity ≤ parent.activity for incidental producers (e.g. an
+  // engine alternator: alt ≤ engine throttle, but lack of EC demand
+  // doesn't pull engine throttle down because the constraint is one-way).
   public class Device {
     internal Node node;
     internal Priority priority;
     internal List<(Resource Resource, double MaxRate)> inputs = new();
+    internal List<(Resource Resource, double MaxRate)> outputs = new();
+    internal Device parent;
+    // Persistent LP handle, set once in BuildLP.
+    internal Variable Var;
 
     public double Demand;
     public double Activity;
     public double Satisfaction => Demand > 1e-9 ? Activity / Demand : 0;
-
-    public void AddInput(Resource resource, double maxRate) {
-      inputs.Add((resource, maxRate));
-    }
-
-}
-
-  public class Converter {
-    internal Node node;
-    internal List<(Resource Resource, double MaxRate)> inputs = new();
-    internal List<(Resource Resource, double MaxRate)> outputs = new();
-    internal Device parent;
-
-    public double Cost;
+    // Per-tick UB scaling: solar panels use this for binary deploy/shadow
+    // gating without needing topology rebuild. Default 1 = full activity.
+    public double MaxActivity = 1;
+    // Hint for VirtualVessel.ComputeNextExpiry — when does this device's
+    // production envelope change next? Used by solar for shadow transition.
     public double ValidUntil = double.PositiveInfinity;
-    public double Activity;
 
     public void AddInput(Resource resource, double maxRate) {
       inputs.Add((resource, maxRate));
@@ -135,6 +128,9 @@ public class ResourceSolver {
     public Resource Resource;
     public int DrainPriority;
     public List<Buffer> Tanks = new();
+    // Persistent LP handles.
+    public Variable SupplyVar;
+    public Variable FillVar;
     public double TotalAmount => Tanks.Sum(t => t.Contents > 1e-9 ? t.Contents : 0);
     public double MaxSupplyRate => Tanks.Sum(t => t.Contents > 1e-9 ? t.MaxRateOut : 0);
     public double MaxFillRate => Tanks.Sum(t => t.Contents < t.Capacity - 1e-9 ? t.MaxRateIn : 0);
@@ -145,11 +141,13 @@ public class ResourceSolver {
     public Node Child;
     public Resource Resource;
     public bool UpOnly;
+    public Variable Var;
   }
 
   private class ConservationEntry {
     public Node Node;
     public Resource Resource;
+    public Constraint Eq;
   }
 
   // ── State ────────────────────────────────────────────────────────────
@@ -158,6 +156,24 @@ public class ResourceSolver {
   private List<Edge> edges = new();
   private Dictionary<Resource, double> drainCosts = new();
   private long nextNodeId;
+
+  // Persistent LP — built once when topology is finalized, mutated per Solve.
+  private bool topologyFinalized;
+  private List<Pool> pools = new();
+  private List<FlowVar> flowVars = new();
+  private List<ConservationEntry> conservationEntries = new();
+  private Dictionary<(Node, Resource), ConservationEntry> conservationByNodeRes = new();
+  private Solver lpSolver;
+  private Constraint[] devicePin;
+  private LinearExpr drainCostExpr;
+  private int maxDrainPriority;
+
+  // Cost weights for the post-pinning drain-min phase. Uniform `Epsilon`
+  // is the tie-breaking minimum; `DrainPriorityStep` makes lower-priority
+  // pools more expensive (so high-priority pools drain first). Caller-set
+  // `drainCosts` are added on top of both.
+  private const double DefaultDrainEpsilon = 1e-6;
+  private const double DrainPriorityStep = 1.0;
 
   // ── Public methods ───────────────────────────────────────────────────
 
@@ -191,67 +207,59 @@ public class ResourceSolver {
   // ── Solve ────────────────────────────────────────────────────────────
 
   public void Solve() {
-    // Build internal model from current state.
-    var nodeResources = BuildNodeResources();
-    var pools = BuildPools();
-    var flowVars = BuildFlowVars(nodeResources);
-    var conservationEntries = BuildConservationEntries(nodeResources);
+    if (!topologyFinalized) {
+      FinalizeTopology();
+      BuildLP();
+      topologyFinalized = true;
+    }
 
-    // Collect priority levels.
+    ResetPerTickBounds();
+
+    // Device priority loop. At each priority, maximize sum of activities
+    // and pin the optimum so subsequent (lower) priorities can't regress it.
     var devicePriorities = new SortedSet<Priority>(
       nodes.SelectMany(n => n.devices).Select(d => d.priority));
-    var drainPriorities = new SortedSet<int>(
-      pools.Select(p => p.DrainPriority),
-      Comparer<int>.Create((a, b) => b.CompareTo(a))); // descending
 
-    // Accumulators across all passes.
-    var fixedSupply = new Dictionary<(Node, Resource), double>();
-    var poolDrainRates = new Dictionary<Pool, double>();
-    var deviceActivities = new Dictionary<Device, double>();
-    var converterActivities = new Dictionary<Converter, double>();
-
-    // Priority passes: one LP per drain priority, device priority handled
-    // by sequential objectives within each pass.
-    foreach (var drainPri in drainPriorities) {
-      var activePools = pools.Where(p =>
-        p.DrainPriority == drainPri && p.MaxSupplyRate > 1e-9).ToList();
-      if (activePools.Count == 0) continue;
-
-      RunPriorityPass(activePools, fixedSupply, poolDrainRates,
-        deviceActivities, converterActivities, flowVars, conservationEntries,
-        devicePriorities);
+    foreach (var devPri in devicePriorities) {
+      lpSolver.Maximize(SumDeviceActivity(devPri));
+      if (lpSolver.Solve() != Solver.ResultStatus.OPTIMAL) {
+        ExtractResults();
+        return;
+      }
+      var aStar = lpSolver.Objective().Value();
+      if (aStar > 1e-9)
+        devicePin[(int)devPri].SetBounds(aStar - 1e-9, double.PositiveInfinity);
     }
 
-    // If no passes ran (no buffers or all empty), do a converters-only solve.
-    if (deviceActivities.Count == 0) {
-      var pris = devicePriorities.Count > 0 ? devicePriorities
-        : new SortedSet<Priority> { Priority.Low };
-      RunPriorityPass(new List<Pool>(), fixedSupply, poolDrainRates,
-        deviceActivities, converterActivities, flowVars, conservationEntries, pris);
-    }
+    // Drain minimization: with all device activities pinned, minimize total
+    // buffer drain. Pool weights: high-DrainPriority pools are cheap (drain
+    // first); same-DP pools at same cost (LP picks based on basis). FillVar
+    // is uncosted, so degenerate (supply=X, fill=X) collapses to (0, 0) —
+    // the asymmetry is what eliminates same-pool and cross-pool sloshing.
+    // If no pools exist, drainCostExpr is null — do a no-op final solve to
+    // refresh SolutionValue caches that the pin SetBounds calls invalidated.
+    lpSolver.Minimize(drainCostExpr ?? new LinearExpr());
+    lpSolver.Solve();
 
-    // Buffer fill pass.
-    var fillPools = pools.Where(p => p.MaxFillRate > 1e-9).ToList();
-    if (fillPools.Count > 0)
-      RunFillPass(fillPools, fixedSupply, poolDrainRates,
-        deviceActivities, converterActivities, flowVars, conservationEntries);
-
-    // Extract results.
-    ExtractResults(deviceActivities, converterActivities, poolDrainRates, pools);
-
+    ExtractResults();
   }
 
-  // ── Internal model building ──────────────────────────────────────────
+  // ── Topology finalization ────────────────────────────────────────────
+
+  private void FinalizeTopology() {
+    var nodeResources = BuildNodeResources();
+    BuildPools();
+    BuildFlowVars(nodeResources);
+    BuildConservationEntries(nodeResources);
+  }
 
   private Dictionary<Node, HashSet<Resource>> BuildNodeResources() {
     var result = new Dictionary<Node, HashSet<Resource>>();
     foreach (var node in nodes) {
       var resources = new HashSet<Resource>();
-      foreach (var d in node.devices)
+      foreach (var d in node.devices) {
         foreach (var (res, _) in d.inputs) resources.Add(res);
-      foreach (var c in node.converters) {
-        foreach (var (res, _) in c.inputs) resources.Add(res);
-        foreach (var (res, _) in c.outputs) resources.Add(res);
+        foreach (var (res, _) in d.outputs) resources.Add(res);
       }
       foreach (var b in node.buffers) resources.Add(b.Resource);
       result[node] = resources;
@@ -277,8 +285,8 @@ public class ResourceSolver {
     return result;
   }
 
-  private List<Pool> BuildPools() {
-    var pools = new List<Pool>();
+  private void BuildPools() {
+    pools.Clear();
     foreach (var node in nodes) {
       var byResource = new Dictionary<Resource, Pool>();
       foreach (var buffer in node.buffers) {
@@ -294,11 +302,11 @@ public class ResourceSolver {
         pool.Tanks.Add(buffer);
       }
     }
-    return pools;
+    maxDrainPriority = pools.Count > 0 ? pools.Max(p => p.DrainPriority) : 0;
   }
 
-  private List<FlowVar> BuildFlowVars(Dictionary<Node, HashSet<Resource>> nodeResources) {
-    var flowVars = new List<FlowVar>();
+  private void BuildFlowVars(Dictionary<Node, HashSet<Resource>> nodeResources) {
+    flowVars.Clear();
     foreach (var edge in edges) {
       if (!nodeResources.TryGetValue(edge.Child, out var childRes)) continue;
       foreach (var res in childRes) {
@@ -311,395 +319,196 @@ public class ResourceSolver {
         });
       }
     }
-    return flowVars;
   }
 
-  private List<ConservationEntry> BuildConservationEntries(
-      Dictionary<Node, HashSet<Resource>> nodeResources) {
-    var entries = new List<ConservationEntry>();
-    foreach (var kvp in nodeResources)
-      foreach (var res in kvp.Value)
-        entries.Add(new ConservationEntry { Node = kvp.Key, Resource = res });
-    return entries;
+  private void BuildConservationEntries(Dictionary<Node, HashSet<Resource>> nodeResources) {
+    conservationEntries.Clear();
+    conservationByNodeRes.Clear();
+    foreach (var kvp in nodeResources) {
+      foreach (var res in kvp.Value) {
+        var entry = new ConservationEntry { Node = kvp.Key, Resource = res };
+        conservationEntries.Add(entry);
+        conservationByNodeRes[(kvp.Key, res)] = entry;
+      }
+    }
   }
 
-  // ── LP construction ──────────────────────────────────────────────────
-
-  private class LPInstance {
-    public Solver Solver;
-    public Dictionary<Device, Variable> DeviceVars;
-    public Dictionary<Converter, Variable> ConverterVars;
-    public Dictionary<Pool, Variable> PoolVars;
-    public Dictionary<Pool, Variable> FillVars;
-    public Dictionary<FlowVar, Variable> FlowVarMap;
-    public Dictionary<ConservationEntry, Constraint> ConservationMap;
+  private ConservationEntry ConservationFor(Node node, Resource res) {
+    return conservationByNodeRes.TryGetValue((node, res), out var entry) ? entry : null;
   }
 
-  private LPInstance BuildLP(
-      Dictionary<(Node, Resource), double> fixedSupply,
-      List<Pool> supplyPools,
-      List<Pool> fillPools,
-      Dictionary<Device, double> pinnedDevices,
-      Dictionary<Converter, double> pinnedConverters,
-      List<FlowVar> flowVars,
-      List<ConservationEntry> conservationEntries) {
+  // ── One-shot LP construction ─────────────────────────────────────────
 
-    var solver = Solver.CreateSolver("GLOP");
+  private void BuildLP() {
+    lpSolver = Solver.CreateSolver("GLOP");
 
-    // Device activity variables.
-    var deviceVars = new Dictionary<Device, Variable>();
+    // Device variables.
     int di = 0;
-    foreach (var node in nodes) {
-      foreach (var device in node.devices) {
-        double ub = node.Jettisoned ? 0 : device.Demand;
-        if (pinnedDevices != null && pinnedDevices.TryGetValue(device, out var pinned))
-          ub = Math.Min(ub, pinned + 1e-9);
-        var lb = pinnedDevices != null && pinnedDevices.TryGetValue(device, out var pLb)
-          ? Math.Max(0, pLb - 1e-9) : 0;
-        deviceVars[device] = solver.MakeNumVar(lb, ub, $"d_{di++}");
-      }
-    }
+    foreach (var node in nodes)
+      foreach (var device in node.devices)
+        device.Var = lpSolver.MakeNumVar(0, double.PositiveInfinity, $"d_{di++}");
 
-    // Converter activity variables.
-    var converterVars = new Dictionary<Converter, Variable>();
-    int ci = 0;
-    foreach (var node in nodes) {
-      foreach (var converter in node.converters) {
-        double ub = node.Jettisoned ? 0 : 1;
-        if (pinnedConverters != null && pinnedConverters.TryGetValue(converter, out var pinned))
-          ub = Math.Min(ub, pinned + 1e-9);
-        var lb = pinnedConverters != null && pinnedConverters.TryGetValue(converter, out var cLb)
-          ? Math.Max(0, cLb - 1e-9) : 0;
-        converterVars[converter] = solver.MakeNumVar(lb, ub, $"c_{ci++}");
-      }
-    }
-
-    // Pool supply variables.
-    var poolVars = new Dictionary<Pool, Variable>();
-    foreach (var pool in supplyPools) {
-      poolVars[pool] = solver.MakeNumVar(0, pool.MaxSupplyRate,
+    // Pool supply + fill variables.
+    foreach (var pool in pools) {
+      pool.SupplyVar = lpSolver.MakeNumVar(0, double.PositiveInfinity,
         $"s_{pool.Node.id}_{pool.Resource.Abbreviation}");
-    }
-
-    // Pool fill variables.
-    var fillVarMap = new Dictionary<Pool, Variable>();
-    foreach (var pool in fillPools) {
-      fillVarMap[pool] = solver.MakeNumVar(0, pool.MaxFillRate,
-        $"fill_{pool.Node.id}_{pool.Resource.Abbreviation}");
+      pool.FillVar = lpSolver.MakeNumVar(0, double.PositiveInfinity,
+        $"f_{pool.Node.id}_{pool.Resource.Abbreviation}");
     }
 
     // Flow variables.
-    var flowVarMapResult = new Dictionary<FlowVar, Variable>();
     int fi = 0;
     foreach (var fv in flowVars) {
-      var lb = double.NegativeInfinity;
-      var fub = fv.UpOnly ? 0 : double.PositiveInfinity;
-      flowVarMapResult[fv] = solver.MakeNumVar(lb, fub,
-        $"f_{fv.Parent.id}_{fv.Child.id}_{fv.Resource.Abbreviation}_{fi++}");
+      double lb = double.NegativeInfinity;
+      double ub = fv.UpOnly ? 0 : double.PositiveInfinity;
+      fv.Var = lpSolver.MakeNumVar(lb, ub,
+        $"flow_{fv.Parent.id}_{fv.Child.id}_{fv.Resource.Abbreviation}_{fi++}");
     }
 
-    // Conservation constraints.
-    var conservationMap = new Dictionary<ConservationEntry, Constraint>();
-    foreach (var entry in conservationEntries) {
-      var committed = fixedSupply.TryGetValue((entry.Node, entry.Resource), out var fs) ? fs : 0;
-      conservationMap[entry] = solver.MakeConstraint(-committed, -committed,
+    // Conservation equality constraints (RHS reset per tick to 0,0 since
+    // we no longer accumulate fixedSupply across passes).
+    foreach (var entry in conservationEntries)
+      entry.Eq = lpSolver.MakeConstraint(0, 0,
         $"Cons_{entry.Node.id}_{entry.Resource.Abbreviation}");
-    }
 
-    // Wire device inputs into conservation (consumption = negative).
-    foreach (var node in nodes) {
+    // Wire device input (consumption, -maxRate) and output (production,
+    // +maxRate) coefficients. Topology-constant.
+    foreach (var node in nodes)
       foreach (var device in node.devices) {
         foreach (var (res, maxRate) in device.inputs) {
-          var entry = FindConservation(conservationEntries, node, res);
+          var entry = ConservationFor(node, res);
           if (entry != null)
-            conservationMap[entry].SetCoefficient(deviceVars[device], -maxRate);
+            entry.Eq.SetCoefficient(device.Var, -maxRate);
         }
+        foreach (var (res, maxRate) in device.outputs) {
+          var entry = ConservationFor(node, res);
+          if (entry != null)
+            entry.Eq.SetCoefficient(device.Var, maxRate);
+        }
+      }
+
+    // Wire pool supply (+1) and fill (-1) into conservation.
+    foreach (var pool in pools) {
+      var entry = ConservationFor(pool.Node, pool.Resource);
+      if (entry != null) {
+        entry.Eq.SetCoefficient(pool.SupplyVar, 1);
+        entry.Eq.SetCoefficient(pool.FillVar, -1);
       }
     }
 
-    // Wire converter inputs/outputs into conservation.
-    foreach (var node in nodes) {
-      foreach (var converter in node.converters) {
-        foreach (var (res, maxRate) in converter.inputs) {
-          var entry = FindConservation(conservationEntries, node, res);
-          if (entry != null)
-            conservationMap[entry].SetCoefficient(converterVars[converter], -maxRate);
-        }
-        foreach (var (res, maxRate) in converter.outputs) {
-          var entry = FindConservation(conservationEntries, node, res);
-          if (entry != null)
-            conservationMap[entry].SetCoefficient(converterVars[converter], maxRate);
-        }
-      }
-    }
-
-    // Wire pool supply into conservation (supply = positive).
-    foreach (var pool in supplyPools) {
-      var entry = FindConservation(conservationEntries, pool.Node, pool.Resource);
-      if (entry != null)
-        conservationMap[entry].SetCoefficient(poolVars[pool], 1);
-    }
-
-    // Wire pool fill into conservation (fill = negative).
-    foreach (var pool in fillPools) {
-      var entry = FindConservation(conservationEntries, pool.Node, pool.Resource);
-      if (entry != null)
-        conservationMap[entry].SetCoefficient(fillVarMap[pool], -1);
-    }
-
-    // Wire flow variables into conservation.
-    // Positive flow = parent → child. Parent loses (-1), child gains (+1).
+    // Wire flow variables (positive flow = parent→child: parent loses, child gains).
     foreach (var fv in flowVars) {
-      var parentEntry = FindConservation(conservationEntries, fv.Parent, fv.Resource);
-      var childEntry = FindConservation(conservationEntries, fv.Child, fv.Resource);
+      var parentEntry = ConservationFor(fv.Parent, fv.Resource);
+      var childEntry = ConservationFor(fv.Child, fv.Resource);
       if (parentEntry != null)
-        conservationMap[parentEntry].SetCoefficient(flowVarMapResult[fv], -1);
+        parentEntry.Eq.SetCoefficient(fv.Var, -1);
       if (childEntry != null)
-        conservationMap[childEntry].SetCoefficient(flowVarMapResult[fv], 1);
+        childEntry.Eq.SetCoefficient(fv.Var, 1);
     }
 
-    // Parent constraints: converter.activity <= parent.activity.
+    // Parent constraints: device.activity ≤ parent.activity. One-way only —
+    // alternator-on-engine: alt is bounded by engine, but engine is free
+    // to be at full throttle even when alt's output has nowhere to go.
+    foreach (var node in nodes)
+      foreach (var device in node.devices) {
+        if (device.parent == null) continue;
+        var c = lpSolver.MakeConstraint(double.NegativeInfinity, 0,
+          $"Parent_{device.Var.Name()}");
+        c.SetCoefficient(device.Var, 1);
+        c.SetCoefficient(device.parent.Var, -1);
+      }
+
+    // Pre-allocate sum-pin constraints (one per device priority level).
+    // Coefficients are 1 on every device of that priority — topology-constant.
+    // Per-tick we toggle bounds (-inf,+inf for inactive, [lb,+inf] for active).
+    devicePin = new Constraint[PriorityCount];
+    for (int i = 0; i < PriorityCount; i++) {
+      var pri = (Priority)i;
+      devicePin[i] = lpSolver.MakeConstraint(double.NegativeInfinity, double.PositiveInfinity,
+        $"PinSat_{pri}");
+      foreach (var node in nodes)
+        foreach (var device in node.devices)
+          if (device.priority == pri)
+            devicePin[i].SetCoefficient(device.Var, 1);
+    }
+
+    // Pre-build the drain cost objective expression. Per-pool weight =
+    // Epsilon (uniform tie-breaker) + (MaxDP − DP) × Step (staging order)
+    // + drainCosts[res] (caller override). FillVar is intentionally NOT
+    // costed — that asymmetry is what prevents simultaneous drain+fill at
+    // the same pool and cross-pool sloshing.
+    if (pools.Count > 0) {
+      drainCostExpr = new LinearExpr();
+      foreach (var pool in pools) {
+        var dc = drainCosts.TryGetValue(pool.Resource, out var c) ? c : 0;
+        var weight = DefaultDrainEpsilon
+                     + (maxDrainPriority - pool.DrainPriority) * DrainPriorityStep
+                     + dc;
+        drainCostExpr += pool.SupplyVar * weight;
+      }
+    }
+  }
+
+  // ── Per-tick reset ──────────────────────────────────────────────────
+
+  private void ResetPerTickBounds() {
+    // Device UBs from current state. Demand is the per-tick LP target;
+    // MaxActivity is a separate cap (binary deploy/shadow toggle for
+    // solar). Jettisoned nodes pin everything at 0.
     foreach (var node in nodes) {
-      foreach (var converter in node.converters) {
-        if (converter.parent == null) continue;
-        var c = solver.MakeConstraint(double.NegativeInfinity, 0,
-          $"Parent_{converterVars[converter].Name()}");
-        c.SetCoefficient(converterVars[converter], 1);
-        c.SetCoefficient(deviceVars[converter.parent], -1);
+      bool jett = node.Jettisoned;
+      foreach (var device in node.devices) {
+        var ub = jett ? 0 : Math.Min(device.Demand, device.MaxActivity);
+        if (ub < 0) ub = 0;
+        device.Var.SetBounds(0, ub);
       }
     }
 
-    return new LPInstance {
-      Solver = solver,
-      DeviceVars = deviceVars,
-      ConverterVars = converterVars,
-      PoolVars = poolVars,
-      FillVars = fillVarMap,
-      FlowVarMap = flowVarMapResult,
-      ConservationMap = conservationMap,
-    };
+    // Pool supply + fill UBs from buffer state. Both always enabled.
+    foreach (var pool in pools) {
+      pool.SupplyVar.SetBounds(0, pool.MaxSupplyRate);
+      pool.FillVar.SetBounds(0, pool.MaxFillRate);
+    }
+
+    // Conservation RHS resets to (0, 0) — single-pass solve, no committed
+    // accumulator carryover.
+    foreach (var entry in conservationEntries)
+      entry.Eq.SetBounds(0, 0);
+
+    // All sum-pin constraints inactive — populated as priority loop runs.
+    foreach (var pin in devicePin)
+      pin.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
   }
 
-  private static LinearExpr SumDeviceActivity(LPInstance lp, Priority? priority = null) {
+  // ── Objective helpers ────────────────────────────────────────────────
+
+  private LinearExpr SumDeviceActivity(Priority priority) {
     var expr = new LinearExpr();
-    foreach (var kvp in lp.DeviceVars) {
-      if (priority == null || kvp.Key.priority == priority)
-        expr += kvp.Value;
-    }
+    foreach (var node in nodes)
+      foreach (var device in node.devices)
+        if (device.priority == priority)
+          expr += device.Var;
     return expr;
-  }
-
-  private static ConservationEntry FindConservation(
-      List<ConservationEntry> entries, Node node, Resource resource) {
-    return entries.FirstOrDefault(e => e.Node == node && e.Resource == resource);
-  }
-
-  // ── Solve phases ─────────────────────────────────────────────────────
-
-  private void RunPriorityPass(
-      List<Pool> activePools,
-      Dictionary<(Node, Resource), double> fixedSupply,
-      Dictionary<Pool, double> poolDrainRates,
-      Dictionary<Device, double> deviceActivities,
-      Dictionary<Converter, double> converterActivities,
-      List<FlowVar> flowVars,
-      List<ConservationEntry> conservationEntries,
-      IEnumerable<Priority> devicePriorities) {
-
-    var lp = BuildLP(fixedSupply, activePools, new List<Pool>(),
-      null, null, flowVars, conservationEntries);
-
-    // Pin device activities from previous drain priority passes as LOWER bounds only.
-    // Devices can increase their activity as more supply becomes available from
-    // lower-priority drain pools — they just can't regress.
-    foreach (var kvp in deviceActivities) {
-      if (lp.DeviceVars.TryGetValue(kvp.Key, out var v)) {
-        v.SetBounds(Math.Max(0, kvp.Value - 1e-9),
-          kvp.Key.node.Jettisoned ? 0 : kvp.Key.Demand);
-      }
-    }
-
-    // Satisfy device priorities sequentially within this LP.
-    foreach (var devPri in devicePriorities) {
-      lp.Solver.Maximize(SumDeviceActivity(lp, devPri));
-      if (lp.Solver.Solve() != Solver.ResultStatus.OPTIMAL) return;
-
-      var aStar = lp.Solver.Objective().Value();
-      if (aStar > 1e-9) {
-        // Pin this priority's satisfaction before solving the next.
-        var pin = lp.Solver.MakeConstraint(aStar - 1e-9, double.PositiveInfinity, $"PinSat_{devPri}");
-        foreach (var kvp in lp.DeviceVars)
-          if (kvp.Key.priority == devPri)
-            pin.SetCoefficient(kvp.Value, 1);
-      }
-    }
-
-    // All device priorities satisfied. Now minimize cost.
-    var costExpr = new LinearExpr();
-    bool hasCost = false;
-    foreach (var kvp in lp.ConverterVars) {
-      if (kvp.Key.Cost > 0) {
-        costExpr += kvp.Value * kvp.Key.Cost;
-        hasCost = true;
-      }
-    }
-    foreach (var kvp in lp.PoolVars) {
-      var drainCost = drainCosts.TryGetValue(kvp.Key.Resource, out var dc) ? dc : 0;
-      if (drainCost > 0) {
-        costExpr += kvp.Value * drainCost;
-        hasCost = true;
-      }
-    }
-    if (hasCost) {
-      lp.Solver.Minimize(costExpr);
-      lp.Solver.Solve();
-    }
-
-    // Fair distribution among pools.
-    if (activePools.Count > 1) {
-      if (hasCost) {
-        var costVal = lp.Solver.Objective().Value();
-        var pinCost = lp.Solver.MakeConstraint(double.NegativeInfinity, costVal + 1e-9, "PinCost");
-        foreach (var kvp in lp.ConverterVars)
-          if (kvp.Key.Cost > 0) pinCost.SetCoefficient(kvp.Value, kvp.Key.Cost);
-        foreach (var kvp in lp.PoolVars) {
-          var dc = drainCosts.TryGetValue(kvp.Key.Resource, out var c) ? c : 0;
-          if (dc > 0) pinCost.SetCoefficient(kvp.Value, dc);
-        }
-      }
-
-      var z = lp.Solver.MakeNumVar(0, double.PositiveInfinity, "z");
-      foreach (var pool in activePools) {
-        var amount = pool.TotalAmount;
-        if (amount < 1e-9) continue;
-        var fair = lp.Solver.MakeConstraint(double.NegativeInfinity, 0,
-          $"Fair_{pool.Node.id}_{pool.Resource.Abbreviation}");
-        fair.SetCoefficient(lp.PoolVars[pool], 1);
-        fair.SetCoefficient(z, -amount);
-      }
-      lp.Solver.Minimize(z);
-      lp.Solver.Solve();
-    }
-
-    // Re-solve to ensure solution is current after constraint additions.
-    // Use cost minimization if available, otherwise neutral objective.
-    if (hasCost) {
-      lp.Solver.Minimize(costExpr);
-    } else {
-      lp.Solver.Minimize(new LinearExpr());
-    }
-    lp.Solver.Solve();
-
-    // Final snapshot.
-    foreach (var kvp in lp.DeviceVars)
-      deviceActivities[kvp.Key] = kvp.Value.SolutionValue();
-    foreach (var kvp in lp.ConverterVars)
-      converterActivities[kvp.Key] = kvp.Value.SolutionValue();
-
-    // Commit pool supply.
-    foreach (var pool in activePools) {
-      var rate = lp.PoolVars[pool].SolutionValue();
-      poolDrainRates[pool] = rate;
-      var key = (pool.Node, pool.Resource);
-      if (!fixedSupply.ContainsKey(key)) fixedSupply[key] = 0;
-      fixedSupply[key] += rate;
-    }
-  }
-
-  private void RunFillPass(
-      List<Pool> fillPools,
-      Dictionary<(Node, Resource), double> fixedSupply,
-      Dictionary<Pool, double> poolDrainRates,
-      Dictionary<Device, double> deviceActivities,
-      Dictionary<Converter, double> converterActivities,
-      List<FlowVar> flowVars,
-      List<ConservationEntry> conservationEntries) {
-
-    var lp = BuildLP(fixedSupply, new List<Pool>(), fillPools,
-      deviceActivities, null, flowVars, conservationEntries);
-
-    // Step 5: maximize fill.
-    var fillGoal = new LinearExpr();
-    foreach (var kvp in lp.FillVars)
-      fillGoal += kvp.Value;
-    lp.Solver.Maximize(fillGoal);
-    var status = lp.Solver.Solve();
-    if (status != Solver.ResultStatus.OPTIMAL) return;
-
-    // Snapshot after step 5.
-    foreach (var kvp in lp.ConverterVars)
-      converterActivities[kvp.Key] = kvp.Value.SolutionValue();
-    var fillSnapshot = new Dictionary<Pool, double>();
-    foreach (var pool in fillPools)
-      if (lp.FillVars.TryGetValue(pool, out var fv))
-        fillSnapshot[pool] = fv.SolutionValue();
-
-    // Step 6: pin fill, minimize cost.
-    var fillStar = lp.Solver.Objective().Value();
-    if (fillStar > 1e-9) {
-      var pinFill = lp.Solver.MakeConstraint(fillStar - 1e-9, double.PositiveInfinity, "PinFill");
-      foreach (var kvp in lp.FillVars)
-        pinFill.SetCoefficient(kvp.Value, 1);
-
-      var costExpr = new LinearExpr();
-      bool hasCost = false;
-      foreach (var kvp in lp.ConverterVars) {
-        if (kvp.Key.Cost > 0) {
-          costExpr += kvp.Value * kvp.Key.Cost;
-          hasCost = true;
-        }
-      }
-      if (hasCost) {
-        lp.Solver.Minimize(costExpr);
-        if (lp.Solver.Solve() == Solver.ResultStatus.OPTIMAL) {
-          foreach (var kvp in lp.ConverterVars)
-            converterActivities[kvp.Key] = kvp.Value.SolutionValue();
-          foreach (var pool in fillPools)
-            if (lp.FillVars.TryGetValue(pool, out var fv2))
-              fillSnapshot[pool] = fv2.SolutionValue();
-        }
-      }
-    }
-
-    // Record fill rates.
-    foreach (var pool in fillPools) {
-      var fillRate = fillSnapshot.TryGetValue(pool, out var snap) ? snap : 0;
-      if (!poolDrainRates.ContainsKey(pool))
-        poolDrainRates[pool] = 0;
-      poolDrainRates[pool] -= fillRate; // negative = filling
-    }
   }
 
   // ── Result extraction ────────────────────────────────────────────────
 
-  private void ExtractResults(
-      Dictionary<Device, double> deviceActivities,
-      Dictionary<Converter, double> converterActivities,
-      Dictionary<Pool, double> poolDrainRates,
-      List<Pool> pools) {
-
-    // Write device activities.
+  private void ExtractResults() {
     foreach (var node in nodes) {
-      foreach (var device in node.devices) {
-        device.Activity = node.Jettisoned ? 0
-          : deviceActivities.TryGetValue(device, out var a) ? a : 0;
-      }
+      foreach (var device in node.devices)
+        device.Activity = node.Jettisoned ? 0 : device.Var.SolutionValue();
     }
 
-    // Write converter activities.
-    foreach (var node in nodes) {
-      foreach (var converter in node.converters)
-        converter.Activity = node.Jettisoned ? 0
-          : converterActivities.TryGetValue(converter, out var a) ? a : 0;
-    }
-
-    // Distribute pool drain/fill rates to individual buffers.
     foreach (var pool in pools) {
       if (pool.Node.Jettisoned) {
         foreach (var tank in pool.Tanks) tank.Rate = 0;
         continue;
       }
-      var netRate = poolDrainRates.TryGetValue(pool, out var r) ? r : 0;
+      // Net rate from buffer's perspective: SupplyVar drains, FillVar fills.
+      // Positive netRate = drain (buffer loses); negative = fill.
+      var supply = pool.SupplyVar.SolutionValue();
+      var fill = pool.FillVar.SolutionValue();
+      var netRate = supply - fill;
       var totalAmount = pool.TotalAmount;
       foreach (var tank in pool.Tanks) {
         if (netRate > 0) {

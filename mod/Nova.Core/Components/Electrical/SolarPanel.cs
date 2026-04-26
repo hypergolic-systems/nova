@@ -18,16 +18,25 @@ public class SolarPanel : VirtualComponent {
   public bool IsSunlit = true;
   public double ShadowTransitionUT = double.PositiveInfinity;
 
-  private ResourceSolver.Converter converter;
+  private ResourceSolver.Device device;
 
   public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
-    converter = node.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, EffectiveRate);
+    device = node.AddDevice(ResourceSolver.Priority.Low);
+    // Topology coefficient is the panel's rated max. Per-tick gating
+    // (deploy state + sun visibility) happens via MaxActivity, and the
+    // sun-angle / exposure scale lives in EffectiveRate (set by
+    // ComputeSolarRates / SolarOptimizer at deploy events).
+    device.AddOutput(Resource.ElectricCharge, ChargeRate);
+    device.Demand = 1.0;
   }
 
   public override void OnPreSolve() {
-    if (converter == null || converter.outputs.Count == 0) return;
-    double rate = IsSunlit ? EffectiveRate : 0;
-    converter.outputs[0] = (Resource.ElectricCharge, rate);
-    converter.ValidUntil = ShadowTransitionUT;
-  }}
+    if (device == null) return;
+    // Binary on/off based on deploy state + sun visibility. Magnitude
+    // when on is EffectiveRate / ChargeRate (≤ 1), so the LP variable
+    // tops out at the optimal-orientation rate, not the rated rate.
+    var scale = ChargeRate > 1e-9 ? EffectiveRate / ChargeRate : 0;
+    device.MaxActivity = (IsDeployed && IsSunlit) ? scale : 0;
+    device.ValidUntil = ShadowTransitionUT;
+  }
+}

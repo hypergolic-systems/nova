@@ -318,7 +318,7 @@ public class NovaVesselModule : VesselModule {
     if (solarDataDirty) {
       solarDataDirty = false;
       Virtual.ComputeSolarRates();
-      NeedsSolverRebuild = true;
+      Virtual.Invalidate();
     }
     if (NeedsSolverRebuild) {
       NeedsSolverRebuild = false;

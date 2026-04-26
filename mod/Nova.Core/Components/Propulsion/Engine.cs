@@ -43,7 +43,7 @@ public class Engine : VirtualComponent {
   private double batchMass; // kg per recipe batch
 
   private ResourceSolver.Device device;
-  private ResourceSolver.Converter alternator;
+  private ResourceSolver.Device alternator;
 
   public void Initialize(double thrust, double isp, double alternatorRate,
       List<(Resource resource, double ratio)> propellants) {
@@ -98,9 +98,13 @@ public class Engine : VirtualComponent {
       device.AddInput(prop.Resource, prop.MaxFlow);
 
     if (AlternatorRate > 0) {
-      alternator = node.AddConverter();
-      alternator.AddParent(device);
+      alternator = node.AddDevice(ResourceSolver.Priority.Low);
       alternator.AddOutput(Resource.ElectricCharge, AlternatorRate);
+      alternator.AddParent(device);
+      // Demand=1 keeps sum-max trying to drive alt up; the parent constraint
+      // caps it at engine activity, and conservation drops it back down when
+      // there's no EC sink (battery full + no consumer).
+      alternator.Demand = 1.0;
     }
   }
 

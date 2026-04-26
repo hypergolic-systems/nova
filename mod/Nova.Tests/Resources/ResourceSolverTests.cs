@@ -10,12 +10,13 @@ namespace Nova.Tests.Resources;
 public class ResourceSolverTests {
 
   [TestMethod]
-  public void ConverterSuppliesDevice() {
+  public void ProducerSuppliesDevices() {
     var solver = new ResourceSolver();
     var node = solver.AddNode();
 
-    var converter = node.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, 100);
+    var producer = node.AddDevice(ResourceSolver.Priority.Low);
+    producer.AddOutput(Resource.ElectricCharge, 100);
+    producer.Demand = 1.0;
 
     var d1 = node.AddDevice(ResourceSolver.Priority.Low);
     d1.AddInput(Resource.ElectricCharge, 10);
@@ -29,16 +30,17 @@ public class ResourceSolverTests {
 
     Assert.AreEqual(1.0, d1.Activity, 0.01);
     Assert.AreEqual(1.0, d2.Activity, 0.01);
-    Assert.AreEqual(0.35, converter.Activity, 0.01);
+    Assert.AreEqual(0.35, producer.Activity, 0.01);
   }
 
   [TestMethod]
-  public void BufferDrainWhenConverterInsufficient() {
+  public void BufferDrainWhenProducerInsufficient() {
     var solver = new ResourceSolver();
     var node = solver.AddNode();
 
-    var converter = node.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, 10);
+    var producer = node.AddDevice(ResourceSolver.Priority.Low);
+    producer.AddOutput(Resource.ElectricCharge, 10);
+    producer.Demand = 1.0;
 
     var buf = node.AddBuffer(Resource.ElectricCharge, 100);
     buf.FlowLimits(10, 10);
@@ -51,7 +53,7 @@ public class ResourceSolverTests {
     solver.Solve();
 
     Assert.AreEqual(1.0, d.Activity, 0.01);
-    Assert.AreEqual(1.0, converter.Activity, 0.01);
+    Assert.AreEqual(1.0, producer.Activity, 0.01);
     Assert.AreEqual(-5, buf.Rate, 0.5);
   }
 
@@ -206,8 +208,9 @@ public class ResourceSolverTests {
     var solver = new ResourceSolver();
     var node = solver.AddNode();
 
-    var converter = node.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, 10);
+    var producer = node.AddDevice(ResourceSolver.Priority.Low);
+    producer.AddOutput(Resource.ElectricCharge, 10);
+    producer.Demand = 1.0;
 
     var buf = node.AddBuffer(Resource.ElectricCharge, 100);
     buf.FlowLimits(10, 10);
@@ -225,7 +228,7 @@ public class ResourceSolverTests {
 
   [TestMethod]
   public void ParentConstraint() {
-    // Alternator: converter bounded by engine activity.
+    // Alternator: producer device bounded by engine activity.
     var solver = new ResourceSolver();
     var node = solver.AddNode();
 
@@ -237,9 +240,10 @@ public class ResourceSolverTests {
     engine.AddInput(Resource.RP1, 30);
     engine.Demand = 0.5; // 50% throttle
 
-    var alternator = node.AddConverter();
-    alternator.AddParent(engine);
+    var alternator = node.AddDevice(ResourceSolver.Priority.Low);
     alternator.AddOutput(Resource.ElectricCharge, 10);
+    alternator.AddParent(engine);
+    alternator.Demand = 1.0;
 
     var light = node.AddDevice(ResourceSolver.Priority.Low);
     light.AddInput(Resource.ElectricCharge, 20);
@@ -256,7 +260,7 @@ public class ResourceSolverTests {
 
   [TestMethod]
   public void ParentConstraintNoBackpressure() {
-    // No EC demand → alternator at 0, engine unaffected.
+    // No EC demand, no buffer → alternator at 0, engine unaffected.
     var solver = new ResourceSolver();
     var node = solver.AddNode();
 
@@ -268,9 +272,10 @@ public class ResourceSolverTests {
     engine.AddInput(Resource.RP1, 30);
     engine.Demand = 1.0;
 
-    var alternator = node.AddConverter();
-    alternator.AddParent(engine);
+    var alternator = node.AddDevice(ResourceSolver.Priority.Low);
     alternator.AddOutput(Resource.ElectricCharge, 10);
+    alternator.AddParent(engine);
+    alternator.Demand = 1.0;
 
     solver.Solve();
 
@@ -296,9 +301,10 @@ public class ResourceSolverTests {
     engine.AddInput(Resource.RP1, 30);
     engine.Demand = 1.0;
 
-    var alternator = node.AddConverter();
-    alternator.AddParent(engine);
+    var alternator = node.AddDevice(ResourceSolver.Priority.Low);
     alternator.AddOutput(Resource.ElectricCharge, 7);
+    alternator.AddParent(engine);
+    alternator.Demand = 1.0;
 
     var light = node.AddDevice(ResourceSolver.Priority.Low);
     light.AddInput(Resource.ElectricCharge, 5);
@@ -310,57 +316,6 @@ public class ResourceSolverTests {
     Assert.AreEqual(1.0, light.Activity, 0.01, "Light fully satisfied from alternator");
     Assert.IsTrue(alternator.Activity > 0.7, $"Alternator should run, got {alternator.Activity}");
     Assert.IsTrue(battery.Rate >= 0, $"Battery should not drain (alternator covers demand), rate={battery.Rate}");
-  }
-
-  [TestMethod]
-  public void CostMinimization() {
-    // Two converters, different costs. Solver should prefer cheaper.
-    var solver = new ResourceSolver();
-    var node = solver.AddNode();
-
-    var cheap = node.AddConverter();
-    cheap.AddOutput(Resource.ElectricCharge, 10);
-    cheap.Cost = 1;
-
-    var expensive = node.AddConverter();
-    expensive.AddOutput(Resource.ElectricCharge, 10);
-    expensive.Cost = 10;
-
-    var d = node.AddDevice(ResourceSolver.Priority.Low);
-    d.AddInput(Resource.ElectricCharge, 8);
-    d.Demand = 1.0;
-
-    solver.Solve();
-
-    Assert.AreEqual(1.0, d.Activity, 0.01);
-    Assert.AreEqual(0.8, cheap.Activity, 0.01, "Cheap converter should run");
-    Assert.AreEqual(0, expensive.Activity, 0.01, "Expensive converter should not run");
-  }
-
-  [TestMethod]
-  public void DrainCost() {
-    // Converter (cost 1) vs buffer drain (drain cost 10). Prefer converter.
-    var solver = new ResourceSolver();
-    solver.SetDrainCost(Resource.ElectricCharge, 10);
-    var node = solver.AddNode();
-
-    var converter = node.AddConverter();
-    converter.AddOutput(Resource.ElectricCharge, 20);
-    converter.Cost = 1;
-
-    var buf = node.AddBuffer(Resource.ElectricCharge, 100);
-    buf.FlowLimits(0, 20);
-    buf.Contents = 100;
-
-    var d = node.AddDevice(ResourceSolver.Priority.Low);
-    d.AddInput(Resource.ElectricCharge, 10);
-    d.Demand = 1.0;
-
-    solver.Solve();
-
-    Assert.AreEqual(1.0, d.Activity, 0.01);
-    Assert.AreEqual(0.5, converter.Activity, 0.01, "Converter should supply (cheaper)");
-    Assert.AreEqual(0, buf.Rate, 0.5, "Buffer should not drain");
   }
 
   [TestMethod]
@@ -431,5 +386,34 @@ public class ResourceSolverTests {
     buf.Contents = 90;
     solver.Solve();
     Assert.AreEqual(1.0, d.Activity, 0.01);
+  }
+
+  [TestMethod]
+  public void StagingDrainsHigherPriorityFirst() {
+    // Two buffers, same resource, different drain priorities. Higher-priority
+    // pool should drain first via cost-min weights.
+    var solver = new ResourceSolver();
+    var root = solver.AddNode();
+    var stage = solver.AddNode();
+    stage.DrainPriority = 1; // higher drain priority
+    solver.AddEdge(root, stage);
+
+    var rootBuf = root.AddBuffer(Resource.ElectricCharge, 100);
+    rootBuf.FlowLimits(0, 50);
+    rootBuf.Contents = 100;
+
+    var stageBuf = stage.AddBuffer(Resource.ElectricCharge, 100);
+    stageBuf.FlowLimits(0, 50);
+    stageBuf.Contents = 100;
+
+    var d = root.AddDevice(ResourceSolver.Priority.Low);
+    d.AddInput(Resource.ElectricCharge, 30);
+    d.Demand = 1.0;
+
+    solver.Solve();
+
+    Assert.AreEqual(1.0, d.Activity, 0.01);
+    Assert.IsTrue(stageBuf.Rate < -0.1, $"Stage buffer should drain first, Rate={stageBuf.Rate}");
+    Assert.AreEqual(0, rootBuf.Rate, 0.01, "Root buffer should not drain while stage has fuel");
   }
 }

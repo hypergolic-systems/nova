@@ -232,9 +232,9 @@ public class VirtualVessel {
     var earliest = double.PositiveInfinity;
     foreach (var node in solver.AllNodes()) {
       earliest = Math.Min(earliest, now + node.TimeToNextExpiry());
-      foreach (var converter in node.Converters)
-        if (converter.ValidUntil < earliest)
-          earliest = converter.ValidUntil;
+      foreach (var device in node.Devices)
+        if (device.ValidUntil < earliest)
+          earliest = device.ValidUntil;
     }
     return earliest;
   }
