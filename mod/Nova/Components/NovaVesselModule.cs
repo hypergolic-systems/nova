@@ -9,6 +9,7 @@ using Nova.Core.Flight;
 using Nova.Core.Utils;
 using Nova.Patches;
 using Nova.Persistence;
+using Nova.Telemetry;
 using Nova;
 using Proto = Nova.Core.Persistence.Protos;
 
@@ -180,6 +181,7 @@ public class NovaVesselModule : VesselModule {
     structure.PersistentId = vessel.persistentId;
     CachedStructure = structure;
     CachedStructureHash = NovaVesselBuilder.ComputeStructureHash(structure);
+    NovaVesselStructureTopic.MarkVesselDirty(vessel.id.ToString("D"));
   }
 
   private static Dictionary<uint, uint?> BuildParentMap(Vessel v) {
@@ -325,6 +327,16 @@ public class NovaVesselModule : VesselModule {
     UpdateShadowParams();
     SolveAttitude();
     Virtual.Tick(Planetarium.GetUniversalTime());
+
+    // Telemetry: post-tick part state is fresh — mark dirty so the
+    // 10 Hz broadcaster picks up new rates / SOC. Cheap O(parts) walk;
+    // the topic only emits on dirty so unsubscribed parts are no-ops.
+    if (vessel != null && vessel.parts != null) {
+      for (int i = 0; i < vessel.parts.Count; i++) {
+        var p = vessel.parts[i];
+        if (p != null) NovaPartTopic.MarkPartDirty(p.persistentId);
+      }
+    }
   }
 
   /// <summary>

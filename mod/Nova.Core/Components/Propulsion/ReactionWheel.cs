@@ -19,6 +19,7 @@ public class ReactionWheel : VirtualComponent {
   private ResourceSolver.Device device;
 
   public double Satisfaction => device != null ? device.Satisfaction : 1;
+  public double Activity => device != null ? device.Activity : 0;
 
   public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
     device = node.AddDevice(ResourceSolver.Priority.High);

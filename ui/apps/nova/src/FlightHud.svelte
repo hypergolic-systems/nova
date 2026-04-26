@@ -11,6 +11,7 @@
     SPEED_SCALE,
     ALTITUDE_SCALE,
   } from '@dragonglass/instruments';
+  import VesselPanel from './components/VesselPanel.svelte';
 
   // Layout classes (.hud, .navslot, .staging-stack, .navball-cluster) and
   // the per-instrument SVG styling are defined in flight.css inside
@@ -68,3 +69,5 @@
     </div>
   </div>
 </div>
+
+<VesselPanel />

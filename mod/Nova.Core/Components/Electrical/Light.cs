@@ -10,7 +10,8 @@ public class Light : VirtualComponent {
   private ResourceSolver.Device device;
 
   public double Satisfaction => device != null ? device.Satisfaction : 0;
-  public double ActualRate => Rate * (device != null ? device.Activity : 0);
+  public double Activity => device != null ? device.Activity : 0;
+  public double ActualRate => Rate * Activity;
 
   public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
     device = node.AddDevice(ResourceSolver.Priority.Low);

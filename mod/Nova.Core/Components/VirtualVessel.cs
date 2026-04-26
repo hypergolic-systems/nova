@@ -37,6 +37,14 @@ public class VirtualVessel {
     return part.components;
   }
 
+  public string GetPartName(uint persistentId) {
+    return parts.TryGetValue(persistentId, out var part) ? part.partName : null;
+  }
+
+  public uint? GetPartParent(uint persistentId) {
+    return partTree.TryGetValue(persistentId, out var parent) ? parent : null;
+  }
+
   /// <summary>
   /// Register a part's flight components. Called by HgsPartModule.OnStartFlight
   /// when no VirtualVessel pre-exists (case 1: vessel loaded with Parts).
