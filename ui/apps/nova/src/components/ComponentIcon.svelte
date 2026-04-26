@@ -11,7 +11,8 @@
     | 'battery'
     | 'wheel'
     | 'light'
-    | 'engine';
+    | 'engine'
+    | 'tank';
 
   let { kind }: { kind: ComponentKind } = $props();
 </script>
@@ -70,6 +71,18 @@
           stroke-width="0.95" stroke-linejoin="round" />
     <line x1="4.3" y1="3.5" x2="7.7" y2="3.5"
           stroke="currentColor" stroke-width="0.95" stroke-linecap="round" />
+  {:else if kind === 'tank'}
+    <!-- Vertical fuel tank: capsule body with two thin horizontal
+         bands suggesting the welded bulkheads at top and bottom of a
+         real propellant tank. The top band sits just below the dome
+         (y=3) and the bottom just above (y=9), giving the cylinder
+         a sense of internal structure at 12 px. -->
+    <rect x="3" y="1.5" width="6" height="9" rx="1.1"
+          stroke="currentColor" fill="none" stroke-width="0.95" />
+    <line x1="3.4" y1="3" x2="8.6" y2="3"
+          stroke="currentColor" stroke-width="0.7" stroke-linecap="round" />
+    <line x1="3.4" y1="9" x2="8.6" y2="9"
+          stroke="currentColor" stroke-width="0.7" stroke-linecap="round" />
   {/if}
 </svg>
 

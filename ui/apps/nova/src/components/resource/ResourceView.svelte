@@ -3,22 +3,25 @@
   // vessel is carrying" rather than "how the vessel uses it". Two
   // modes share the same visual rhythm:
   //
-  //   BY PART (default): each part is a collapsible node; rows show
-  //     the resources the part holds with code-tile · gauge · amount.
-  //     Resource codes still appear as a trailing summary on collapsed
-  //     part headers ("EC · MP") so closed nodes still tell you what's
-  //     inside.
+  //   BY PART (default): each part is a collapsible node with a
+  //     leading kind icon (battery / tank). Rows under it list the
+  //     resources the part holds: code-tile · gauge · amount/cap·unit.
   //
-  //   BY RESOURCE: each resource is a collapsible node with an
-  //     aggregate gauge directly under the header (mirrors Power's
-  //     STORAGE node-gauge). Per-part rows beneath show name · gauge ·
-  //     amount. Rate appears at the resource header — per-part rate
-  //     doesn't physically exist (the LP solves at node level via
-  //     crossfeed).
+  //   BY RESOURCE: each resource is a collapsible node with a leading
+  //     code tile and a full-width aggregate gauge. The aggregate
+  //     rate sits on the gauge line so the title row stays calm. Per-
+  //     part rows beneath show kind-icon · part name · gauge · amount.
   //
-  // The toggle at the top is a single LED-style control; off = parts,
-  // on = resources. Collapse state is per-mode and per-key (in-memory,
-  // resets on remount — settings persistence is a later concern).
+  // Per-resource tinting: each resource has a curated hue (LF amber,
+  // OX cyan, EC green, MP magenta, etc.) applied to the code tile and
+  // the gauge's OK colour via CSS custom properties. Severity (low
+  // fill) still flips to warn/alert across all resources — identity
+  // hues never override safety tints.
+  //
+  // Per-part rate is intentionally omitted: the LP solves at node
+  // level via crossfeed, so attributing a rate to any single tank is
+  // misleading. Aggregate rate appears once at the resource level
+  // where it physically maps to the LP solution.
 
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
@@ -26,11 +29,9 @@
   import { useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
-  import { resourceCode, resourceSortKey } from './resource-codes';
+  import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
+  import { resourceMeta, resourceSortKey } from './resource-codes';
 
-  // Anything magnitudinally below this is "zero" for color purposes —
-  // matches the threshold fmtRate floors to so the digits and tint
-  // agree.
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
 
@@ -45,37 +46,39 @@
 
   // Collapse state. A key absent from the record reads as "expanded"
   // — that way new parts/resources arrive expanded by default without
-  // needing to seed entries on each frame. Two records (one per view)
-  // so flipping the toggle doesn't carry collapse state across an
-  // entirely different tree shape.
+  // needing to seed entries on each frame.
   let partCollapsed = $state<Record<string, boolean>>({});
   let resCollapsed = $state<Record<string, boolean>>({});
-  function isPartExpanded(id: string): boolean {
-    return !partCollapsed[id];
-  }
-  function isResExpanded(id: string): boolean {
-    return !resCollapsed[id];
-  }
-  function togglePart(id: string): void {
+  const isPartExpanded = (id: string): boolean => !partCollapsed[id];
+  const isResExpanded = (id: string): boolean => !resCollapsed[id];
+  const togglePart = (id: string): void => {
     partCollapsed[id] = !partCollapsed[id];
-  }
-  function toggleRes(id: string): void {
+  };
+  const toggleRes = (id: string): void => {
     resCollapsed[id] = !resCollapsed[id];
-  }
+  };
 
-  // Filter parts whose state hasn't loaded yet, plus parts whose
-  // resources happen to all be zero-capacity (e.g. a battery with
-  // capacity 0 in some custom config). Rendering a node-head with
-  // nothing under it would just be visual noise.
   const partsWithResources = $derived.by<NovaTaggedPart[]>(() =>
     parts.current.filter((p) => (p.state?.resources?.length ?? 0) > 0),
   );
 
-  // Group resources across the whole vessel. Stable order: EC pinned
-  // first, then alphabetical by canonical name. Per-resource entries
-  // keep the part-iteration order (which is structure-topic order),
-  // so a tank that's listed first on the vessel stays first inside
-  // its resource group.
+  // Pick a kind icon for the part. Battery if its only resource is
+  // electric charge (Z-100s, the EC slot of a probe core); tank for
+  // anything else (fuel tanks, monoprop pods, command pods that hold
+  // fuel as well as EC). Falls back to tank during the brief window
+  // where state hasn't loaded — better than no icon, and correct for
+  // the common "has fuel" case.
+  function partKind(p: NovaTaggedPart): ComponentKind {
+    const rs = p.state?.resources;
+    if (!rs || rs.length === 0) return 'tank';
+    for (const r of rs) {
+      if (r.resourceId !== 'Electric Charge' && r.resourceId !== 'ElectricCharge') {
+        return 'tank';
+      }
+    }
+    return 'battery';
+  }
+
   interface ResourceGroup {
     resourceId: string;
     entries: { part: NovaTaggedPart; flow: NovaResourceFlow }[];
@@ -112,9 +115,6 @@
   });
 
   function fmtAmount(v: number): string {
-    // Whole-unit precision is the common readout convention for
-    // resource gauges; anything finer than 1 unit is dust at panel
-    // scale and the gauge already shows fill fraction.
     return Math.round(v).toString();
   }
 
@@ -125,18 +125,13 @@
     else if (abs >= 100) mag = abs.toFixed(0);
     else if (abs >= 10) mag = abs.toFixed(1);
     else mag = abs.toFixed(2);
-    // Reserve a fixed-width sign slot so a value flipping sign
-    // doesn't shift everything to its left.
     return (value < 0 ? '-' : ' ') + mag;
   }
 
-  function fillFraction(amount: number, capacity: number): number {
-    return capacity > 0 ? amount / capacity : 0;
-  }
+  const fillFraction = (amount: number, capacity: number): number =>
+    capacity > 0 ? amount / capacity : 0;
 
-  // Hover highlight — same channel Power uses (DG's StageTopic).
-  // Always clear on leave; clear on unmount so the highlight doesn't
-  // ghost on after the panel detaches.
+  // Hover highlight forwards to the same StageTopic channel Power uses.
   const stageOps = useStageOps();
   const highlightOn = (ids: readonly string[]): void =>
     stageOps.setHighlightParts(ids);
@@ -160,10 +155,27 @@
   </p>
 {/snippet}
 
+{#snippet codeTile(name: string, lead: boolean = false)}
+  {@const m = resourceMeta(name)}
+  <span
+    class="rsv__code"
+    class:rsv__code--lead={lead}
+    style:--rsv-tile-color={m.color}
+    style:--rsv-tile-tint={m.tint}
+  >{m.code}</span>
+{/snippet}
+
+{#snippet amountReadout(amount: number, capacity: number, unit: string)}
+  <span class="rsv__amount">
+    <span class="rsv__amount-val">{fmtAmount(amount)}</span><span
+      class="rsv__amount-cap">/{fmtAmount(capacity)}</span><span
+      class="rsv__amount-unit">{unit}</span>
+  </span>
+{/snippet}
+
 <section class="rsv">
   <!-- Mode toggle. A single click target — the LED indicator and the
-       label both flip together. "BY RESOURCE" off = parts list (the
-       default); on = resources tree. -->
+       label both flip together. -->
   <button
     type="button"
     class="rsv__opt"
@@ -192,29 +204,35 @@
             onmouseleave={highlightOff}
           >
             {@render chev(open)}
+            <span class="rsv__node-icon">
+              <ComponentIcon kind={partKind(p)} />
+            </span>
             <span class="rsv__node-title">{p.struct.title}</span>
             <span class="rsv__node-summary">
               {#each p.state!.resources as r, i (r.resourceId)}
                 {#if i > 0}<span class="rsv__node-summary-sep">·</span>{/if}
-                <span class="rsv__node-summary-code">
-                  {resourceCode(r.resourceId)}
-                </span>
+                <span
+                  class="rsv__node-summary-code"
+                  style:color={resourceMeta(r.resourceId).color}
+                >{resourceMeta(r.resourceId).code}</span>
               {/each}
             </span>
           </button>
           {#if open}
             <ul class="rsv__rows">
               {#each p.state!.resources as r (r.resourceId)}
+                {@const m = resourceMeta(r.resourceId)}
                 {@const frac = fillFraction(r.amount, r.capacity)}
                 <li class="rsv__row">
-                  <span class="rsv__code">{resourceCode(r.resourceId)}</span>
-                  <div class="rsv__row-gauge">
+                  {@render codeTile(r.resourceId)}
+                  <div
+                    class="rsv__row-gauge"
+                    style:--sg-color-tint={m.color}
+                    style:--sg-glow-tint={m.glow}
+                  >
                     <SegmentGauge fraction={frac} />
                   </div>
-                  <span class="rsv__amount">
-                    <span class="rsv__amount-val">{fmtAmount(r.amount)}</span>
-                    <span class="rsv__amount-cap">/{fmtAmount(r.capacity)}</span>
-                  </span>
+                  {@render amountReadout(r.amount, r.capacity, m.unit)}
                 </li>
               {/each}
             </ul>
@@ -229,6 +247,7 @@
     {:else}
       {#each resourceGroups as g (g.resourceId)}
         {@const open = isResExpanded(g.resourceId)}
+        {@const m = resourceMeta(g.resourceId)}
         {@const frac = fillFraction(g.totalAmount, g.totalCapacity)}
         {@const groupIds = g.entries.map((e) => e.part.struct.id)}
         <div class="rsv__node">
@@ -241,23 +260,27 @@
             onmouseleave={highlightOff}
           >
             {@render chev(open)}
-            <span class="rsv__code rsv__code--lead">
-              {resourceCode(g.resourceId)}
-            </span>
+            {@render codeTile(g.resourceId, true)}
             <span class="rsv__node-title">{g.resourceId}</span>
-            <span class="rsv__total"
-                  class:rsv__total--neg={g.totalRate < -RATE_EPSILON}
-                  class:rsv__total--zero={isZero(g.totalRate)}>
-              {fmtAmount(g.totalAmount)}<em>/{fmtAmount(g.totalCapacity)}</em>
-              <span class="rsv__total-sep">·</span>{fmtRate(g.totalRate)}<em>/s</em>
-            </span>
+            {@render amountReadout(g.totalAmount, g.totalCapacity, m.unit)}
           </button>
-          <!-- Aggregate gauge stays visible through collapse — same
-               policy as Power's STORAGE node, where the at-a-glance
-               vessel-level fill shouldn't disappear behind a closed
-               header. -->
-          <div class="rsv__node-gauge">
-            <SegmentGauge fraction={frac} />
+          <!-- Aggregate gauge gets its own line with the rate readout
+               beside it. Keeps the head row's title from competing
+               with the rate; pairs the gauge (which IS the live-flow
+               visualisation) directly with the rate it shows. -->
+          <div class="rsv__node-gauge-line">
+            <div
+              class="rsv__node-gauge"
+              style:--sg-color-tint={m.color}
+              style:--sg-glow-tint={m.glow}
+            >
+              <SegmentGauge fraction={frac} />
+            </div>
+            <span class="rsv__rate"
+                  class:rsv__rate--neg={g.totalRate < -RATE_EPSILON}
+                  class:rsv__rate--zero={isZero(g.totalRate)}>
+              {fmtRate(g.totalRate)}<em>{m.unit}/s</em>
+            </span>
           </div>
           {#if open}
             <ul class="rsv__rows rsv__rows--nested">
@@ -266,14 +289,18 @@
                 <li class="rsv__row rsv__row--nested"
                     onmouseenter={() => highlightOn([e.part.struct.id])}
                     onmouseleave={highlightOff}>
+                  <span class="rsv__row-icon">
+                    <ComponentIcon kind={partKind(e.part)} />
+                  </span>
                   <span class="rsv__row-name">{e.part.struct.title}</span>
-                  <div class="rsv__row-gauge rsv__row-gauge--narrow">
+                  <div
+                    class="rsv__row-gauge rsv__row-gauge--narrow"
+                    style:--sg-color-tint={m.color}
+                    style:--sg-glow-tint={m.glow}
+                  >
                     <SegmentGauge fraction={efrac} />
                   </div>
-                  <span class="rsv__amount">
-                    <span class="rsv__amount-val">{fmtAmount(e.flow.amount)}</span>
-                    <span class="rsv__amount-cap">/{fmtAmount(e.flow.capacity)}</span>
-                  </span>
+                  {@render amountReadout(e.flow.amount, e.flow.capacity, m.unit)}
                 </li>
               {/each}
             </ul>
@@ -294,11 +321,6 @@
   }
 
   /* ----- Toggle ---------------------------------------------------- */
-  /* The LED control reads as a single physical switch on a console:
-     a recessed dark cell, a glass dome that lights up when on. The
-     entire row is the click target — mouse-over brightens the rim of
-     the LED and lifts the label tint, so it's clear that *both* the
-     glyph and the text are "the button". */
   .rsv__opt {
     appearance: none;
     background: transparent;
@@ -332,7 +354,6 @@
     color: var(--accent);
     text-shadow: 0 0 6px var(--accent-glow);
   }
-
   .rsv__opt-led {
     flex: 0 0 8px;
     width: 8px;
@@ -348,9 +369,7 @@
       border-color 240ms cubic-bezier(0.4, 0, 0.2, 1),
       box-shadow 240ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__opt:hover .rsv__opt-led {
-    border-color: var(--accent-dim);
-  }
+  .rsv__opt:hover .rsv__opt-led { border-color: var(--accent-dim); }
   .rsv__opt--on .rsv__opt-led {
     background:
       radial-gradient(circle at 35% 30%,
@@ -368,16 +387,10 @@
   }
 
   /* ----- Tree node ------------------------------------------------- */
-  /* Borrowed wholesale from PowerView's pwr__node-head — the dual
-     border + accent indicator + chevron rhythm is the recognisable
-     subsystem-tree pattern in the panel, and Resources should feel
-     like a sibling, not a fresh design. */
   .rsv__node {
     margin-top: 12px;
   }
-  .rsv__node:first-of-type {
-    margin-top: 0;
-  }
+  .rsv__node:first-of-type { margin-top: 0; }
 
   .rsv__node-head {
     appearance: none;
@@ -399,10 +412,6 @@
     border-bottom: 1px solid var(--line);
     transition: border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  /* The "by part" head shows part titles in mono, since they're file-
-     style identifiers; the "by resource" head shows resource names in
-     display caps, since those are categories. Two minor tweaks for
-     the same head element. */
   .rsv__node-head:not(.rsv__node-head--res) .rsv__node-title {
     font-family: var(--font-mono);
     letter-spacing: 0.04em;
@@ -463,17 +472,23 @@
     background: var(--accent);
     box-shadow: 0 0 6px var(--accent-glow);
   }
-  .rsv__node-head:focus-visible {
-    outline: none;
-  }
-  .rsv__node-head:hover {
-    border-bottom-color: var(--accent-dim);
-  }
+  .rsv__node-head:focus-visible { outline: none; }
+  .rsv__node-head:hover { border-bottom-color: var(--accent-dim); }
   .rsv__node-head:hover .rsv__node-title,
   .rsv__node-head:focus-visible .rsv__node-title {
     color: var(--accent-soft);
     text-shadow: 0 0 6px var(--accent-glow);
   }
+
+  /* Leading kind-icon column on BY-PART node-heads. */
+  .rsv__node-icon {
+    flex: 0 0 12px;
+    display: inline-flex;
+    align-items: center;
+    color: var(--fg-mute);
+    transition: color 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .rsv__node-head:hover .rsv__node-icon { color: var(--fg-dim); }
 
   .rsv__node-title {
     flex: 1 1 auto;
@@ -488,35 +503,27 @@
       text-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  /* Trailing summary on BY-PART heads: the part's resource codes,
-     comma-flavored, so a collapsed row still tells you what's inside.
-     Sits as a faint annotation — definitely metadata, not a primary
-     readout. */
+  /* Trailing summary on BY-PART heads — the part's resource codes,
+     each tinted with its resource hue. Reads as a faint metadata
+     stamp so collapsed parts still tell you what's inside. */
   .rsv__node-summary {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 0;
     color: var(--fg-mute);
     font-family: var(--font-mono);
     font-size: 9px;
-    letter-spacing: 0.08em;
-    transition: color 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .rsv__node-head:hover .rsv__node-summary {
-    color: var(--fg-dim);
+    letter-spacing: 0.10em;
   }
   .rsv__node-summary-code {
-    padding: 0 2px;
+    padding: 0 3px;
+    opacity: 0.85;
   }
   .rsv__node-summary-sep {
     color: var(--line);
     margin: 0 1px;
   }
 
-  /* The chevron mirrors Power's — same rotation, same hover scale,
-     same drop-shadow on hover. Consistency makes the navigation feel
-     like one panel. */
   .rsv__chev {
     flex: 0 0 8px;
     width: 8px;
@@ -527,9 +534,7 @@
       color 220ms cubic-bezier(0.4, 0, 0.2, 1),
       filter 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__chev--open {
-    transform: rotate(90deg);
-  }
+  .rsv__chev--open { transform: rotate(90deg); }
   .rsv__node-head:hover .rsv__chev {
     color: var(--accent);
     filter: drop-shadow(0 0 3px var(--accent-glow));
@@ -541,40 +546,41 @@
     transform: scale(1.18);
   }
 
-  /* Total readout on BY-RESOURCE heads. Three semantically distinct
-     atoms — stored value (primary accent), capacity (dim), rate
-     (signed) — split so each carries its own colour. The em-tagged
-     fragments stay at 9 px metadata size. */
-  .rsv__total {
-    flex: 0 0 auto;
+  /* ----- Aggregate gauge line (BY-RESOURCE) ----------------------- */
+  /* Flow-rate readout sits right of the gauge. The gauge stretches to
+     fill remaining width; the rate column has a fixed slot so the
+     gauge ends at the same x across resources. */
+  .rsv__node-gauge-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 8px;
+    padding: 0 2px;
+  }
+  .rsv__node-gauge {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .rsv__node-gauge :global(.sg) {
+    height: 12px;
+  }
+  .rsv__rate {
+    flex: 0 0 76px;
+    text-align: right;
     color: var(--accent);
     font-family: var(--font-mono);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  .rsv__total--neg { color: var(--warn); }
-  .rsv__total--zero { color: var(--fg-dim); }
-  .rsv__total em {
+  .rsv__rate--neg  { color: var(--warn); }
+  .rsv__rate--zero { color: var(--fg-dim); }
+  .rsv__rate em {
     font-style: normal;
     font-size: 9px;
     color: var(--fg-dim);
-    margin-left: 1px;
+    margin-left: 3px;
     letter-spacing: 0.10em;
-  }
-  .rsv__total-sep {
-    color: var(--fg-dim);
-    margin: 0 4px;
-  }
-
-  /* Aggregate gauge under BY-RESOURCE node-head. Same 12 px treatment
-     Power's vessel-power-health bar uses, so the resource-fill
-     gestures align across the two panels. */
-  .rsv__node-gauge {
-    margin: 4px 0 8px;
-    padding: 0 2px;
-  }
-  .rsv__node-gauge :global(.sg) {
-    height: 12px;
   }
 
   /* ----- Rows ------------------------------------------------------ */
@@ -595,12 +601,7 @@
     border-bottom: 1px solid rgba(26, 35, 53, 0.55);
     transition: background 200ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__row:last-child {
-    border-bottom: 0;
-  }
-  /* Match Power's leading-edge accent bar on hover — it's the
-     repeated motif that says "you're hovering on a real, vessel-
-     attached thing". */
+  .rsv__row:last-child { border-bottom: 0; }
   .rsv__row::before {
     content: '';
     position: absolute;
@@ -616,50 +617,49 @@
       opacity 220ms cubic-bezier(0.4, 0, 0.2, 1),
       transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .rsv__row:hover {
-    background: rgba(126, 245, 184, 0.04);
-  }
-  .rsv__row:hover::before {
-    opacity: 0.7;
-    transform: scaleY(1);
-  }
+  .rsv__row:hover { background: rgba(126, 245, 184, 0.04); }
+  .rsv__row:hover::before { opacity: 0.7; transform: scaleY(1); }
 
-  /* Code tile. A fixed-width, tracked-out monogram — reads as a
-     stamped or screen-printed label on a panel section. Bordered
-     with the line colour and slightly recessed via inset shadow so
-     it looks etched into the row. The tile is the row's identity:
-     big enough to read at a glance, small enough not to dominate. */
+  /* Code tile. Locked to a uniform 36 px width so 2-char (EC) and
+     4-char (N2H4) codes align across rows. The fill colour and
+     subtle background tint come from --rsv-tile-color /
+     --rsv-tile-tint custom props the parent sets per resource. */
   .rsv__code {
-    flex: 0 0 auto;
-    min-width: 28px;
-    padding: 1px 4px;
+    flex: 0 0 36px;
+    width: 36px;
+    padding: 1px 0;
     text-align: center;
-    color: var(--accent);
+    color: var(--rsv-tile-color, var(--accent));
+    background: var(--rsv-tile-tint, rgba(126, 245, 184, 0.04));
     font-family: var(--font-display);
     font-size: 9px;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.12em;
     line-height: 12px;
     border: 1px solid var(--line);
-    background: rgba(126, 245, 184, 0.04);
     box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.35);
     border-radius: 1px;
     font-variant-numeric: tabular-nums;
-    transition:
-      color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      border-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      background 220ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__row:hover .rsv__code {
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.08);
+  .rsv__row:hover .rsv__code,
+  .rsv__node-head:hover .rsv__code {
+    border-color: color-mix(in srgb, var(--rsv-tile-color, var(--accent)) 40%, transparent);
   }
-  /* Lead variant: appears in BY-RESOURCE node-heads, where it sits
-     immediately after the chevron. No row-hover context to inherit
-     from, so a touch more presence — accent border at rest. */
+  /* Lead variant: a touch more presence at rest, since it's headlining
+     a section rather than riding inside a row. */
   .rsv__code--lead {
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.06);
+    border-color: color-mix(in srgb, var(--rsv-tile-color, var(--accent)) 35%, transparent);
   }
+
+  /* Leading icon column for BY-RESOURCE part rows. */
+  .rsv__row-icon {
+    flex: 0 0 12px;
+    display: inline-flex;
+    align-items: center;
+    color: var(--fg-mute);
+    transition: color 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .rsv__row:hover .rsv__row-icon { color: var(--fg-dim); }
 
   .rsv__row-name {
     flex: 1 1 auto;
@@ -676,19 +676,17 @@
     flex: 1 1 auto;
     min-width: 0;
   }
-  /* In BY-RESOURCE rows the part name takes the flex column, so the
-     gauge gets a fixed narrower width — tight enough to leave room
-     for the name, wide enough that you can still read fill at a
-     glance. */
   .rsv__row-gauge--narrow {
     flex: 0 0 80px;
   }
 
-  /* Amount column. Right-aligned, tabular-nums, two parts —
-     primary (accent) and capacity (dim). The slash sits with the
-     capacity since visually it belongs to "/ N". */
+  /* Amount column. Locked to 96 px so 50/50 EC and 1560/1560 L row up
+     to the same right edge — the gauges immediately to their left
+     therefore end at the same x across siblings. Text inside is
+     right-anchored, with the value, capacity, and unit each holding
+     their own tint. */
   .rsv__amount {
-    flex: 0 0 auto;
+    flex: 0 0 96px;
     text-align: right;
     font-family: var(--font-mono);
     font-size: 11px;
@@ -701,12 +699,18 @@
   .rsv__amount-cap {
     color: var(--fg-dim);
   }
+  .rsv__amount-unit {
+    margin-left: 4px;
+    font-size: 9px;
+    color: var(--fg-dim);
+    letter-spacing: 0.10em;
+  }
 
-  /* Nested rows under BY-RESOURCE node-heads. Same indentation +
-     left-rule as Power's solar sub-group nested rows, so the tree
-     hierarchy reads identically across the two panels. */
+  /* Nested rows under BY-RESOURCE node-heads. Same indentation as
+     Power's solar sub-group, so the tree hierarchy reads identically
+     across panels. */
   .rsv__rows--nested {
-    padding-left: 16px;
+    padding-left: 14px;
     border-left: 1px solid rgba(126, 245, 184, 0.10);
     margin: 0 0 2px 7px;
   }

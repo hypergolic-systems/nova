@@ -38,6 +38,12 @@
      suggests a bezel cut. The cells sit inside as discrete LEDs:
      a light-to-dark vertical gradient and an inner top-highlight on
      each lit cell give them shape against the well. */
+  /* Per-resource tinting: callers can set `--sg-color-tint`,
+     `--sg-glow-tint`, `--sg-tint-tint` on the gauge wrapper to
+     override the OK-state palette without affecting the warn/alert
+     fallbacks. The OK class reads them with the accent-green default;
+     warn/alert classes ignore them entirely so a low-fill gauge still
+     flips to severity tint. */
   .sg {
     display: flex;
     width: 100%;
@@ -53,9 +59,11 @@
       inset 0 1px 0 rgba(0, 0, 0, 0.55),
       inset 0 -1px 0 rgba(255, 255, 255, 0.015);
     border-radius: 1px;
-    --sg-color: var(--accent);
-    --sg-glow:  var(--accent-glow);
-    --sg-tint:  rgba(126, 245, 184, 0.05);
+  }
+  .sg--ok {
+    --sg-color: var(--sg-color-tint, var(--accent));
+    --sg-glow:  var(--sg-glow-tint,  var(--accent-glow));
+    --sg-tint:  var(--sg-tint-tint,  rgba(126, 245, 184, 0.05));
   }
   .sg--warn {
     --sg-color: var(--warn);
