@@ -10,8 +10,12 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   [KSPField]
   public bool retractable = true;
 
+  // Default to extended so a freshly-placed editor part agrees with
+  // its prefab's extended visual pose. Mirrors stock's typical
+  // deployState=EXTENDED default for solar panels — players who want
+  // launch-stowed panels right-click Retract in editor before saving.
   [KSPField(isPersistant = true)]
-  public bool isExtended;
+  public bool isExtended = true;
 
   private Animation anim;
   private bool animating;
@@ -21,12 +25,27 @@ public class NovaDeployableSolarModule : NovaSolarModule {
 
     anim = part.FindModelAnimators(animationName)?[0];
 
+    // Mirror stock ModuleDeployablePart.startFSM: pin the wrap mode
+    // to ClampForever so when the deploy/retract clip finishes Unity
+    // leaves the AnimationState alive at the end pose. The default
+    // `Once` disables the state the moment normalizedTime hits the
+    // sentinel, and `normalizedTime` doesn't reliably read that
+    // sentinel across the disable boundary — which leaves
+    // `animating` stuck true and the deploy flags never flip.
+    if (anim != null) {
+      anim[animationName].wrapMode = WrapMode.ClampForever;
+    }
+
     // Surface the retractable flag to the virtual component so the
     // UI can pick it up via NovaPartTopic — drives whether the row
     // gets a toggle (retractable) or a one-shot open button.
     solarPanel.IsRetractable = retractable;
 
-    if (state == StartState.Editor || isExtended) {
+    // Drive the model pose from isExtended only — no editor-only
+    // force-extend. With isExtended defaulting to true, fresh editor
+    // parts still pose extended, but a player who retracts in the
+    // editor sees the actual closed pose instead of a lying visual.
+    if (isExtended) {
       SetAnimationPosition(1f);
       solarPanel.IsDeployed = true;
     } else {
@@ -49,8 +68,14 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     if (animating || isExtended) return;
     if (anim == null) return;
 
+    // SetAnimationPosition leaves the AnimationState disabled (anim.Stop
+    // at the end). Unity's legacy Play() doesn't reliably re-enable a
+    // stopped state, so flip enabled/weight ourselves before playing —
+    // matches the pattern in stock ModuleDeployablePart.
     anim[animationName].normalizedTime = 0f;
     anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? 5f : 1f;
+    anim[animationName].enabled = true;
+    anim[animationName].weight = 1f;
     anim.Play(animationName);
     animating = true;
     UpdateEvents();
@@ -71,6 +96,8 @@ public class NovaDeployableSolarModule : NovaSolarModule {
 
     anim[animationName].normalizedTime = 1f;
     anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? -5f : -1f;
+    anim[animationName].enabled = true;
+    anim[animationName].weight = 1f;
     anim.Play(animationName);
     animating = true;
     UpdateEvents();
