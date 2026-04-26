@@ -4,13 +4,28 @@
   // visual rhythm is right when more views land.
   //
   // Mounted always-on while in Flight (open/close UX is deferred).
-  // Default position pins to the upper-left so it doesn't compete
-  // with the navball cluster in the lower-left.
+  // Default position docks to the right edge of the viewport at min
+  // width and 75% height so the panel reads as a side-rail readout
+  // and doesn't compete with the altimeter / navball cluster on the
+  // bottom or the resource readout on the top-right of stock UI.
 
   import { useFlightData } from '@dragonglass/telemetry/svelte';
   import { FloatingWindow } from '@dragonglass/windows';
   import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
   import PowerView from './power/PowerView.svelte';
+
+  const MIN_W = 300;
+  const MIN_H = 260;
+  const EDGE_MARGIN = 16;
+
+  // Read viewport once at mount — FloatingWindow seeds its initial
+  // pos/size from these and then owns them. Subsequent viewport
+  // resizes don't re-dock the panel (matches the FloatingWindow
+  // contract: defaults are initial values, not a binding).
+  const initialW = MIN_W;
+  const initialH = Math.max(MIN_H, Math.round(window.innerHeight * 0.75));
+  const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
+  const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
   type TabId = 'power' | 'propulsion' | 'rcs' | 'attitude';
 
@@ -41,9 +56,9 @@
 </script>
 
 <FloatingWindow
-  defaultPos={{ x: 24, y: 80 }}
-  defaultSize={{ w: 380, h: 460 }}
-  minSize={{ w: 300, h: 260 }}
+  defaultPos={{ x: initialX, y: initialY }}
+  defaultSize={{ w: initialW, h: initialH }}
+  minSize={{ w: MIN_W, h: MIN_H }}
   {z}
   onRaise={raise}
 >
@@ -104,6 +119,35 @@
 
   :global(.fw__body) {
     padding: 10px;
+    /* Always render the scrollbar even when content fits — the layout
+       reserves the gutter so a tree expanding past the viewport
+       doesn't reflow everything by 8 px when its bar appears. */
+    overflow-y: scroll;
+  }
+  /* Themed scrollbar so the gutter doesn't read as a stock browser
+     element on top of the HUD aesthetic. CEF supports the legacy
+     -webkit pseudos. The thumb sits on a near-invisible track, picks
+     up an accent tint on hover. */
+  :global(.fw__body::-webkit-scrollbar) {
+    width: 8px;
+    height: 8px;
+  }
+  :global(.fw__body::-webkit-scrollbar-track) {
+    background: rgba(0, 0, 0, 0.25);
+    border-left: 1px solid var(--line);
+  }
+  :global(.fw__body::-webkit-scrollbar-thumb) {
+    background: rgba(126, 245, 184, 0.18);
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    transition: background 200ms ease;
+  }
+  :global(.fw__body::-webkit-scrollbar-thumb:hover) {
+    background: rgba(126, 245, 184, 0.42);
+    background-clip: padding-box;
+  }
+  :global(.fw__body::-webkit-scrollbar-corner) {
+    background: rgba(0, 0, 0, 0.25);
   }
 
   /* Header content. */
