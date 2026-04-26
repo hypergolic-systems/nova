@@ -105,10 +105,14 @@
 
   function fmtRate(value: number): string {
     const abs = Math.abs(value);
-    if (abs < 0.005) return '0.00';
-    if (abs >= 100) return value.toFixed(0);
-    if (abs >= 10) return value.toFixed(1);
-    return value.toFixed(2);
+    let mag: string;
+    if (abs < 0.005) mag = '0.00';
+    else if (abs >= 100) mag = abs.toFixed(0);
+    else if (abs >= 10) mag = abs.toFixed(1);
+    else mag = abs.toFixed(2);
+    // Reserve a fixed-width sign slot (NBSP when non-negative) so a
+    // value flipping sign doesn't shift everything to its left.
+    return (value < 0 ? '-' : ' ') + mag;
   }
 
   function fmtSoc(stored: number, capacity: number): string {
