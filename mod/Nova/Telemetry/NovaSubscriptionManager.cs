@@ -30,13 +30,13 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName == null) return;
     if (topicName.StartsWith(VesselPrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselPrefix, out var vessel)) {
-        AttachIfMissing<NovaVesselStructureTopic>(vessel.gameObject);
+        AttachOrEnable<NovaVesselStructureTopic>(vessel.gameObject);
       }
       return;
     }
     if (topicName.StartsWith(PartPrefix, StringComparison.Ordinal)) {
       if (TryResolvePart(topicName, PartPrefix, out var part)) {
-        AttachIfMissing<NovaPartTopic>(part.gameObject);
+        AttachOrEnable<NovaPartTopic>(part.gameObject);
       }
     }
   }
@@ -45,24 +45,32 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName == null) return;
     if (topicName.StartsWith(VesselPrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselPrefix, out var vessel)) {
-        DetachIfPresent<NovaVesselStructureTopic>(vessel.gameObject);
+        DisableIfPresent<NovaVesselStructureTopic>(vessel.gameObject);
       }
       return;
     }
     if (topicName.StartsWith(PartPrefix, StringComparison.Ordinal)) {
       if (TryResolvePart(topicName, PartPrefix, out var part)) {
-        DetachIfPresent<NovaPartTopic>(part.gameObject);
+        DisableIfPresent<NovaPartTopic>(part.gameObject);
       }
     }
   }
 
-  private static void AttachIfMissing<T>(GameObject go) where T : Component {
-    if (go.GetComponent<T>() == null) go.AddComponent<T>();
+  // Toggle the topic Behaviour's enabled flag rather than Destroy/AddComponent.
+  // Unity defers Destroy to end-of-frame, which races with a synchronous
+  // re-subscribe (new component's OnEnable runs first, then the old's deferred
+  // OnDisable wipes the new entry from `_byPart` / `_byVessel`). enabled flips
+  // run OnEnable/OnDisable synchronously — no race, and the topic Component
+  // sticks around for the part's lifetime.
+  private static void AttachOrEnable<T>(GameObject go) where T : Behaviour {
+    var existing = go.GetComponent<T>();
+    if (existing == null) go.AddComponent<T>();
+    else if (!existing.enabled) existing.enabled = true;
   }
 
-  private static void DetachIfPresent<T>(GameObject go) where T : Component {
+  private static void DisableIfPresent<T>(GameObject go) where T : Behaviour {
     var c = go.GetComponent<T>();
-    if (c != null) Destroy(c);
+    if (c != null) c.enabled = false;
   }
 
   private static bool TryResolveVessel(string topicName, string prefix, out Vessel vessel) {
