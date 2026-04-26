@@ -88,7 +88,7 @@
     {/each}
   </nav>
 
-  <div class="vp__body">
+  <div class="vp__scroll">
     {#if activeTab === 'power' && flight.vesselId}
       <PowerView vesselId={flight.vesselId} />
     {:else if activeTab === 'resource' && flight.vesselId}
@@ -121,37 +121,15 @@
     border-bottom: 1px solid var(--line);
   }
 
+  /* Body owns the layout (header sits above it; tabs and scroll area
+     stack inside). Scrolling lives on `.vp__scroll`, not here, so the
+     pinned tab nav stays put when long subsystem trees scroll. */
   :global(.fw__body) {
-    padding: 10px;
-    /* Always render the scrollbar even when content fits — the layout
-       reserves the gutter so a tree expanding past the viewport
-       doesn't reflow everything by 8 px when its bar appears. */
-    overflow-y: scroll;
-  }
-  /* Themed scrollbar so the gutter doesn't read as a stock browser
-     element on top of the HUD aesthetic. CEF supports the legacy
-     -webkit pseudos. The thumb sits on a near-invisible track, picks
-     up an accent tint on hover. */
-  :global(.fw__body::-webkit-scrollbar) {
-    width: 8px;
-    height: 8px;
-  }
-  :global(.fw__body::-webkit-scrollbar-track) {
-    background: rgba(0, 0, 0, 0.25);
-    border-left: 1px solid var(--line);
-  }
-  :global(.fw__body::-webkit-scrollbar-thumb) {
-    background: rgba(126, 245, 184, 0.18);
-    border: 1px solid transparent;
-    background-clip: padding-box;
-    transition: background 200ms ease;
-  }
-  :global(.fw__body::-webkit-scrollbar-thumb:hover) {
-    background: rgba(126, 245, 184, 0.42);
-    background-clip: padding-box;
-  }
-  :global(.fw__body::-webkit-scrollbar-corner) {
-    background: rgba(0, 0, 0, 0.25);
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   /* Header content. */
@@ -190,10 +168,14 @@
      workbench EngineeringPanel prototype: 1 px-bordered cells with a
      bright accent on the active chip. Disabled chips render at half
      opacity to advertise "more views coming" without inviting clicks. */
+  /* Tab nav sits as a pinned header above the scroll area — when a
+     subsystem tree expands past the viewport, the chips stay visible
+     so the user can pivot to another tab without scrolling back to
+     the top. */
   .vp__tabs {
+    flex: 0 0 auto;
     display: flex;
     gap: 4px;
-    margin: -10px -10px 8px;
     padding: 6px 10px;
     border-bottom: 1px solid var(--line);
     background: var(--bg-elev);
@@ -229,9 +211,43 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .vp__body {
+  /* Scroll area: the only thing inside the panel body that scrolls.
+     `overflow-y: scroll` (not `auto`) keeps the gutter reserved at all
+     times — a tree expanding past the viewport doesn't reflow content
+     by 8 px when the thumb appears, and the styled track stays visible
+     as a consistent edge ornament regardless of fill height. */
+  .vp__scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    padding: 10px;
+    overflow-y: scroll;
     color: var(--fg);
     font-family: var(--font-mono);
     font-size: 11px;
+  }
+  /* Themed scrollbar — CEF supports the legacy -webkit pseudos. The
+     track has a 1 px-bordered well at all times so the gutter reads
+     as a real instrument-panel edge channel rather than a "missing"
+     scrollbar slot. */
+  .vp__scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .vp__scroll::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.25);
+    border-left: 1px solid var(--line);
+  }
+  .vp__scroll::-webkit-scrollbar-thumb {
+    background: rgba(126, 245, 184, 0.18);
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    transition: background 200ms ease;
+  }
+  .vp__scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(126, 245, 184, 0.42);
+    background-clip: padding-box;
+  }
+  .vp__scroll::-webkit-scrollbar-corner {
+    background: rgba(0, 0, 0, 0.25);
   }
 </style>

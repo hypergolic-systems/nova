@@ -286,21 +286,25 @@
             <ul class="rsv__rows rsv__rows--nested">
               {#each g.entries as e (e.part.struct.id)}
                 {@const efrac = fillFraction(e.flow.amount, e.flow.capacity)}
-                <li class="rsv__row rsv__row--nested"
+                <li class="rsv__row rsv__row--nested rsv__row--stacked"
                     onmouseenter={() => highlightOn([e.part.struct.id])}
                     onmouseleave={highlightOff}>
                   <span class="rsv__row-icon">
                     <ComponentIcon kind={partKind(e.part)} />
                   </span>
-                  <span class="rsv__row-name">{e.part.struct.title}</span>
-                  <div
-                    class="rsv__row-gauge rsv__row-gauge--narrow"
-                    style:--sg-color-tint={m.color}
-                    style:--sg-glow-tint={m.glow}
-                  >
-                    <SegmentGauge fraction={efrac} />
+                  <div class="rsv__row-stack">
+                    <div class="rsv__row-line">
+                      <span class="rsv__row-name">{e.part.struct.title}</span>
+                      {@render amountReadout(e.flow.amount, e.flow.capacity, m.unit)}
+                    </div>
+                    <div
+                      class="rsv__row-line rsv__row-line--gauge"
+                      style:--sg-color-tint={m.color}
+                      style:--sg-glow-tint={m.glow}
+                    >
+                      <SegmentGauge fraction={efrac} />
+                    </div>
                   </div>
-                  {@render amountReadout(e.flow.amount, e.flow.capacity, m.unit)}
                 </li>
               {/each}
             </ul>
@@ -719,6 +723,40 @@
   }
   .rsv__row--nested .rsv__row-name {
     color: var(--fg-dim);
+  }
+
+  /* Stacked rows: name+amount on top, full-width gauge below. Mirrors
+     Power's storage row pattern so part names get full row width
+     instead of fighting an inline gauge for space. Icon stays top-
+     aligned with the title line. */
+  .rsv__row--stacked {
+    align-items: flex-start;
+    padding: 6px 6px;
+  }
+  .rsv__row--stacked.rsv__row--nested {
+    padding-left: 4px;
+  }
+  .rsv__row--stacked .rsv__row-icon {
+    margin-top: 1px;
+  }
+  .rsv__row-stack {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .rsv__row-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-width: 0;
+  }
+  .rsv__row-line--gauge {
+    /* SegmentGauge is `width: 100%`, so it stretches to whatever the
+       stack column gives it. */
+    padding: 0 1px;
   }
 
   /* Empty-state line — verbatim Power's pattern for visual rhyme. */
