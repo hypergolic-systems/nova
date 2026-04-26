@@ -34,7 +34,7 @@ export type NovaSolarFrame   = ['S', currentEcRate: number, deployed: 0 | 1, sun
 export type NovaBatteryFrame = ['B', soc: number, capacity: number, rate: number];
 export type NovaWheelFrame   = ['W', maxEcRate: number, activity: number];
 export type NovaLightFrame   = ['L', maxEcRate: number, activity: number];
-export type NovaEngineFrame  = ['E', alternatorMaxRate: number, thrustFraction: number];
+export type NovaEngineFrame  = ['E', alternatorMaxRate: number, alternatorRate: number];
 
 export type NovaComponentFrame =
   | NovaSolarFrame
@@ -104,9 +104,12 @@ export interface LightState {
 }
 
 export interface EngineState {
+  /** Nominal alternator capacity at full activity, EC/s. */
   alternatorMaxRate: number;
-  /** Engine thrust fraction, 0..1. Doubles as alternator activity. */
-  thrustFraction: number;
+  /** Live EC/s output, post-LP-solve. The LP throttles converter
+   *  activity to whatever balances current load — display this
+   *  directly; do not multiply by engine throttle. */
+  alternatorRate: number;
 }
 
 export interface NovaPart {
@@ -238,7 +241,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
       case 'E':
         out.engine.push({
           alternatorMaxRate: c[1],
-          thrustFraction: c[2],
+          alternatorRate: c[2],
         });
         break;
     }

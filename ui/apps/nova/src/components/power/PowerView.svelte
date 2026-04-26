@@ -49,7 +49,7 @@
     if (!p.state) return 0;
     let total = 0;
     for (const s of p.state.solar) total += s.rate;
-    for (const e of p.state.engine) total += e.alternatorMaxRate * e.thrustFraction;
+    for (const e of p.state.engine) total += e.alternatorRate;
     return total;
   }
 

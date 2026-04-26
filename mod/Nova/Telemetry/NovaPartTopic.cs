@@ -32,7 +32,7 @@ namespace Nova.Telemetry;
 //   ["B", soc(0..1), capacity, currentRate]              Battery
 //   ["W", maxEcRate, activity(0..1)]                     ReactionWheel
 //   ["L", maxEcRate, activity(0..1)]                     Light
-//   ["E", alternatorMaxRate, thrustFraction(0..1)]       Engine
+//   ["E", alternatorMaxRate, alternatorRateEc]           Engine
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -225,7 +225,7 @@ public sealed class NovaPartTopic : Topic {
         bool f = true;
         WriteKind(sb, "E", ref f);
         WriteNum(sb, engine.AlternatorRate, ref f);
-        WriteNum(sb, engine.NormalizedOutput, ref f);
+        WriteNum(sb, engine.AlternatorOutput, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

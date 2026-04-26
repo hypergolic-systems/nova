@@ -21,6 +21,13 @@ public class Engine : VirtualComponent {
 
   public double Satisfaction => device != null ? device.Satisfaction : 0;
   public double NormalizedOutput => device != null ? device.Activity : 0;
+  // Live EC/s the alternator is delivering after the LP throttles it
+  // to actual load. Distinct from `AlternatorRate * NormalizedOutput`,
+  // which is the *capacity* at this engine throttle — when load is
+  // below capacity, the LP scales `alternator.Activity` down and the
+  // real output is well below capacity.
+  public double AlternatorOutput =>
+      alternator != null ? alternator.Activity * AlternatorRate : 0;
 
   public class Propellant {
     public Resource Resource;
