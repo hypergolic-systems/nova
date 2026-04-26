@@ -279,7 +279,7 @@
             <span class="rsv__rate"
                   class:rsv__rate--neg={g.totalRate < -RATE_EPSILON}
                   class:rsv__rate--zero={isZero(g.totalRate)}>
-              {fmtRate(g.totalRate)}<em>{m.unit}/s</em>
+              {fmtRate(g.totalRate)}<em>{m.rateUnit}</em>
             </span>
           </div>
           {#if open}
@@ -293,9 +293,22 @@
                     <ComponentIcon kind={partKind(e.part)} />
                   </span>
                   <div class="rsv__row-stack">
+                    <!-- Per-part readout: stored / capacity · rate.
+                         Unit is implicit from the parent resource
+                         header (e.g. "ELECTRIC CHARGE 250/250 J ·
+                         0.00 W") so it isn't repeated here — matches
+                         PowerView's storage rows for visual rhyme. -->
                     <div class="rsv__row-line">
                       <span class="rsv__row-name">{e.part.struct.title}</span>
-                      {@render amountReadout(e.flow.amount, e.flow.capacity, m.unit)}
+                      <span class="rsv__row-readout">
+                        <span class="rsv__row-readout-val">{fmtAmount(e.flow.amount)}</span><span
+                          class="rsv__row-readout-cap">/{fmtAmount(e.flow.capacity)}</span>
+                        <span
+                          class="rsv__row-readout-rate"
+                          class:rsv__row-readout-rate--neg={e.flow.rate < -RATE_EPSILON}
+                          class:rsv__row-readout-rate--zero={isZero(e.flow.rate)}
+                        ><span class="rsv__row-readout-sep">·</span>{fmtRate(e.flow.rate)}</span>
+                      </span>
                     </div>
                     <div
                       class="rsv__row-line rsv__row-line--gauge"
@@ -758,6 +771,29 @@
        stack column gives it. */
     padding: 0 1px;
   }
+
+  /* Per-part readout (stored / cap · rate). Three semantic atoms,
+     each carrying its own colour: stored value (accent), capacity
+     (dim), rate (signed — accent when filling, warn when draining,
+     dim at zero). Mirrors Power's storage-row rate splits. */
+  .rsv__row-readout {
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .rsv__row-readout-val { color: var(--accent); }
+  .rsv__row-readout-cap { color: var(--fg-dim); }
+  .rsv__row-readout-sep {
+    color: var(--fg-dim);
+    margin: 0 4px 0 6px;
+    letter-spacing: 0;
+  }
+  .rsv__row-readout-rate { color: var(--accent); }
+  .rsv__row-readout-rate--neg { color: var(--warn); }
+  .rsv__row-readout-rate--zero { color: var(--fg-dim); }
 
   /* Empty-state line — verbatim Power's pattern for visual rhyme. */
   .rsv__empty {

@@ -15,8 +15,14 @@
 export interface ResourceMeta {
   /** Short display code, ≤4 chars. */
   code: string;
-  /** Unit symbol shown next to amounts and rates. */
+  /** Unit symbol for stored amounts (e.g. J for Electric Charge,
+   *  L for fuels). Distinct from `rateUnit` because for energy-style
+   *  resources the rate is a power (W) rather than a per-second
+   *  count of the storage unit. */
   unit: string;
+  /** Unit symbol for flow rates. For most resources this is just
+   *  `<unit>/s`; for Electric Charge it's W (Watts = J/s). */
+  rateUnit: string;
   /** Per-resource hue. Used as the gauge's OK colour via
    *  `--sg-color-tint` and as the code-tile foreground. */
   color: string;
@@ -26,9 +32,14 @@ export interface ResourceMeta {
   tint: string;
 }
 
+// EC is energy: stored quantity is Joules; flow rate is Watts (J/s).
+// Every other resource we currently model is a count-or-volume where
+// the rate is just the storage unit per second, so they get a default
+// rateUnit derived from the storage unit.
 const ELECTRIC: ResourceMeta = {
   code: 'EC',
-  unit: 'EC',
+  unit: 'J',
+  rateUnit: 'W',
   color: 'var(--accent)',
   glow: 'var(--accent-glow)',
   tint: 'rgba(126, 245, 184, 0.07)',
@@ -38,6 +49,7 @@ const FUEL: ResourceMeta = {
   // RP-1 / LiquidFuel / SolidFuel — kerosene/copper.
   code: 'LF',
   unit: 'L',
+  rateUnit: 'L/s',
   color: '#ff8c5c',
   glow: 'rgba(255, 140, 92, 0.45)',
   tint: 'rgba(255, 140, 92, 0.08)',
@@ -47,6 +59,7 @@ const OXIDIZER: ResourceMeta = {
   // LOX / Oxidizer — pale cyan, "cold" / oxygen.
   code: 'OX',
   unit: 'L',
+  rateUnit: 'L/s',
   color: '#5cd8e8',
   glow: 'rgba(92, 216, 232, 0.45)',
   tint: 'rgba(92, 216, 232, 0.08)',
@@ -56,6 +69,7 @@ const HYDROGEN: ResourceMeta = {
   // LH2 — ice blue, "cryogenic".
   code: 'LH2',
   unit: 'L',
+  rateUnit: 'L/s',
   color: '#7ab8ff',
   glow: 'rgba(122, 184, 255, 0.45)',
   tint: 'rgba(122, 184, 255, 0.08)',
@@ -65,6 +79,7 @@ const HYPERGOL: ResourceMeta = {
   // Hydrazine / MonoPropellant — magenta-pink, "exotic".
   code: 'N2H4',
   unit: 'L',
+  rateUnit: 'L/s',
   color: '#e878d8',
   glow: 'rgba(232, 120, 216, 0.45)',
   tint: 'rgba(232, 120, 216, 0.08)',
@@ -74,6 +89,7 @@ const XENON: ResourceMeta = {
   // Xenon — violet.
   code: 'Xe',
   unit: 'L',
+  rateUnit: 'L/s',
   color: '#b886ff',
   glow: 'rgba(184, 134, 255, 0.45)',
   tint: 'rgba(184, 134, 255, 0.08)',
@@ -85,6 +101,7 @@ const NEUTRAL: ResourceMeta = {
   // metadata without competing with the curated palette.
   code: '?',
   unit: 'U',
+  rateUnit: 'U/s',
   color: '#a8b8c8',
   glow: 'rgba(168, 184, 200, 0.40)',
   tint: 'rgba(168, 184, 200, 0.06)',
@@ -99,14 +116,16 @@ const META: Record<string, ResourceMeta> = {
   'Hydrazine': HYPERGOL,
   'Xenon': XENON,
 
-  // Stock KSP names — share hue with their Nova equivalents.
+  // Stock KSP names — share hue with their Nova equivalents. Stock
+  // resources are quantified as generic units ("U") with no real-
+  // world unit mapping, so they don't get the J/W treatment EC does.
   'ElectricCharge':  ELECTRIC,
   'LiquidFuel':      FUEL,
   'Oxidizer':        OXIDIZER,
-  'MonoPropellant':  { ...HYPERGOL, code: 'MP', unit: 'U' },
+  'MonoPropellant':  { ...HYPERGOL, code: 'MP', unit: 'U', rateUnit: 'U/s' },
   'XenonGas':        XENON,
   'IntakeAir':       { ...NEUTRAL, code: 'AIR' },
-  'SolidFuel':       { ...FUEL, code: 'SF', unit: 'U' },
+  'SolidFuel':       { ...FUEL, code: 'SF', unit: 'U', rateUnit: 'U/s' },
   'Ablator':         { ...NEUTRAL, code: 'ABL' },
   'Ore':             { ...NEUTRAL, code: 'ORE' },
 };
