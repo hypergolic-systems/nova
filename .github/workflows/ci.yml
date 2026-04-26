@@ -101,6 +101,16 @@ jobs:
 
       - uses: extractions/setup-just@v2
 
+      # tsc resolves symlinks to their real path, so when it
+      # typechecks files inside ui/external/dragonglass/ui/packages/*
+      # it walks up from the Dragonglass checkout — not Nova's ui/ —
+      # looking for node_modules. Without an install in the sibling
+      # checkout, deps like `three` (declared by @dragonglass/telemetry)
+      # are unresolvable and typecheck fails.
+      - name: Install Dragonglass UI deps
+        working-directory: dragonglass/ui
+        run: npm install
+
       # ui-bootstrap creates the ui/external/dragonglass symlink to
       # $DRAGONGLASS_PATH and runs `npm install` over the workspace
       # (which includes external/dragonglass/ui/packages/* as
