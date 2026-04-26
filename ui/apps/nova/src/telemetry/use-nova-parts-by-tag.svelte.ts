@@ -1,12 +1,15 @@
 // Auto-subscribes to every part on the vessel whose tag list
 // contains `tag`, and returns a reactive list of {struct, state}
-// pairs. Re-subscribes whenever the structure topic emits — adds
-// for newly-tagged parts, drops for parts that no longer match.
+// pairs. Reconciles incrementally on structure changes — adds
+// subscriptions for newly-tagged parts, drops them for parts that
+// no longer match, and leaves surviving parts' subscriptions and
+// slots untouched.
 //
 // `state` starts undefined and fills on the first per-part frame
 // (which the broadcaster snapshots immediately on subscribe). The
 // view is responsible for rendering the loading slot.
 
+import { onDestroy, untrack } from 'svelte';
 import { getKsp } from '@dragonglass/telemetry/svelte';
 import { useNovaVesselStructure } from './use-nova-vessel-structure.svelte';
 import {
@@ -29,36 +32,61 @@ export function useNovaPartsByTag(
   const telemetry = getKsp();
   const structureRef = useNovaVesselStructure(vesselId);
 
-  // Plain $state array; entry mutations go through the proxy and
-  // fire fine-grained reactivity. Each effect run rebuilds the
-  // array from the current structure snapshot — structure topic
-  // is low-frequency (1 Hz on changes), so the cost is negligible
-  // compared to the simplification of avoiding per-part diffing.
+  // Stable per-part slots and unsub handles, keyed by partId. Survives
+  // across structure publishes so the wire subscription, the slot
+  // identity, and the last-decoded `state` all carry through unchanged
+  // for parts that didn't leave the matching set.
+  const slots = new Map<string, NovaTaggedPart>();
+  const subs = new Map<string, () => void>();
+
   let entries = $state<NovaTaggedPart[]>([]);
 
   $effect(() => {
     const structure = structureRef.current;
-    if (!structure) {
-      entries = [];
-      return;
+    const matching = structure
+      ? structure.parts.filter((p) => p.tags.includes(tag))
+      : [];
+    const wanted = new Set(matching.map((p) => p.id));
+
+    // Drop parts that left the matching set.
+    for (const [id, unsub] of subs) {
+      if (!wanted.has(id)) {
+        unsub();
+        subs.delete(id);
+        slots.delete(id);
+      }
     }
 
-    const matching = structure.parts.filter((p) => p.tags.includes(tag));
-    entries = matching.map((struct) => ({ struct, state: undefined }));
+    // Add parts that entered, refresh struct on parts that stayed.
+    for (const p of matching) {
+      const existing = slots.get(p.id);
+      if (existing) {
+        // Title/tags can shift without the partId changing — keep the
+        // displayed struct in sync with the latest structure frame.
+        existing.struct = p;
+        continue;
+      }
+      const slot: NovaTaggedPart = { struct: p, state: undefined };
+      slots.set(p.id, slot);
+      // `untrack` keeps the synchronous cached-frame fire that
+      // `subscribe` performs from binding any reactive reads inside
+      // the callback to this effect — without it, a `$state` read in
+      // the callback would self-trigger the effect to depth-exceed.
+      const unsub = untrack(() =>
+        telemetry.subscribe(NovaPartTopic(p.id), (frame) => {
+          slot.state = decodePart(frame);
+        }),
+      );
+      subs.set(p.id, unsub);
+    }
 
-    // Snapshot the local indices into stable closures — the
-    // subscribe callback fires across many ticks and must always
-    // mutate the slot it was created for.
-    const subs = matching.map((p, i) =>
-      telemetry.subscribe(NovaPartTopic(p.id), (frame) => {
-        const slot = entries[i];
-        if (slot) slot.state = decodePart(frame);
-      }),
-    );
+    entries = matching.map((p) => slots.get(p.id)!);
+  });
 
-    return () => {
-      for (const u of subs) u();
-    };
+  onDestroy(() => {
+    for (const u of subs.values()) u();
+    subs.clear();
+    slots.clear();
   });
 
   return {
