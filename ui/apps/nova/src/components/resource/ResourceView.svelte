@@ -131,6 +131,16 @@
   const fillFraction = (amount: number, capacity: number): number =>
     capacity > 0 ? amount / capacity : 0;
 
+  // Severity-aware fill color. Below 10% we tint the underline alert
+  // red, below 30% warn amber — matches the SegmentGauge palette so a
+  // resource that's running low reads the same way regardless of which
+  // visualisation we're using. Otherwise the per-resource hue carries.
+  function fillColor(fraction: number, baseColor: string): string {
+    if (fraction < 0.10) return 'var(--alert)';
+    if (fraction < 0.30) return 'var(--warn)';
+    return baseColor;
+  }
+
   // Hover highlight forwards to the same StageTopic channel Power uses.
   const stageOps = useStageOps();
   const highlightOn = (ids: readonly string[]): void =>
@@ -223,16 +233,25 @@
               {#each p.state!.resources as r (r.resourceId)}
                 {@const m = resourceMeta(r.resourceId)}
                 {@const frac = fillFraction(r.amount, r.capacity)}
-                <li class="rsv__row">
+                <li class="rsv__row"
+                    style:--rsv-fill={frac}
+                    style:--rsv-fill-color={fillColor(frac, m.color)}>
                   {@render codeTile(r.resourceId)}
-                  <div
-                    class="rsv__row-gauge"
-                    style:--sg-color-tint={m.color}
-                    style:--sg-glow-tint={m.glow}
-                  >
-                    <SegmentGauge fraction={frac} />
-                  </div>
-                  {@render amountReadout(r.amount, r.capacity, m.unit)}
+                  <span class="rsv__row-spacer"></span>
+                  <!-- Self-contained readout: each BY-PART row is its
+                       own resource, so units stay attached to amount
+                       and rate. -->
+                  <span class="rsv__row-readout">
+                    <span class="rsv__row-readout-val">{fmtAmount(r.amount)}</span><span
+                      class="rsv__row-readout-cap">/{fmtAmount(r.capacity)}</span><span
+                      class="rsv__row-readout-unit">{m.unit}</span>
+                    <span class="rsv__row-readout-rate"
+                          class:rsv__row-readout-rate--neg={r.rate < -RATE_EPSILON}
+                          class:rsv__row-readout-rate--zero={isZero(r.rate)}>
+                      <span class="rsv__row-readout-sep">·</span>{fmtRate(r.rate)}<em
+                        class="rsv__row-readout-rate-unit">{m.rateUnit}</em>
+                    </span>
+                  </span>
                 </li>
               {/each}
             </ul>
@@ -286,38 +305,27 @@
             <ul class="rsv__rows rsv__rows--nested">
               {#each g.entries as e (e.part.struct.id)}
                 {@const efrac = fillFraction(e.flow.amount, e.flow.capacity)}
-                <li class="rsv__row rsv__row--nested rsv__row--stacked"
+                <li class="rsv__row rsv__row--nested"
+                    style:--rsv-fill={efrac}
+                    style:--rsv-fill-color={fillColor(efrac, m.color)}
                     onmouseenter={() => highlightOn([e.part.struct.id])}
                     onmouseleave={highlightOff}>
                   <span class="rsv__row-icon">
                     <ComponentIcon kind={partKind(e.part)} />
                   </span>
-                  <div class="rsv__row-stack">
-                    <!-- Per-part readout: stored / capacity · rate.
-                         Unit is implicit from the parent resource
-                         header (e.g. "ELECTRIC CHARGE 250/250 J ·
-                         0.00 W") so it isn't repeated here — matches
-                         PowerView's storage rows for visual rhyme. -->
-                    <div class="rsv__row-line">
-                      <span class="rsv__row-name">{e.part.struct.title}</span>
-                      <span class="rsv__row-readout">
-                        <span class="rsv__row-readout-val">{fmtAmount(e.flow.amount)}</span><span
-                          class="rsv__row-readout-cap">/{fmtAmount(e.flow.capacity)}</span>
-                        <span
-                          class="rsv__row-readout-rate"
+                  <span class="rsv__row-name">{e.part.struct.title}</span>
+                  <!-- Unit is implicit from the parent resource header
+                       (already shows "ELECTRIC CHARGE 250/250 J · 0.00 W")
+                       so per-part rows omit it. -->
+                  <span class="rsv__row-readout">
+                    <span class="rsv__row-readout-val">{fmtAmount(e.flow.amount)}</span><span
+                      class="rsv__row-readout-cap">/{fmtAmount(e.flow.capacity)}</span>
+                    <span class="rsv__row-readout-rate"
                           class:rsv__row-readout-rate--neg={e.flow.rate < -RATE_EPSILON}
-                          class:rsv__row-readout-rate--zero={isZero(e.flow.rate)}
-                        ><span class="rsv__row-readout-sep">·</span>{fmtRate(e.flow.rate)}</span>
-                      </span>
-                    </div>
-                    <div
-                      class="rsv__row-line rsv__row-line--gauge"
-                      style:--sg-color-tint={m.color}
-                      style:--sg-glow-tint={m.glow}
-                    >
-                      <SegmentGauge fraction={efrac} />
-                    </div>
-                  </div>
+                          class:rsv__row-readout-rate--zero={isZero(e.flow.rate)}>
+                      <span class="rsv__row-readout-sep">·</span>{fmtRate(e.flow.rate)}
+                    </span>
+                  </span>
                 </li>
               {/each}
             </ul>
@@ -637,6 +645,36 @@
   .rsv__row:hover { background: rgba(126, 245, 184, 0.04); }
   .rsv__row:hover::before { opacity: 0.7; transform: scaleY(1); }
 
+  /* Fill underline: a 2 px bar at the row's bottom edge whose width
+     scales with `--rsv-fill` (0..1) and whose colour comes from
+     `--rsv-fill-color` (per-resource hue, with severity overrides for
+     low-fill rows). Replaces the per-row segment gauge — the row IS
+     the gauge now. Width transitions smoothly so a draining tank
+     animates rather than steps. */
+  .rsv__row::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: -1px;
+    height: 2px;
+    width: calc(var(--rsv-fill, 0) * 100%);
+    max-width: 100%;
+    background: var(--rsv-fill-color, var(--accent));
+    opacity: 0.85;
+    pointer-events: none;
+    transition:
+      width 360ms cubic-bezier(0.16, 1, 0.3, 1),
+      background 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .rsv__row:hover::after { opacity: 1; }
+
+  /* Pushes the readout to the right edge of BY-PART rows (no name
+     column, just code + readout). */
+  .rsv__row-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   /* Code tile. Locked to a uniform 36 px width so 2-char (EC) and
      4-char (N2H4) codes align across rows. The fill colour and
      subtle background tint come from --rsv-tile-color /
@@ -689,19 +727,10 @@
     white-space: nowrap;
   }
 
-  .rsv__row-gauge {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .rsv__row-gauge--narrow {
-    flex: 0 0 80px;
-  }
-
-  /* Amount column. Locked to 96 px so 50/50 EC and 1560/1560 L row up
-     to the same right edge — the gauges immediately to their left
-     therefore end at the same x across siblings. Text inside is
-     right-anchored, with the value, capacity, and unit each holding
-     their own tint. */
+  /* Amount readout (used by the BY-RESOURCE node-head aggregate row).
+     Locked to 96 px right-aligned so totals across resources line up
+     to the same edge. Per-part rows use `.rsv__row-readout` instead,
+     which can split rate from amount. */
   .rsv__amount {
     flex: 0 0 96px;
     text-align: right;
@@ -738,40 +767,6 @@
     color: var(--fg-dim);
   }
 
-  /* Stacked rows: name+amount on top, full-width gauge below. Mirrors
-     Power's storage row pattern so part names get full row width
-     instead of fighting an inline gauge for space. Icon stays top-
-     aligned with the title line. */
-  .rsv__row--stacked {
-    align-items: flex-start;
-    padding: 6px 6px;
-  }
-  .rsv__row--stacked.rsv__row--nested {
-    padding-left: 4px;
-  }
-  .rsv__row--stacked .rsv__row-icon {
-    margin-top: 1px;
-  }
-  .rsv__row-stack {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .rsv__row-line {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    min-width: 0;
-  }
-  .rsv__row-line--gauge {
-    /* SegmentGauge is `width: 100%`, so it stretches to whatever the
-       stack column gives it. */
-    padding: 0 1px;
-  }
-
   /* Per-part readout (stored / cap · rate). Three semantic atoms,
      each carrying its own colour: stored value (accent), capacity
      (dim), rate (signed — accent when filling, warn when draining,
@@ -794,6 +789,22 @@
   .rsv__row-readout-rate { color: var(--accent); }
   .rsv__row-readout-rate--neg { color: var(--warn); }
   .rsv__row-readout-rate--zero { color: var(--fg-dim); }
+  /* Unit subordinates inside the readout. Used by BY-PART rows where
+     the row stands alone; BY-RESOURCE per-part rows omit unit because
+     the parent header already declares it. */
+  .rsv__row-readout-unit {
+    margin-left: 4px;
+    font-size: 9px;
+    color: var(--fg-dim);
+    letter-spacing: 0.10em;
+  }
+  .rsv__row-readout-rate-unit {
+    font-style: normal;
+    margin-left: 3px;
+    font-size: 9px;
+    color: var(--fg-dim);
+    letter-spacing: 0.10em;
+  }
 
   /* Empty-state line — verbatim Power's pattern for visual rhyme. */
   .rsv__empty {
