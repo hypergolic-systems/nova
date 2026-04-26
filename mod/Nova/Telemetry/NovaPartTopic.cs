@@ -28,14 +28,27 @@ namespace Nova.Telemetry;
 //   ]
 //
 // Component frames:
-//   ["S", currentEcRate, deployed, sunlit]               SolarPanel
+//   ["S", currentEcRate, deployed, sunlit, retractable]  SolarPanel
 //   ["B", soc(0..1), capacity, currentRate]              Battery
 //   ["W", maxEcRate, activity(0..1)]                     ReactionWheel
 //   ["L", maxEcRate, activity(0..1)]                     Light
 //   ["E", alternatorMaxRate, thrustFraction(0..1)]       Engine
 //
-// `deployed` / `sunlit` are encoded as `0`/`1` rather than literal
-// JSON booleans (consistent with the rest of the positional payload).
+// `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
+// rather than literal JSON booleans (consistent with the rest of
+// the positional payload).
+//
+// Inbound ops (UI → mod, dispatched via Topic.HandleOp):
+//   "setSolarDeployed" [bool]  — extend or retract the part's
+//                                deployable solar panel. No-op if
+//                                the part has no NovaDeployableSolar
+//                                module, or if the requested state
+//                                isn't reachable (already animating,
+//                                already in the requested state, or
+//                                trying to retract a non-retractable
+//                                panel in flight). Symmetry cousins
+//                                ride along — Extend/Retract walk
+//                                the symmetry list themselves.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -85,6 +98,28 @@ public sealed class NovaPartTopic : Topic {
   public static void MarkAllDirty() {
     foreach (var t in _byPart.Values) {
       if (t != null) t.MarkDirty();
+    }
+  }
+
+  // Inbound op router — see file header for the supported envelope.
+  // Runs on Unity's main thread via OpDispatcher, so direct calls
+  // into KSP PartModule state are safe.
+  public override void HandleOp(string op, List<object> args) {
+    switch (op) {
+      case "setSolarDeployed": {
+        if (args == null || args.Count < 1 || !(args[0] is bool deployed)) {
+          Debug.LogWarning(LogPrefix + Name + " setSolarDeployed: expected [bool]");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaDeployableSolarModule>();
+        if (module == null) return;
+        if (deployed) module.Extend();
+        else module.Retract();
+        return;
+      }
+      default:
+        base.HandleOp(op, args);
+        return;
     }
   }
 
@@ -146,6 +181,7 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, solar.IsSunlit ? solar.EffectiveRate : 0.0, ref f);
         WriteBit(sb, solar.IsDeployed, ref f);
         WriteBit(sb, solar.IsSunlit, ref f);
+        WriteBit(sb, solar.IsRetractable, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

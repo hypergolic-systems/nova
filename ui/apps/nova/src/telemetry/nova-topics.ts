@@ -30,7 +30,7 @@ export type NovaResourceFrame = [
 
 // One named tuple per kind so visualization code can import the
 // specific frame type it cares about without re-narrowing the union.
-export type NovaSolarFrame   = ['S', currentEcRate: number, deployed: 0 | 1, sunlit: 0 | 1];
+export type NovaSolarFrame   = ['S', currentEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1];
 export type NovaBatteryFrame = ['B', soc: number, capacity: number, rate: number];
 export type NovaWheelFrame   = ['W', maxEcRate: number, activity: number];
 export type NovaLightFrame   = ['L', maxEcRate: number, activity: number];
@@ -76,6 +76,11 @@ export interface SolarState {
   rate: number;
   deployed: boolean;
   sunlit: boolean;
+  /** True iff the panel can be retracted after deployment. Drives
+   *  whether the UI offers a toggle (true) or a one-shot open
+   *  button (false). Fixed (non-deployable) panels also report
+   *  false, but they're always `deployed: true` so no button shows. */
+  retractable: boolean;
 }
 
 export interface BatteryState {
@@ -140,8 +145,25 @@ export const NovaVesselStructureTopic = (
 ): Topic<NovaVesselStructureFrame> =>
   topic<NovaVesselStructureFrame>(`NovaVesselStructure/${vesselId}`);
 
-export const NovaPartTopic = (partId: string): Topic<NovaPartFrame> =>
-  topic<NovaPartFrame>(`NovaPart/${partId}`);
+/**
+ * Inbound ops the UI can fire at a per-part NovaPart topic. Keep in
+ * sync with `NovaPartTopic.HandleOp` in mod/Nova/Telemetry — adding
+ * a method here without a matching C# case will silently no-op.
+ */
+export interface NovaPartOps {
+  /**
+   * Extend (`true`) or retract (`false`) this part's deployable
+   * solar panel. No-op if the part has no `NovaDeployableSolar`
+   * module, if the panel is mid-animation, or if the requested
+   * state would retract a non-retractable panel in flight. Symmetry
+   * cousins are dispatched by the mod side — fire one op for the
+   * representative.
+   */
+  setSolarDeployed(deployed: boolean): void;
+}
+
+export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
+  topic<NovaPartFrame, NovaPartOps>(`NovaPart/${partId}`);
 
 // ---------- Decoders -------------------------------------------
 
@@ -197,7 +219,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
   for (const c of components) {
     switch (c[0]) {
       case 'S':
-        out.solar.push({ rate: c[1], deployed: c[2] === 1, sunlit: c[3] === 1 });
+        out.solar.push({
+          rate: c[1],
+          deployed: c[2] === 1,
+          sunlit: c[3] === 1,
+          retractable: c[4] === 1,
+        });
         break;
       case 'B':
         out.battery.push({ soc: c[1], capacity: c[2], rate: c[3] });

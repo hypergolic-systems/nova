@@ -12,7 +12,9 @@
 
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import { useStageOps } from '@dragonglass/telemetry/svelte';
+  import { NovaPartTopic } from '../../telemetry/nova-topics';
+  import type { SolarState } from '../../telemetry/nova-topics';
+  import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
@@ -157,6 +159,17 @@
     stageOps.setHighlightParts([]);
   }
   onDestroy(() => stageOps.setHighlightParts([]));
+
+  // Solar deploy controls. Per-part NovaPartTopic exposes
+  // setSolarDeployed(bool) — the mod side resolves the right
+  // NovaDeployableSolar module and walks symmetry cousins itself.
+  const ksp = getKsp();
+  function solarOf(p: NovaTaggedPart): SolarState | undefined {
+    return p.state?.solar?.[0];
+  }
+  function setSolarDeployed(partId: string, deployed: boolean): void {
+    ksp.send(NovaPartTopic(partId), 'setSolarDeployed', deployed);
+  }
 </script>
 
 {#snippet chev(open: boolean)}
@@ -173,6 +186,38 @@
     <span class="pwr__empty-text">{text}</span>
     <span class="pwr__empty-rule"></span>
   </p>
+{/snippet}
+
+<!-- Per-row solar deploy control. Renders nothing until the part's
+     solar state lands. Once it does:
+       deployed=false              → "open" button (chevron-up)
+       deployed=true, retractable  → "close" button (chevron-down)
+       deployed=true, !retractable → no control (locked open)
+     Click stops propagation so the row's hover-highlight handlers
+     stay coherent. -->
+{#snippet solarControl(p: NovaTaggedPart)}
+  {@const s = solarOf(p)}
+  {#if s && !s.deployed}
+    <button type="button" class="pwr__row-action pwr__row-action--open"
+            aria-label="Extend solar panel"
+            title="Extend"
+            onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, true); }}>
+      <svg viewBox="0 0 8 8" aria-hidden="true">
+        <path d="M1.6 5.2 L4 2.6 L6.4 5.2" fill="none" stroke="currentColor"
+              stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+  {:else if s && s.deployed && s.retractable}
+    <button type="button" class="pwr__row-action pwr__row-action--close"
+            aria-label="Retract solar panel"
+            title="Retract"
+            onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, false); }}>
+      <svg viewBox="0 0 8 8" aria-hidden="true">
+        <path d="M1.6 2.8 L4 5.4 L6.4 2.8" fill="none" stroke="currentColor"
+              stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+  {/if}
 {/snippet}
 
 <section class="pwr">
@@ -216,13 +261,16 @@
               {#if expanded.gen_solar}
                 <ul class="pwr__rows pwr__rows--nested">
                   {#each genGroups.solar as p (p.struct.id)}
+                    {@const s = solarOf(p)}
                     <li class="pwr__row pwr__row--nested"
+                        class:pwr__row--closed={s && !s.deployed}
                         onmouseenter={() => highlightOn([p.struct.id])}
                         onmouseleave={highlightOff}>
                       <span class="pwr__row-icon">
                         <ComponentIcon kind="solar" />
                       </span>
                       <span class="pwr__row-name">{p.struct.title}</span>
+                      {@render solarControl(p)}
                       <span class="pwr__row-rate"
                             class:pwr__row-rate--zero={isZero(generationRate(p))}>
                         {fmtRate(generationRate(p))}<em>EC/s</em>
@@ -234,13 +282,17 @@
             </li>
           {/if}
           {#each genGroups.inline as p (p.struct.id)}
+            {@const isSolar = isSolarPart(p)}
+            {@const s = isSolar ? solarOf(p) : undefined}
             <li class="pwr__row"
+                class:pwr__row--closed={s && !s.deployed}
                 onmouseenter={() => highlightOn([p.struct.id])}
                 onmouseleave={highlightOff}>
               <span class="pwr__row-icon">
                 <ComponentIcon kind={genKind(p)} />
               </span>
               <span class="pwr__row-name">{p.struct.title}</span>
+              {#if isSolar}{@render solarControl(p)}{/if}
               <span class="pwr__row-rate"
                     class:pwr__row-rate--zero={isZero(generationRate(p))}>
                 {fmtRate(generationRate(p))}<em>EC/s</em>
@@ -803,5 +855,72 @@
     font-size: 9px;
     color: var(--fg-dim);
     letter-spacing: 0.24em;
+  }
+
+  /* Per-row solar deploy action. A small bordered cell with the
+     chevron glyph; hover lifts to full accent. The row's hover
+     wash is still visible behind it. */
+  .pwr__row-action {
+    appearance: none;
+    flex: 0 0 18px;
+    width: 18px;
+    height: 14px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: 1px solid var(--accent-dim);
+    color: var(--fg-dim);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 1px;
+    transition:
+      color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+      border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+      background 200ms cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .pwr__row-action svg {
+    width: 8px;
+    height: 8px;
+    display: block;
+  }
+  .pwr__row-action:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(126, 245, 184, 0.10);
+    box-shadow: 0 0 4px var(--accent-glow);
+  }
+  .pwr__row-action:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  /* The "open" variant calls a little more loudly when its row is
+     in the closed (dimmed) state — the user landed on a row that's
+     advertising "I'm offline, click here". */
+  .pwr__row--closed .pwr__row-action--open {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* Closed solar panel row: dim the text/icon/rate per-element so
+     the action button can stay at full strength (it's the only
+     interactive surface in a non-functional row). The hover wash
+     and indicator bar are still active, since the part is real
+     and worth highlighting in the 3-D scene. */
+  .pwr__row--closed .pwr__row-icon {
+    color: var(--fg-mute);
+  }
+  .pwr__row--closed .pwr__row-name {
+    color: var(--fg-dim);
+    font-style: italic;
+  }
+  .pwr__row--closed .pwr__row-rate {
+    color: var(--fg-dim);
+  }
+  .pwr__row--closed .pwr__row-rate em {
+    color: var(--fg-mute);
   }
 </style>

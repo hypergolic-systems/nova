@@ -21,6 +21,11 @@ public class NovaDeployableSolarModule : NovaSolarModule {
 
     anim = part.FindModelAnimators(animationName)?[0];
 
+    // Surface the retractable flag to the virtual component so the
+    // UI can pick it up via NovaPartTopic — drives whether the row
+    // gets a toggle (retractable) or a one-shot open button.
+    solarPanel.IsRetractable = retractable;
+
     if (state == StartState.Editor || isExtended) {
       SetAnimationPosition(1f);
       solarPanel.IsDeployed = true;
