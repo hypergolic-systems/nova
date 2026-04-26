@@ -44,8 +44,9 @@ ui-bootstrap: _dragonglass-check
     cd ui && npm install
 
 # Vite library-mode build → ui/apps/nova/dist/hud.js (deployed to
-# GameData/Nova/UI/ by `just dist`).
-ui-build: ui-bootstrap
+# GameData/Nova/UI/ by `just dist`). Typechecks first so build never
+# ships a bundle that wouldn't pass CI.
+ui-build: ui-bootstrap ui-typecheck
     cd ui && npm run build
 
 # Vite dev server (handy for iterating on Hud.svelte standalone;
@@ -53,8 +54,11 @@ ui-build: ui-bootstrap
 ui-dev: ui-bootstrap
     cd ui && npm run dev
 
+# Project-graph TS check (root `npm run typecheck` is `tsc -b`) plus
+# svelte-check on each workspace — the latter catches Svelte template
+# errors and unused-class-field-style checks that `tsc -b` skips.
 ui-typecheck: ui-bootstrap
-    cd ui && npm run typecheck
+    cd ui && npm run typecheck && npm run typecheck --workspaces --if-present
 
 # --- Proto (proto/ → mod/Nova.Core/Persistence/Protos/Generated/) ---
 
