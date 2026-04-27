@@ -20,6 +20,17 @@ public class VirtualVessel {
   private double simulationTime;
   private double nextExpiry = double.PositiveInfinity;
 
+  // Vessel-level solar aggregation. One Device on the root node sums
+  // every panel's ChargeRate as its topology output coefficient; per-tick
+  // Demand caps the LP variable so output tops out at the SolarOptimizer
+  // result (sunlit-and-deployed-aware). See ComputeSolarRates +
+  // UpdateSolarDeviceDemand.
+  private ResourceSolver.Device solarDevice;
+  private double totalChargeRate;
+  private double cachedOptimalRate;
+  private bool vesselSunlit = true;
+  private double nextShadowTransitionUT = double.PositiveInfinity;
+
   public Func<double, Vec3d> GetVesselPosition;
   public Func<double, Vec3d> GetSunDirection;
   public double OrbitPeriod;
@@ -75,8 +86,28 @@ public class VirtualVessel {
     var rootNode = solver.AddNode();
     WalkPartTree(rootNode, root.Key);
 
+    BuildSolarDevice(rootNode);
+
     needsSolve = true;
     simulationTime = time;
+  }
+
+  // Sum every panel's rated ChargeRate and create one aggregate producer
+  // Device on the root node. Per-tick Demand (set by UpdateSolarDeviceDemand)
+  // gates the LP variable to the SolarOptimizer-computed optimal rate.
+  private void BuildSolarDevice(ResourceSolver.Node rootNode) {
+    totalChargeRate = 0;
+    foreach (var panel in AllComponents().OfType<SolarPanel>())
+      totalChargeRate += panel.ChargeRate;
+
+    if (totalChargeRate <= 0) {
+      solarDevice = null;
+      return;
+    }
+
+    solarDevice = rootNode.AddDevice(ResourceSolver.Priority.Low);
+    solarDevice.AddOutput(Resource.ElectricCharge, totalChargeRate);
+    solarDevice.Demand = 0;  // populated per-tick via UpdateSolarDeviceDemand
   }
 
   /// <summary>
@@ -133,14 +164,17 @@ public class VirtualVessel {
   /// <summary>
   /// Compute optimal solar rates for all panels on the vessel.
   /// Finds the sun direction that maximizes total power given panel geometry,
-  /// then proportions the result to each panel by rated capacity.
+  /// then proportions the result to each panel by rated capacity. Caches
+  /// the aggregate optimal rate for the vessel-level solar Device's per-tick
+  /// Demand calc.
   /// </summary>
   public void ComputeSolarRates() {
+    cachedOptimalRate = 0;
     var panels = AllComponents().OfType<SolarPanel>().ToList();
     if (panels.Count == 0) return;
 
     var deployed = new List<SolarOptimizer.Panel>();
-    double totalChargeRate = 0;
+    double deployedChargeRate = 0;
 
     foreach (var panel in panels) {
       if (!panel.IsDeployed) {
@@ -152,17 +186,32 @@ public class VirtualVessel {
         ChargeRate = panel.ChargeRate,
         IsTracking = panel.IsTracking,
       });
-      totalChargeRate += panel.ChargeRate;
+      deployedChargeRate += panel.ChargeRate;
     }
 
-    if (totalChargeRate <= 0) return;
+    if (deployedChargeRate <= 0) return;
 
     double optimalRate = SolarOptimizer.ComputeOptimalRate(deployed);
+    cachedOptimalRate = optimalRate;
 
     foreach (var panel in panels) {
       if (panel.IsDeployed)
-        panel.EffectiveRate = (panel.ChargeRate / totalChargeRate) * optimalRate;
+        panel.EffectiveRate = (panel.ChargeRate / deployedChargeRate) * optimalRate;
     }
+  }
+
+  // Per-tick LP gate for the aggregate solar Device. Demand ∈ [0, 1] is
+  // (cachedOptimalRate / totalChargeRate) when the vessel is sunlit, 0
+  // otherwise — so the LP variable's output tops out at the optimal-
+  // orientation collection rate, not the rated max.
+  private void UpdateSolarDeviceDemand() {
+    if (solarDevice == null) return;
+    if (totalChargeRate <= 0) {
+      solarDevice.Demand = 0;
+      return;
+    }
+    solarDevice.Demand = vesselSunlit ? cachedOptimalRate / totalChargeRate : 0;
+    solarDevice.ValidUntil = nextShadowTransitionUT;
   }
 
   private const int MaxTickIterations = 100;
@@ -170,6 +219,7 @@ public class VirtualVessel {
   private void DoSolve() {
     try {
       UpdateShadowState();
+      UpdateSolarDeviceDemand();
       foreach (var component in AllComponents())
         component.OnPreSolve();
       solver.Solve();
@@ -222,6 +272,10 @@ public class VirtualVessel {
   private void UpdateShadowState() {
     var shadow = ShadowCalculator.Compute(GetVesselPosition, GetSunDirection,
         OrbitPeriod, BodyRadius, OrbitingSun, simulationTime);
+    vesselSunlit = shadow.InSunlight;
+    nextShadowTransitionUT = shadow.NextTransitionUT;
+    // Stamp per-panel for telemetry — Power view's per-panel rows still
+    // surface deploy/sunlit state. The LP doesn't read these anymore.
     foreach (var panel in AllComponents().OfType<SolarPanel>()) {
       panel.IsSunlit = shadow.InSunlight;
       panel.ShadowTransitionUT = shadow.NextTransitionUT;

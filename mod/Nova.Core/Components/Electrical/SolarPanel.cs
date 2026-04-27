@@ -4,6 +4,12 @@ using Nova.Core.Utils;
 
 namespace Nova.Core.Components.Electrical;
 
+// Per-panel state for the UI / telemetry. The LP entry is owned by
+// `VirtualVessel` as a single aggregate solar Device summed across every
+// panel on the vessel — this component contributes its `ChargeRate` to
+// that sum, and its deploy/sunlit/EffectiveRate fields drive the per-
+// panel rows in the Power view, but it does not register its own LP
+// device.
 public class SolarPanel : VirtualComponent {
   public double ChargeRate;
   public Vec3d PanelDirection;
@@ -14,29 +20,10 @@ public class SolarPanel : VirtualComponent {
   // false — the UI surfaces a toggle only when this is true, an open
   // button only when !IsDeployed.
   public bool IsRetractable;
+  // Pro-rata share of the vessel-aggregate optimal rate, in EC/s. Set
+  // by `VirtualVessel.ComputeSolarRates` whenever deploy state changes;
+  // displayed by the UI's per-panel rows.
   public double EffectiveRate;
   public bool IsSunlit = true;
   public double ShadowTransitionUT = double.PositiveInfinity;
-
-  private ResourceSolver.Device device;
-
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
-    device = node.AddDevice(ResourceSolver.Priority.Low);
-    // Topology coefficient is the panel's rated max. Per-tick gating
-    // (deploy state + sun visibility) happens via MaxActivity, and the
-    // sun-angle / exposure scale lives in EffectiveRate (set by
-    // ComputeSolarRates / SolarOptimizer at deploy events).
-    device.AddOutput(Resource.ElectricCharge, ChargeRate);
-    device.Demand = 1.0;
-  }
-
-  public override void OnPreSolve() {
-    if (device == null) return;
-    // Binary on/off based on deploy state + sun visibility. Magnitude
-    // when on is EffectiveRate / ChargeRate (≤ 1), so the LP variable
-    // tops out at the optimal-orientation rate, not the rated rate.
-    var scale = ChargeRate > 1e-9 ? EffectiveRate / ChargeRate : 0;
-    device.MaxActivity = (IsDeployed && IsSunlit) ? scale : 0;
-    device.ValidUntil = ShadowTransitionUT;
-  }
 }
