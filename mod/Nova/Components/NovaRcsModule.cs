@@ -63,11 +63,18 @@ public class NovaRcsModule : NovaPartModule, ITorqueProvider {
     pos = neg = Vector3.zero;
     if (vessel == null || thrusterTransforms == null || rcs == null) return;
     var com = vessel.CoM;
+    var refXform = vessel.ReferenceTransform;
     foreach (var t in thrusterTransforms) {
       var dir = useZaxis ? t.forward : t.up;
       var thrust = -dir * (float)rcs.ThrusterPower;
       var lever = t.position - com;
-      var torque = Vector3.Cross(lever, thrust);
+      // Compute torque in world frame, then rotate into vessel-local
+      // frame so `pos.x / .y / .z` are torques around vessel pitch /
+      // roll / yaw axes — matching SAS's per-axis ctrlState mapping
+      // and the convention NovaReactionWheelModule already uses. The
+      // previous world-frame components misaligned with the per-axis
+      // input whenever the vessel was rotated relative to world.
+      var torque = refXform.InverseTransformDirection(Vector3.Cross(lever, thrust));
       pos.x = Mathf.Max(pos.x, torque.x);
       neg.x = Mathf.Max(neg.x, -torque.x);
       pos.y = Mathf.Max(pos.y, torque.y);
