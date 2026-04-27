@@ -89,10 +89,10 @@ public class DeltaVSimulationTests {
 
   [TestMethod]
   public void SingleStage_SingleEngine() {
-    // One tank (100L RP-1, density=0.9 → 90 kg fuel) + one engine.
+    // One tank (100L RP-1, density=0.8 → 80 kg fuel) + one engine.
     // Dry mass = 10 kg (pod) + 5 kg (tank) + 5 kg (engine) = 20 kg.
-    // Wet mass = 20 + 90 = 110 kg.
-    // Expected Δv = Isp * g0 * ln(110 / 20)
+    // Wet mass = 20 + 80 = 100 kg.
+    // Expected Δv = Isp * g0 * ln(100 / 20)
     var vessel = BuildVessel(new[] {
       (1u, "pod", (uint?)null, 10.0, new List<VirtualComponent>()),
       (2u, "tank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
@@ -106,10 +106,10 @@ public class DeltaVSimulationTests {
 
     Assert.AreEqual(1, results.Count, "Should have one stage");
 
-    var expected = 300 * G0 * Math.Log(110.0 / 20.0);
+    var expected = 300 * G0 * Math.Log(100.0 / 20.0);
     Assert.AreEqual(expected, results[0].DeltaV, expected * 0.01,
       $"Delta-v should be ~{expected:F0} m/s");
-    Assert.AreEqual(110, results[0].StartMass, 1, "Start mass should be ~110 kg");
+    Assert.AreEqual(100, results[0].StartMass, 1, "Start mass should be ~100 kg");
     Assert.AreEqual(20, results[0].EndMass, 1, "End mass should be ~20 kg");
     Assert.AreEqual(300, results[0].Isp, 1, "Isp should be 300s");
   }
@@ -137,16 +137,16 @@ public class DeltaVSimulationTests {
 
     Assert.IsTrue(results.Count >= 2, $"Should have at least 2 stages, got {results.Count}");
 
-    // Stage 2: both engines drain lower tank via crossfeed (90 kg fuel).
-    // Wet=160, after lower fuel gone=70 (still have 45 kg upper fuel).
-    var boosterExpected = 300 * G0 * Math.Log(160.0 / 70.0);
+    // Stage 2: both engines drain lower tank via crossfeed (80 kg fuel).
+    // Wet=145, after lower fuel gone=65 (still have 40 kg upper fuel).
+    var boosterExpected = 300 * G0 * Math.Log(145.0 / 65.0);
     var boosterResult = results.First(r => r.InverseStageIndex == 2);
     Assert.AreEqual(boosterExpected, boosterResult.DeltaV, boosterExpected * 0.05,
       $"Booster Δv should be ~{boosterExpected:F0} m/s");
 
-    // Stage 1: jettison lower (10 kg dry), upper engine burns upper tank (45 kg fuel).
-    // Wet=60, dry=15.
-    var upperExpected = 300 * G0 * Math.Log(60.0 / 15.0);
+    // Stage 1: jettison lower (10 kg dry), upper engine burns upper tank (40 kg fuel).
+    // Wet=55, dry=15.
+    var upperExpected = 300 * G0 * Math.Log(55.0 / 15.0);
     var upperResult = results.First(r => r.InverseStageIndex == 1);
     Assert.AreEqual(upperExpected, upperResult.DeltaV, upperExpected * 0.05,
       $"Upper Δv should be ~{upperExpected:F0} m/s");

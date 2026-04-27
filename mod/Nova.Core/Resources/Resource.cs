@@ -45,14 +45,14 @@ public class Resource {
       Name = "Liquid Oxygen",
       Abbreviation = "LOX",
       Unit = UnitDefinition.Liter,
-      Density = 1.1,
+      Density = 1.2,
     };
 
     registry["RP-1"] = new Resource {
       Name = "RP-1",
       Abbreviation = "RP-1",
       Unit = UnitDefinition.Liter,
-      Density = 0.9,
+      Density = 0.8,
     };
 
     registry["Hydrazine"] = new Resource {

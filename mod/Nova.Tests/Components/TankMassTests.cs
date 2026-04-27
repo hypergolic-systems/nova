@@ -17,25 +17,25 @@ public class TankMassTests {
   [TestMethod]
   public void FullTankHasCorrectMass() {
     var rp1 = new Buffer {
-      Resource = Resource.RP1, Capacity = 390, Contents = 390,
+      Resource = Resource.RP1, Capacity = 200, Contents = 200,
     };
     var lox = new Buffer {
-      Resource = Resource.LiquidOxygen, Capacity = 130, Contents = 130,
+      Resource = Resource.LiquidOxygen, Capacity = 300, Contents = 300,
     };
 
-    // RP-1: 390 L * 0.9 kg/L = 351 kg
-    // LOX:  130 L * 1.1 kg/L = 143 kg
-    // Total: 494 kg = 0.494 t
-    Assert.AreEqual(0.494, FuelMassTonnes(rp1, lox), 0.001);
+    // RP-1: 200 L * 0.8 kg/L = 160 kg
+    // LOX:  300 L * 1.2 kg/L = 360 kg
+    // Total: 520 kg = 0.520 t
+    Assert.AreEqual(0.520, FuelMassTonnes(rp1, lox), 0.001);
   }
 
   [TestMethod]
   public void EmptyTankHasZeroMass() {
     var rp1 = new Buffer {
-      Resource = Resource.RP1, Capacity = 390, Contents = 0,
+      Resource = Resource.RP1, Capacity = 200, Contents = 0,
     };
     var lox = new Buffer {
-      Resource = Resource.LiquidOxygen, Capacity = 130, Contents = 0,
+      Resource = Resource.LiquidOxygen, Capacity = 300, Contents = 0,
     };
 
     Assert.AreEqual(0.0, FuelMassTonnes(rp1, lox));
@@ -44,16 +44,16 @@ public class TankMassTests {
   [TestMethod]
   public void PartiallyFilledTank() {
     var rp1 = new Buffer {
-      Resource = Resource.RP1, Capacity = 390, Contents = 195,
+      Resource = Resource.RP1, Capacity = 200, Contents = 100,
     };
     var lox = new Buffer {
-      Resource = Resource.LiquidOxygen, Capacity = 130, Contents = 65,
+      Resource = Resource.LiquidOxygen, Capacity = 300, Contents = 150,
     };
 
-    // RP-1: 195 * 0.9 = 175.5 kg
-    // LOX:  65 * 1.1  = 71.5 kg
-    // Total: 247 kg = 0.247 t
-    Assert.AreEqual(0.247, FuelMassTonnes(rp1, lox), 0.001);
+    // RP-1: 100 * 0.8 = 80 kg
+    // LOX:  150 * 1.2 = 180 kg
+    // Total: 260 kg = 0.260 t
+    Assert.AreEqual(0.260, FuelMassTonnes(rp1, lox), 0.001);
   }
 
   [TestMethod]
