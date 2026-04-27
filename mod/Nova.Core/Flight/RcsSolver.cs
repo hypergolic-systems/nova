@@ -25,7 +25,13 @@ public class RcsSolver {
     public Vec3d Position;   // vessel-local space
     public Vec3d Direction;  // unit thrust direction, vessel-local
     public double MaxPower;  // kN
-    public Vec3d Torque;     // direct torque for pure-torque actuators (reaction wheels)
+    public Vec3d Torque;     // direct torque for pure-torque actuators (reaction wheels / gimbals)
+    // True for engine gimbal slots — actuator cost is exactly zero
+    // (the engine fires anyway, deflecting it is genuinely free).
+    // Reaction wheels leave this false: they're pure-torque too, but
+    // the QP charges them a tiny EC-stand-in cost so a vessel with
+    // both gimbal and wheel routes torque through the gimbal first.
+    public bool IsGimbal;
   }
 
   public struct Input {
@@ -40,8 +46,14 @@ public class RcsSolver {
   private readonly Vec3d[] forces;       // constant: MaxPower * Direction
   private readonly Vec3d[] positions;    // constant: thruster positions
   private readonly Vec3d[] directTorques; // non-zero for pure-torque actuators
-  private bool[] isPureTorque;           // true = reaction wheel (no force, no fuel)
+  private bool[] isPureTorque;           // true = reaction wheel / gimbal (no force)
+  private bool[] isGimbal;               // true = engine gimbal (zero linear cost)
   private bool hasPureTorque;            // true if any pure-torque actuator present
+  // Per-slot upper bound applied during projection. Mutable mid-flight
+  // for gimbal slots — set by `SetSlotMaxThrottle` from the caller's
+  // per-tick engine throttle. Q stays valid because tightening the box
+  // doesn't move the quadratic form.
+  private double[] maxThrottles;
   private int logCounter;
   public Action<string> Log;
 
@@ -67,9 +79,17 @@ public class RcsSolver {
   private const double WForce = 100.0;
   private const double WTorque = 1.0;
 
-  // Regularization.
-  private const double EpsFuel = 1e-3;   // linear fuel penalty (base)
-  private const double EpsFuelWheelBoost = 1.0; // extra penalty when wheels present
+  // Linear actuator costs — establish a strict priority gimbal > wheel > RCS:
+  //   gimbal: 0                  (truly free; engine fires anyway, deflecting costs nothing)
+  //   wheel:  EpsWheel           (EC-stand-in; loses to gimbal, beats RCS)
+  //   RCS:    EpsFuel base,      (no free actuators present — RCS is the only option)
+  //           EpsFuelWheelBoost  (free options exist — RCS only as a last resort)
+  // The gaps are sized to dominate EpsReg's load-spreading and the
+  // QP's projected-gradient convergence floor (~0.1) so the order is
+  // visible in the solved throttles even at moderate demand.
+  private const double EpsFuel = 1e-3;
+  private const double EpsWheel = 0.1;
+  private const double EpsFuelWheelBoost = 1.0;
   private const double EpsReg = 1e-4;    // quadratic: spreads load, guarantees PSD
 
   private const double CoMThreshold = 0.1; // rebuild Q when CoM moves this far
@@ -81,6 +101,9 @@ public class RcsSolver {
     positions = new Vec3d[n];
     directTorques = new Vec3d[n];
     isPureTorque = new bool[n];
+    isGimbal = new bool[n];
+    maxThrottles = new double[n];
+    for (int i = 0; i < n; i++) maxThrottles[i] = 1.0;
   }
 
   /// <summary>
@@ -93,6 +116,11 @@ public class RcsSolver {
       forces[i] = thrusters[i].MaxPower * thrusters[i].Direction;
       directTorques[i] = thrusters[i].Torque;
       isPureTorque[i] = thrusters[i].MaxPower == 0 && thrusters[i].Torque.SqrMagnitude > 1e-20;
+      isGimbal[i] = thrusters[i].IsGimbal;
+      // Reset per-slot bounds to full capacity on rebuild. Callers
+      // wanting tighter bounds (gimbals scaled by engine output)
+      // call SetSlotMaxThrottle afterwards.
+      maxThrottles[i] = 1.0;
     }
     hasPureTorque = false;
     for (int i = 0; i < n; i++)
@@ -100,6 +128,19 @@ public class RcsSolver {
     cachedQ = null;
     scratchC = null;
     warmT = null;
+  }
+
+  /// <summary>
+  /// Update a single slot's max-throttle bound without invalidating the
+  /// cached Q matrix. Used for gimbal slots — the caller passes the
+  /// engine's per-tick `NormalizedOutput` so the QP can't ask for more
+  /// gimbal authority than the engine is actually delivering.
+  /// </summary>
+  public void SetSlotMaxThrottle(int slot, double max) {
+    if (slot < 0 || slot >= n) return;
+    if (max < 0) max = 0;
+    if (max > 1) max = 1;
+    maxThrottles[slot] = max;
   }
 
   /// <summary>
@@ -140,15 +181,28 @@ public class RcsSolver {
 
     var tDes = Vec3d.Zero;
     if (hasTorque) {
-      var tHat = input.DesiredTorque.Normalized;
-      double torqueMag = Math.Min(1.0, input.DesiredTorque.Magnitude);
-      double maxTorqueProj = 0;
+      // Per-axis demand sizing. SAS's mental model is that
+      // `ctrlState.pitch / roll / yaw` are independent fractions of the
+      // per-axis authority it sees via `ITorqueProvider` — pitch and
+      // yaw at the same time should both still get their full
+      // proportional share. A magnitude-normalized projection (the
+      // previous scheme) squeezed combined inputs into a single
+      // 1.0-magnitude budget and shorted SAS on each axis, producing
+      // an oscillating PID hunt for the missing torque.
+      double sumPosX = 0, sumNegX = 0, sumPosY = 0, sumNegY = 0, sumPosZ = 0, sumNegZ = 0;
       for (int i = 0; i < n; i++) {
-        double proj = Vec3d.Dot(normTorques[i], tHat);
-        if (proj > 0.5 * normTorques[i].Magnitude)
-          maxTorqueProj += proj;
+        var nt = normTorques[i];
+        if (nt.X > 0) sumPosX += nt.X; else sumNegX += -nt.X;
+        if (nt.Y > 0) sumPosY += nt.Y; else sumNegY += -nt.Y;
+        if (nt.Z > 0) sumPosZ += nt.Z; else sumNegZ += -nt.Z;
       }
-      tDes = tHat * (torqueMag * maxTorqueProj);
+      double tx = Math.Max(-1.0, Math.Min(1.0, input.DesiredTorque.X));
+      double ty = Math.Max(-1.0, Math.Min(1.0, input.DesiredTorque.Y));
+      double tz = Math.Max(-1.0, Math.Min(1.0, input.DesiredTorque.Z));
+      tDes = new Vec3d(
+        tx >= 0 ? tx * sumPosX : tx * sumNegX,
+        ty >= 0 ? ty * sumPosY : ty * sumNegY,
+        tz >= 0 ? tz * sumPosZ : tz * sumNegZ);
     }
 
     // Use cached scratch arrays to avoid per-frame allocations.
@@ -159,24 +213,39 @@ public class RcsSolver {
     var y = scratchY;
     var grad = scratchGrad;
 
-    double fuelPenalty = hasPureTorque ? EpsFuelWheelBoost : EpsFuel;
+    // RCS pays the fuel cost. The boost kicks in whenever a free
+    // actuator (wheel or gimbal) is available, biasing the QP away
+    // from RCS until the free options saturate.
+    double rcsFuelPenalty = hasPureTorque ? EpsFuelWheelBoost : EpsFuel;
     for (int i = 0; i < n; i++) {
       c[i] = -2.0 * (WForce * Vec3d.Dot(forces[i], fDes)
                     + WTorque * Vec3d.Dot(normTorques[i], tDes));
-      if (!isPureTorque[i]) c[i] += fuelPenalty; // no fuel cost for reaction wheels
+      if (isGimbal[i]) {
+        // truly free — no linear cost
+      } else if (isPureTorque[i]) {
+        c[i] += EpsWheel; // wheels: EC-stand-in, loses to gimbal
+      } else {
+        c[i] += rcsFuelPenalty; // RCS: heavy cost when free options exist
+      }
     }
 
     // Warm-start from previous frame, scaled by input magnitude ratio.
     // This prevents stale high-throttle solutions from persisting when
     // input drops (e.g. SAS near target), while staying smooth during
-    // gradual changes (no hard reset → no jitter).
+    // gradual changes (no hard reset → no jitter). Also clamp against
+    // the per-slot bound — a gimbal slot's bound may have shrunk this
+    // frame (engine throttled down) and the warm-start would otherwise
+    // start outside the feasible region.
     double inputMag = fDes.Magnitude + tDes.Magnitude;
     if (warmT == null || prevInputMag < 1e-12) {
       Array.Clear(t, 0, n);
     } else {
       double scale = Math.Min(1.0, inputMag / prevInputMag);
-      for (int i = 0; i < n; i++)
-        t[i] = warmT[i] * scale;
+      for (int i = 0; i < n; i++) {
+        double w = warmT[i] * scale;
+        if (w > maxThrottles[i]) w = maxThrottles[i];
+        t[i] = w;
+      }
     }
     Array.Copy(t, tPrev, n);
 
@@ -195,13 +264,14 @@ public class RcsSolver {
         grad[i] = g;
       }
 
-      // Projected step: t_next = clamp(y - α*grad, 0, 1)
+      // Projected step: t_next = clamp(y - α*grad, 0, MaxThrottle[i])
       double maxDelta = 0;
       for (int i = 0; i < n; i++) {
         double prev = t[i];
         double next = y[i] - stepSize * grad[i];
+        double upper = maxThrottles[i];
         if (next < 0) next = 0;
-        else if (next > 1) next = 1;
+        else if (next > upper) next = upper;
         tPrev[i] = prev;
         t[i] = next;
         double delta = Math.Abs(next - prev);
@@ -215,7 +285,7 @@ public class RcsSolver {
         double g = grad[i];
         // Skip if at bound and gradient pushes into bound.
         if (t[i] <= 0 && g > 0) continue;
-        if (t[i] >= 1 && g < 0) continue;
+        if (t[i] >= maxThrottles[i] && g < 0) continue;
         if (Math.Abs(g) > maxProjGrad) maxProjGrad = Math.Abs(g);
       }
       if (maxProjGrad < 0.1) { iters = iter + 1; break; }

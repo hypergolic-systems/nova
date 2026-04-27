@@ -396,6 +396,142 @@ public class RcsSolverTests {
     return new RcsSolver.Thruster { Torque = torque };
   }
 
+  // --- MaxThrottle / gimbal-style slot tests ---
+
+  [TestMethod]
+  public void SlotMaxThrottle_ClampsThrottle() {
+    // Single thruster with capacity capped at 0.3 via SetSlotMaxThrottle —
+    // full-throttle request must clamp.
+    var solver = new RcsSolver(1);
+    solver.SetThrusters(new[] {
+      MakeThruster(Vec3d.Zero, new Vec3d(1, 0, 0), 1),
+    });
+    solver.SetSlotMaxThrottle(0, 0.3);
+    var result = solver.Solve(new RcsSolver.Input {
+      CoM = Vec3d.Zero,
+      DesiredForce = new Vec3d(1, 0, 0),
+      DesiredTorque = Vec3d.Zero,
+    });
+    Assert.IsTrue(result[0] <= 0.3 + Tol,
+      $"Throttle should clamp to MaxThrottle=0.3, got {result[0]}");
+    Assert.IsTrue(result[0] > 0.25,
+      $"Throttle should saturate at the bound, got {result[0]}");
+  }
+
+  [TestMethod]
+  public void Gimbal_ZeroThrottle_NoTorque() {
+    // Gimbal slots with engine at zero throttle (MaxThrottle=0) must
+    // not fire even when torque is requested — a shutdown engine has
+    // no gimbal authority.
+    var solver = new RcsSolver(2);
+    solver.SetThrusters(new[] {
+      MakePureTorque(new Vec3d(5, 0, 0)),
+      MakePureTorque(new Vec3d(-5, 0, 0)),
+    });
+    solver.SetSlotMaxThrottle(0, 0);
+    solver.SetSlotMaxThrottle(1, 0);
+    var result = solver.Solve(new RcsSolver.Input {
+      CoM = Vec3d.Zero,
+      DesiredForce = Vec3d.Zero,
+      DesiredTorque = new Vec3d(1, 0, 0),
+    });
+    Assert.AreEqual(0, result[0], Tol, "+pitch gimbal slot must be zero (no engine output)");
+    Assert.AreEqual(0, result[1], Tol, "-pitch gimbal slot must be zero");
+  }
+
+  [TestMethod]
+  public void Gimbal_FullThrottle_FiresLikeWheel() {
+    // Gimbal slot at full MaxThrottle with a torque request in its
+    // axis behaves identically to a reaction wheel — confirms the
+    // pure-torque path is reachable for gimbal slots.
+    var thrusters = new[] {
+      MakePureTorque(new Vec3d(5, 0, 0)),
+      MakePureTorque(new Vec3d(-5, 0, 0)),
+    };
+    var input = new RcsSolver.Input {
+      CoM = Vec3d.Zero,
+      DesiredForce = Vec3d.Zero,
+      DesiredTorque = new Vec3d(1, 0, 0),
+    };
+    var result = SolveNew(thrusters, input);
+    Assert.IsTrue(result[0] > 0.1, $"+pitch gimbal must fire, got {result[0]}");
+    Assert.AreEqual(0, result[1], Tol, "-pitch gimbal should not fire");
+  }
+
+  [TestMethod]
+  public void PriorityOrder_GimbalPreferredOverWheel() {
+    // Equal-capacity gimbal and wheel on the same +Z torque axis. With
+    // demand low enough that one alone can satisfy it, the gimbal
+    // should carry strictly more than the wheel — gimbal is "truly
+    // free" while a wheel pays a small EC-stand-in cost.
+    var thrusters = new[] {
+      MakePureTorque(new Vec3d(0, 0, 5)),                                       // wheel +Z
+      MakePureTorque(new Vec3d(0, 0, -5)),                                      // wheel -Z
+      new RcsSolver.Thruster { Torque = new Vec3d(0, 0, 5), IsGimbal = true },  // gimbal +Z
+      new RcsSolver.Thruster { Torque = new Vec3d(0, 0, -5), IsGimbal = true }, // gimbal -Z
+    };
+    var input = new RcsSolver.Input {
+      CoM = Vec3d.Zero,
+      DesiredForce = Vec3d.Zero,
+      DesiredTorque = new Vec3d(0, 0, 0.3),
+    };
+    var result = SolveNew(thrusters, input);
+    Assert.IsTrue(result[2] > result[0],
+      $"Gimbal +Z ({result[2]}) should fire more than wheel +Z ({result[0]})");
+    // Both opposing-axis slots stay below the +Z slots — they don't
+    // produce useful torque toward the demand.
+    Assert.IsTrue(result[1] < result[0],
+      $"Wheel -Z ({result[1]}) shouldn't outpace wheel +Z ({result[0]})");
+    Assert.IsTrue(result[3] < result[2],
+      $"Gimbal -Z ({result[3]}) shouldn't outpace gimbal +Z ({result[2]})");
+  }
+
+  [TestMethod]
+  public void PriorityOrder_GimbalSaturates_WheelPicksUpSlack() {
+    // Gimbal capacity smaller than demand → gimbal at full, wheel
+    // supplements. Confirms the gimbal preference doesn't lock out
+    // the wheel when more torque is needed than gimbal can supply.
+    var thrusters = new[] {
+      MakePureTorque(new Vec3d(0, 0, 5)),                                       // wheel: bigger
+      MakePureTorque(new Vec3d(0, 0, -5)),
+      new RcsSolver.Thruster { Torque = new Vec3d(0, 0, 1), IsGimbal = true },  // gimbal: small
+      new RcsSolver.Thruster { Torque = new Vec3d(0, 0, -1), IsGimbal = true },
+    };
+    var input = new RcsSolver.Input {
+      CoM = Vec3d.Zero,
+      DesiredForce = Vec3d.Zero,
+      DesiredTorque = new Vec3d(0, 0, 1),
+    };
+    var result = SolveNew(thrusters, input);
+    Assert.IsTrue(result[2] > 0.9, $"Gimbal should saturate, got {result[2]}");
+    Assert.IsTrue(result[0] > 0.05, $"Wheel should supplement, got {result[0]}");
+  }
+
+  [TestMethod]
+  public void SlotMaxThrottle_TighteningAfterRebuild_StaysClamped() {
+    // After SetThrusters builds with full bounds, a per-tick tightening
+    // via SetSlotMaxThrottle must take effect on the next Solve without
+    // a topology rebuild.
+    var solver = new RcsSolver(1);
+    solver.SetThrusters(new[] {
+      MakeThruster(Vec3d.Zero, new Vec3d(1, 0, 0), 1),
+    });
+    var input = new RcsSolver.Input {
+      CoM = Vec3d.Zero,
+      DesiredForce = new Vec3d(1, 0, 0),
+      DesiredTorque = Vec3d.Zero,
+    };
+    // First solve: full capacity, throttle ~1.
+    var unrestricted = solver.Solve(input);
+    Assert.IsTrue(unrestricted[0] > 0.9, $"Unrestricted should saturate, got {unrestricted[0]}");
+
+    // Tighten without rebuilding.
+    solver.SetSlotMaxThrottle(0, 0.2);
+    var restricted = solver.Solve(input);
+    Assert.IsTrue(restricted[0] <= 0.2 + Tol,
+      $"After tightening to 0.2, throttle should clamp, got {restricted[0]}");
+  }
+
   private static double[] SolveNew(RcsSolver.Thruster[] thrusters, RcsSolver.Input input) {
     var solver = new RcsSolver(thrusters.Length);
     solver.SetThrusters(thrusters);

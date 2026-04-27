@@ -369,12 +369,18 @@ public class NovaVesselModule : VesselModule {
 
   private List<NovaRcsModule> cachedRcsModules;
   private List<NovaReactionWheelModule> cachedWheelModules;
+  private List<NovaEngineModule> cachedGimbalEngines;
   private bool rcsModulesDirty = true;
   private int rcsLogCounter;
   private RcsSolver rcsSolver;
 
-  // Number of RCS thruster entries in the solver array (wheels come after).
+  // Solver array layout: [RCS nozzles][wheel slots][gimbal slots].
+  // We track each block's start index so the per-tick MaxThrottle
+  // update for gimbals knows where to write, and the post-Solve
+  // distribution loops know where to read.
   private int rcsSlotCount;
+  private int wheelSlotCount;
+  private int gimbalSlotStart;
 
   // RCS input cached from Update() to match stock ModuleRCS timing.
   private Vec3d cachedInputLin;
@@ -399,6 +405,7 @@ public class NovaVesselModule : VesselModule {
 
     cachedRcsModules = new List<NovaRcsModule>();
     cachedWheelModules = new List<NovaReactionWheelModule>();
+    cachedGimbalEngines = new List<NovaEngineModule>();
 
     foreach (var part in vessel.parts) {
       var rcs = part.FindModuleImplementing<NovaRcsModule>();
@@ -408,6 +415,12 @@ public class NovaVesselModule : VesselModule {
       var wheel = part.FindModuleImplementing<NovaReactionWheelModule>();
       if (wheel?.Wheel != null)
         cachedWheelModules.Add(wheel);
+
+      var engine = part.FindModuleImplementing<NovaEngineModule>();
+      if (engine?.Engine != null
+          && engine.Engine.GimbalRangeRad > 0
+          && engine.GimbalTransform != null)
+        cachedGimbalEngines.Add(engine);
     }
     rcsModulesDirty = false;
   }
@@ -418,8 +431,9 @@ public class NovaVesselModule : VesselModule {
     bool rcsOn = vessel.ActionGroups[KSPActionGroup.RCS];
     var rcsModules = rcsOn ? cachedRcsModules : new List<NovaRcsModule>();
     var wheelModules = cachedWheelModules;
+    var gimbalEngines = cachedGimbalEngines;
 
-    if (rcsModules.Count == 0 && wheelModules.Count == 0) return;
+    if (rcsModules.Count == 0 && wheelModules.Count == 0 && gimbalEngines.Count == 0) return;
 
     // When RCS is off, clear all thruster throttles.
     if (!rcsOn) {
@@ -441,15 +455,26 @@ public class NovaVesselModule : VesselModule {
         w.ThrottleRoll = 0;
         w.ThrottleYaw = 0;
       }
+      // Zero gimbal deflections too — the apply-rotation code in
+      // NovaEngineModule.FixedUpdate reads these every tick, so a
+      // hands-off frame must drive the bell back to centred.
+      foreach (var mod in gimbalEngines) {
+        var e = mod.Engine;
+        e.GimbalPitchDeflection = 0;
+        e.GimbalYawDeflection = 0;
+      }
       return;
     }
 
-    // Count actuators: RCS nozzles + 6 virtual thrusters per wheel (±pitch, ±roll, ±yaw).
+    // Count actuators: RCS nozzles + 6 wheel slots + 4 gimbal slots.
     int nRcs = 0;
     foreach (var mod in rcsModules) nRcs += mod.ThrusterCount;
     int nWheelSlots = wheelModules.Count * 6;
-    int totalActuators = nRcs + nWheelSlots;
+    int nGimbalSlots = gimbalEngines.Count * 4;
+    int totalActuators = nRcs + nWheelSlots + nGimbalSlots;
     rcsSlotCount = nRcs;
+    wheelSlotCount = nWheelSlots;
+    gimbalSlotStart = nRcs + nWheelSlots;
 
     // Build or rebuild the solver.
     if (rcsSolver == null || rcsSolver.ThrusterCount != totalActuators) {
@@ -458,6 +483,14 @@ public class NovaVesselModule : VesselModule {
 
       var thrusters = new RcsSolver.Thruster[totalActuators];
       var refXform = vessel.ReferenceTransform;
+      // Build-time CoM for gimbal lever-arm calc. The QP's BuildQ
+      // already re-derives RCS torques against the live CoM via
+      // `positions[]`, but gimbal slots are pure-torque (the slot's
+      // Torque vector IS the lever × side-force product), so we bake
+      // the CoM in here. CoMThreshold-driven solver rebuilds will
+      // recompute when the lever drift starts to matter.
+      var buildCoMV = refXform.InverseTransformPoint(vessel.CoM);
+      var buildCoM = new Vec3d(buildCoMV.x, buildCoMV.y, buildCoMV.z);
       int ti = 0;
 
       // RCS thrusters.
@@ -488,10 +521,63 @@ public class NovaVesselModule : VesselModule {
         thrusters[ti++] = new RcsSolver.Thruster { Torque = new Vec3d(0, 0, -yaw) };
       }
 
+      // Engine gimbal slots: 4 per engine (+pitch, -pitch, +yaw, -yaw).
+      // Each slot's Torque = lever × F_lat where F_lat is the lateral
+      // force at full deflection: T_max · sin(θ_max) · (axis × thrustDir).Normalized.
+      foreach (var mod in gimbalEngines) {
+        var e = mod.Engine;
+        var gt = mod.GimbalTransform;
+        var localPosV = refXform.InverseTransformPoint(gt.position);
+        var pitchAxisV = refXform.InverseTransformDirection(gt.right).normalized;
+        var yawAxisV = refXform.InverseTransformDirection(gt.up).normalized;
+        // Nominal thrust force direction (zero deflection), captured
+        // by NovaEngineModule at OnStart from the same `-thrustTransform.
+        // forward` expression FixedUpdate uses to apply force — keeps
+        // the QP slot-torque signs in lockstep with the physics.
+        // Using `gt.forward` would be model-dependent (some engines
+        // have gt pointing "up", some "down").
+        var thrustDirV = refXform.InverseTransformDirection(mod.NominalThrustDirectionWorld).normalized;
+
+        var pos = new Vec3d(localPosV.x, localPosV.y, localPosV.z);
+        var pitchAxis = new Vec3d(pitchAxisV.x, pitchAxisV.y, pitchAxisV.z);
+        var yawAxis = new Vec3d(yawAxisV.x, yawAxisV.y, yawAxisV.z);
+        var thrustDir = new Vec3d(thrustDirV.x, thrustDirV.y, thrustDirV.z);
+        var lever = pos - buildCoM;
+        var sideMag = e.Thrust * Math.Sin(e.GimbalRangeRad);
+
+        var pitchSide = Vec3d.Cross(pitchAxis, thrustDir);
+        if (pitchSide.SqrMagnitude > 1e-12) pitchSide = pitchSide.Normalized;
+        var yawSide = Vec3d.Cross(yawAxis, thrustDir);
+        if (yawSide.SqrMagnitude > 1e-12) yawSide = yawSide.Normalized;
+
+        var pitchTorque = Vec3d.Cross(lever, pitchSide * sideMag);
+        var yawTorque = Vec3d.Cross(lever, yawSide * sideMag);
+
+        thrusters[ti++] = new RcsSolver.Thruster { Torque = pitchTorque, IsGimbal = true };
+        thrusters[ti++] = new RcsSolver.Thruster { Torque = -1.0 * pitchTorque, IsGimbal = true };
+        thrusters[ti++] = new RcsSolver.Thruster { Torque = yawTorque, IsGimbal = true };
+        thrusters[ti++] = new RcsSolver.Thruster { Torque = -1.0 * yawTorque, IsGimbal = true };
+      }
+
       rcsSolver.SetThrusters(thrusters);
 
       NovaLog.Log($"[Attitude] {rcsModules.Count} RCS modules ({nRcs} nozzles), " +
-                               $"{wheelModules.Count} reaction wheels ({nWheelSlots} virtual slots)");
+                  $"{wheelModules.Count} reaction wheels ({nWheelSlots} virtual slots), " +
+                  $"{gimbalEngines.Count} gimbal engines ({nGimbalSlots} virtual slots)");
+    }
+
+    // Per-tick gimbal capacity. Each engine's gimbal authority scales
+    // linearly with its current LP-solved output — a 30 %-throttle
+    // engine exposes only 30 % of full-deflection torque, an idle
+    // engine zero. Cheap to update each frame; doesn't invalidate Q.
+    for (int gi = 0; gi < gimbalEngines.Count; gi++) {
+      var e = gimbalEngines[gi].Engine;
+      double maxT = e.NormalizedOutput;
+      int slotBase = gimbalSlotStart + gi * 4;
+      rcsSolver.SetSlotMaxThrottle(slotBase + 0, maxT);
+      rcsSolver.SetSlotMaxThrottle(slotBase + 1, maxT);
+      rcsSolver.SetSlotMaxThrottle(slotBase + 2, maxT);
+      rcsSolver.SetSlotMaxThrottle(slotBase + 3, maxT);
     }
 
     // CoM in vessel-local space.
@@ -551,6 +637,30 @@ public class NovaVesselModule : VesselModule {
         NovaLog.Log($"[Attitude] wheel {mod.part.partInfo.name}: " +
           $"pitch={w.ThrottlePitch:F3} roll={w.ThrottleRoll:F3} yaw={w.ThrottleYaw:F3} " +
           $"localTorque={localTorque}");
+      }
+    }
+
+    // Distribute gimbal deflections. Slot throttles are capped at
+    // `MaxThrottle = NormalizedOutput` (so the QP saturates at the
+    // current effective torque, matching what we report to SAS via
+    // ITorqueProvider). The PHYSICAL deflection still has to span the
+    // full `gimbalRange` at that saturation point, otherwise the
+    // engine fires at half-range and produces only `NormalizedOutput²`
+    // of full torque — the very mismatch that fed back as oscillation.
+    // Divide by `NormalizedOutput` so a saturated slot pair maps to
+    // `±1` deflection (which `NovaEngineModule` then multiplies by the
+    // full `gimbalRange`).
+    foreach (var mod in gimbalEngines) {
+      double pPlus = solved[idx++], pMinus = solved[idx++];
+      double yPlus = solved[idx++], yMinus = solved[idx++];
+      var e = mod.Engine;
+      double scale = e.NormalizedOutput > 1e-6 ? 1.0 / e.NormalizedOutput : 0;
+      e.GimbalPitchDeflection = (pPlus - pMinus) * scale;
+      e.GimbalYawDeflection = (yPlus - yMinus) * scale;
+
+      if (rcsLogCounter % 50 == 1) {
+        NovaLog.Log($"[Attitude] gimbal {mod.part.partInfo.name}: " +
+          $"pitch={e.GimbalPitchDeflection:F3} yaw={e.GimbalYawDeflection:F3}");
       }
     }
   }

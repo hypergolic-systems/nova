@@ -13,6 +13,19 @@ public class Engine : VirtualComponent {
   public double Throttle;
   public double AlternatorRate; // EC/s at full output (0 = no alternator)
 
+  // Gimbal authority. `GimbalRangeRad` of 0 means non-gimbaling
+  // (LV-T30); a positive value enables thrust-vectoring. The attitude
+  // QP writes signed per-tick deflections back into
+  // `GimbalPitchDeflection` / `GimbalYawDeflection` ∈ [-1, 1] and
+  // `NovaEngineModule.FixedUpdate` applies them to the gimbal pivot.
+  // Vessel-local geometry (pivot position, axes, thrust direction)
+  // isn't stored here — `NovaVesselModule.SolveAttitude` re-extracts
+  // it from the live part transforms each time it rebuilds the
+  // solver, matching the existing RCS pattern.
+  public double GimbalRangeRad;
+  public double GimbalPitchDeflection;
+  public double GimbalYawDeflection;
+
   // Runtime state mirroring KSP's ignition/flameout flags. Written
   // by NovaEngineModule each tick; read by NovaEngineTopic to drive
   // the wire's status byte.
@@ -81,6 +94,9 @@ public class Engine : VirtualComponent {
       Isp = Isp,
       Throttle = Throttle,
       AlternatorRate = AlternatorRate,
+      GimbalRangeRad = GimbalRangeRad,
+      GimbalPitchDeflection = GimbalPitchDeflection,
+      GimbalYawDeflection = GimbalYawDeflection,
     };
     clone.Propellants = Propellants.Select(p => new Propellant {
       Resource = p.Resource,

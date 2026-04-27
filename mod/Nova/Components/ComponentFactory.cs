@@ -80,6 +80,15 @@ public static class ComponentFactory {
                      double.Parse(n.GetValue("ratio"))))
         .ToList()
     );
+    // Gimbal config: optional. cfg specifies degrees (matches stock
+    // ModuleGimbal); we store radians on the component because every
+    // downstream consumer (sin / cos for the side-force calc) needs
+    // radians and converting once here keeps that conversion off the
+    // per-tick path. Geometry fields stay zero — `NovaEngineModule`
+    // populates them at `OnStart` from the part's gimbal transform.
+    var gimbalRange = node.GetValue("gimbalRange");
+    if (gimbalRange != null)
+      engine.GimbalRangeRad = double.Parse(gimbalRange) * System.Math.PI / 180.0;
     return engine;
   }
 
