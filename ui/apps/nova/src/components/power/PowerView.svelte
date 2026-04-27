@@ -18,6 +18,7 @@
   import { onDestroy } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
+  import { siPrefix, fmtMag } from '../../util/units';
 
   // Anything magnitudinally below this is "zero" for color purposes.
   // Same threshold fmtRate uses to floor display to "0.00" so the
@@ -51,6 +52,21 @@
     for (const s of p.state.solar) total += s.rate;
     for (const e of p.state.engine) total += e.alternatorRate;
     return total;
+  }
+
+  // Solar current+max in one pass — every solar component on a part
+  // contributes both. Drives the per-panel and subgroup current/max
+  // readout (e.g. "0.50/1.20 kW").
+  function solarRates(p: NovaTaggedPart): { current: number; max: number } {
+    let current = 0;
+    let max = 0;
+    if (p.state) {
+      for (const s of p.state.solar) {
+        current += s.rate;
+        max += s.maxRate;
+      }
+    }
+    return { current, max };
   }
 
   function consumptionRate(p: NovaTaggedPart): number {
@@ -107,6 +123,13 @@
       (isSolarPart(p) ? solar : other).push(p);
     }
     const groupSolar = solar.length > 1;
+    let solarCurrent = 0;
+    let solarMax = 0;
+    for (const p of solar) {
+      const r = solarRates(p);
+      solarCurrent += r.current;
+      solarMax += r.max;
+    }
     return {
       solar,
       other,
@@ -114,7 +137,8 @@
       // When solar isn't grouped, fold it back into the inline list
       // so render order matches the original (solar parts first).
       inline: groupSolar ? other : [...solar, ...other],
-      solarTotal: solar.reduce((a, p) => a + generationRate(p), 0),
+      solarTotal: solarCurrent,
+      solarMaxTotal: solarMax,
     };
   });
 
@@ -126,20 +150,49 @@
     netStorage: storage.current.reduce((a, p) => a + batteryRate(p), 0),
   });
 
-  function fmtRate(value: number): string {
-    const abs = Math.abs(value);
-    let mag: string;
-    if (abs < 0.005) mag = '0.00';
-    else if (abs >= 100) mag = abs.toFixed(0);
-    else if (abs >= 10) mag = abs.toFixed(1);
-    else mag = abs.toFixed(2);
-    // Reserve a fixed-width sign slot (NBSP when non-negative) so a
-    // value flipping sign doesn't shift everything to its left.
-    return (value < 0 ? '-' : ' ') + mag;
+  // Pre-formatted node-head totals. `{@const}` is only valid inside
+  // flow blocks, not inside `<button>` / `<li>` markup, so the head
+  // rows' format work has to land here instead of next to the spans
+  // it feeds.
+  const genFmt          = $derived(fmtRate(totals.gen));
+  const consumeFmt      = $derived(fmtRate(totals.consume));
+  const storedFmt       = $derived(fmtCapPair(totals.stored, totals.capacity));
+  const netStorageFmt   = $derived(fmtRate(totals.netStorage));
+  const solarSubgroupFmt = $derived(
+    fmtRatePair(genGroups.solarTotal, genGroups.solarMaxTotal),
+  );
+
+  // Signed flow-rate readout. Reserves a leading sign slot (NBSP for
+  // non-negative) so a value flipping sign doesn't shift the column.
+  // Unit is the SI-prefixed Watt — energy flow rate, J/s.
+  function fmtRate(value: number): { mag: string; unit: string } {
+    const p = siPrefix(value);
+    const raw = fmtMag(value / p.div);
+    const mag = value < 0 ? raw : ' ' + raw;
+    return { mag, unit: p.letter + 'W' };
   }
 
-  function fmtCapacity(value: number): string {
-    return Math.round(value).toString();
+  // Pair scaling for current/max: both share the prefix selected from
+  // the larger absolute value, so the divisor and dividend share units
+  // ("0.00/1.50 kW" rather than "0 W/1.50 kW").
+  function fmtRatePair(current: number, max: number): { cMag: string; mMag: string; unit: string } {
+    const p = siPrefix(Math.max(Math.abs(current), Math.abs(max)));
+    return {
+      cMag: fmtMag(current / p.div),
+      mMag: fmtMag(max / p.div),
+      unit: p.letter + 'W',
+    };
+  }
+
+  // Stored / capacity pair, in SI-prefixed Joules. Same shared-prefix
+  // rule as the rate pair so the slash sits between commensurable values.
+  function fmtCapPair(stored: number, capacity: number): { sMag: string; cMag: string; unit: string } {
+    const p = siPrefix(Math.max(Math.abs(stored), Math.abs(capacity)));
+    return {
+      sMag: fmtMag(stored / p.div),
+      cMag: fmtMag(capacity / p.div),
+      unit: p.letter + 'J',
+    };
   }
 
   function batteryFraction(stored: number, capacity: number): number {
@@ -231,7 +284,7 @@
       <span class="pwr__total"
             class:pwr__total--zero={totals.gen <= 0}
             class:pwr__total--hot={totals.gen > 0}>
-        {fmtRate(totals.gen)}<em>EC/s</em>
+        {genFmt.mag}<em>{genFmt.unit}</em>
       </span>
     </button>
     {#if expanded.gen}
@@ -255,13 +308,16 @@
                 </span>
                 <span class="pwr__row-rate"
                       class:pwr__row-rate--zero={isZero(genGroups.solarTotal)}>
-                  {fmtRate(genGroups.solarTotal)}<em>EC/s</em>
+                  <span class="pwr__row-rate-cur">{solarSubgroupFmt.cMag}</span><span
+                    class="pwr__row-rate-max">/{solarSubgroupFmt.mMag}</span><em>{solarSubgroupFmt.unit}</em>
                 </span>
               </button>
               {#if expanded.gen_solar}
                 <ul class="pwr__rows pwr__rows--nested">
                   {#each genGroups.solar as p (p.struct.id)}
                     {@const s = solarOf(p)}
+                    {@const sr = solarRates(p)}
+                    {@const sp = fmtRatePair(sr.current, sr.max)}
                     <li class="pwr__row pwr__row--nested"
                         class:pwr__row--closed={s && !s.deployed}
                         onmouseenter={() => highlightOn([p.struct.id])}
@@ -272,8 +328,9 @@
                       <span class="pwr__row-name">{p.struct.title}</span>
                       {@render solarControl(p)}
                       <span class="pwr__row-rate"
-                            class:pwr__row-rate--zero={isZero(generationRate(p))}>
-                        {fmtRate(generationRate(p))}<em>EC/s</em>
+                            class:pwr__row-rate--zero={isZero(sr.current)}>
+                        <span class="pwr__row-rate-cur">{sp.cMag}</span><span
+                          class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
                       </span>
                     </li>
                   {/each}
@@ -293,10 +350,21 @@
               </span>
               <span class="pwr__row-name">{p.struct.title}</span>
               {#if isSolar}{@render solarControl(p)}{/if}
-              <span class="pwr__row-rate"
-                    class:pwr__row-rate--zero={isZero(generationRate(p))}>
-                {fmtRate(generationRate(p))}<em>EC/s</em>
-              </span>
+              {#if isSolar}
+                {@const sr = solarRates(p)}
+                {@const sp = fmtRatePair(sr.current, sr.max)}
+                <span class="pwr__row-rate"
+                      class:pwr__row-rate--zero={isZero(sr.current)}>
+                  <span class="pwr__row-rate-cur">{sp.cMag}</span><span
+                    class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+                </span>
+              {:else}
+                {@const gr = fmtRate(generationRate(p))}
+                <span class="pwr__row-rate"
+                      class:pwr__row-rate--zero={isZero(generationRate(p))}>
+                  {gr.mag}<em>{gr.unit}</em>
+                </span>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -314,7 +382,7 @@
       <span class="pwr__total"
             class:pwr__total--zero={totals.consume <= 0}
             class:pwr__total--neg={totals.consume > 0}>
-        {fmtRate(totals.consume)}<em>EC/s</em>
+        {consumeFmt.mag}<em>{consumeFmt.unit}</em>
       </span>
     </button>
     {#if expanded.consume}
@@ -323,6 +391,8 @@
       {:else}
         <ul class="pwr__rows">
           {#each consumers.current as p (p.struct.id)}
+            {@const v = consumptionRate(p)}
+            {@const r = fmtRate(v)}
             <li class="pwr__row"
                 onmouseenter={() => highlightOn([p.struct.id])}
                 onmouseleave={highlightOff}>
@@ -331,9 +401,9 @@
               </span>
               <span class="pwr__row-name">{p.struct.title}</span>
               <span class="pwr__row-rate"
-                    class:pwr__row-rate--neg={!isZero(consumptionRate(p))}
-                    class:pwr__row-rate--zero={isZero(consumptionRate(p))}>
-                {fmtRate(consumptionRate(p))}<em>EC/s</em>
+                    class:pwr__row-rate--neg={!isZero(v)}
+                    class:pwr__row-rate--zero={isZero(v)}>
+                {r.mag}<em>{r.unit}</em>
               </span>
             </li>
           {/each}
@@ -352,8 +422,8 @@
       <span class="pwr__total"
             class:pwr__total--zero={totals.capacity <= 0}
             class:pwr__total--hot={totals.capacity > 0}>
-        {fmtCapacity(totals.stored)}/{fmtCapacity(totals.capacity)}
-        <em>EC · {fmtRate(totals.netStorage)} EC/s</em>
+        {storedFmt.sMag}/{storedFmt.cMag}
+        <em>{storedFmt.unit} · {netStorageFmt.mag} {netStorageFmt.unit}</em>
       </span>
     </button>
     <!-- Aggregate gauge stays visible whether or not the children
@@ -370,6 +440,11 @@
       {:else}
         <ul class="pwr__rows">
           {#each storage.current as p (p.struct.id)}
+            {@const stored = batteryStored(p)}
+            {@const cap = batteryCapacity(p)}
+            {@const rate = batteryRate(p)}
+            {@const cp = fmtCapPair(stored, cap)}
+            {@const rp = fmtRate(rate)}
             <li class="pwr__row pwr__row--storage"
                 onmouseenter={() => highlightOn([p.struct.id])}
                 onmouseleave={highlightOff}>
@@ -380,19 +455,17 @@
                 <div class="pwr__row-line">
                   <span class="pwr__row-name">{p.struct.title}</span>
                   <span class="pwr__row-rate">
-                    <span class="pwr__row-rate-stored">{fmtCapacity(batteryStored(p))}</span>
-                    <span class="pwr__row-rate-cap">/{fmtCapacity(batteryCapacity(p))}</span>
+                    <span class="pwr__row-rate-stored">{cp.sMag}</span>
+                    <span class="pwr__row-rate-cap">/{cp.cMag} {cp.unit}</span>
                     <span class="pwr__row-rate-net"
-                          class:pwr__row-rate-net--neg={batteryRate(p) < -RATE_EPSILON}
-                          class:pwr__row-rate-net--zero={isZero(batteryRate(p))}>
-                      <span class="pwr__row-rate-sep">·</span>{fmtRate(batteryRate(p))}
+                          class:pwr__row-rate-net--neg={rate < -RATE_EPSILON}
+                          class:pwr__row-rate-net--zero={isZero(rate)}>
+                      <span class="pwr__row-rate-sep">·</span>{rp.mag} {rp.unit}
                     </span>
                   </span>
                 </div>
                 <div class="pwr__row-line pwr__row-line--gauge">
-                  <SegmentGauge
-                    fraction={batteryFraction(batteryStored(p), batteryCapacity(p))}
-                  />
+                  <SegmentGauge fraction={batteryFraction(stored, cap)} />
                 </div>
               </div>
             </li>
@@ -702,6 +775,16 @@
     color: var(--accent);
   }
   .pwr__row-rate-cap {
+    color: var(--fg-dim);
+  }
+  /* Solar current/max — same primary/secondary split as stored/cap, so
+     a panel reading "0.50/1.20 kW" reads the same way a battery reads
+     "0.50/1.20 kJ". Current is the live LP-throttled rate; max is the
+     orientation-optimal rate the panel could deliver if asked. */
+  .pwr__row-rate-cur {
+    color: var(--accent);
+  }
+  .pwr__row-rate-max {
     color: var(--fg-dim);
   }
   .pwr__row-rate-sep {

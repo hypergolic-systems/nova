@@ -33,11 +33,11 @@ namespace Nova.Telemetry;
 //   [resourceName, amount, capacity, currentRate]
 //
 // Component frames:
-//   ["S", currentEcRate, deployed, sunlit, retractable]  SolarPanel
-//   ["B", soc(0..1), capacity, currentRate]              Battery
-//   ["W", maxEcRate, activity(0..1)]                     ReactionWheel
-//   ["L", maxEcRate, activity(0..1)]                     Light
-//   ["E", alternatorMaxRate, alternatorRateEc]           Engine
+//   ["S", currentEcRate, maxEcRate, deployed, sunlit, retractable]  SolarPanel
+//   ["B", soc(0..1), capacity, currentRate]                         Battery
+//   ["W", maxEcRate, activity(0..1)]                                ReactionWheel
+//   ["L", maxEcRate, activity(0..1)]                                Light
+//   ["E", alternatorMaxRate, alternatorRateEc]                      Engine
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -217,6 +217,7 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.Begin(sb, '[');
         bool f = true;
         WriteKind(sb, "S", ref f);
+        WriteNum(sb, solar.CurrentRate, ref f);
         WriteNum(sb, solar.IsSunlit ? solar.EffectiveRate : 0.0, ref f);
         WriteBit(sb, solar.IsDeployed, ref f);
         WriteBit(sb, solar.IsSunlit, ref f);

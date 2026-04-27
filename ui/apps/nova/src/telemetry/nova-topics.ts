@@ -32,7 +32,7 @@ export type NovaResourceFrame = [
 
 // One named tuple per kind so visualization code can import the
 // specific frame type it cares about without re-narrowing the union.
-export type NovaSolarFrame   = ['S', currentEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1];
+export type NovaSolarFrame   = ['S', currentEcRate: number, maxEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1];
 export type NovaBatteryFrame = ['B', soc: number, capacity: number, rate: number];
 export type NovaWheelFrame   = ['W', maxEcRate: number, activity: number];
 export type NovaLightFrame   = ['L', maxEcRate: number, activity: number];
@@ -81,8 +81,12 @@ export interface NovaResourceFlow {
 }
 
 export interface SolarState {
-  /** Current EC/s output (already gated on sunlit). */
+  /** Actual EC/s output last tick — LP-throttled by demand. Drops to
+   *  0 when batteries are full and no consumer wants the power. */
   rate: number;
+  /** Optimal EC/s output in the panel's current orientation, gated on
+   *  sunlit + deployed. The "max" of the current/max readout. */
+  maxRate: number;
   deployed: boolean;
   sunlit: boolean;
   /** True iff the panel can be retracted after deployment. Drives
@@ -187,6 +191,7 @@ const TITLE_SUFFIXES = [
   'Liquid Fuel Engine',
   'Rechargeable Battery Pack',
   'Radioisotope Thermoelectric Generator',
+  'Fuel Tank',
 ];
 
 function shortenPartTitle(title: string): string {
@@ -234,9 +239,10 @@ export function decodePart(f: NovaPartFrame): NovaPart {
       case 'S':
         out.solar.push({
           rate: c[1],
-          deployed: c[2] === 1,
-          sunlit: c[3] === 1,
-          retractable: c[4] === 1,
+          maxRate: c[2],
+          deployed: c[3] === 1,
+          sunlit: c[4] === 1,
+          retractable: c[5] === 1,
         });
         break;
       case 'B':

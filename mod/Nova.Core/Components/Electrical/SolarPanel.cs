@@ -22,8 +22,15 @@ public class SolarPanel : VirtualComponent {
   public bool IsRetractable;
   // Pro-rata share of the vessel-aggregate optimal rate, in EC/s. Set
   // by `VirtualVessel.ComputeSolarRates` whenever deploy state changes;
-  // displayed by the UI's per-panel rows.
+  // this is the *max* rate the panel could deliver in its current
+  // orientation, not what it actually delivered last tick.
   public double EffectiveRate;
+  // Pro-rata share of the LP-solved aggregate output, in EC/s. Set by
+  // `VirtualVessel` post-solve; this is the *actual* rate the panel
+  // delivered last tick, throttled by demand. Equals `EffectiveRate`
+  // when consumers want full output, drops to 0 when batteries are
+  // full and nothing's drawing.
+  public double CurrentRate;
   public bool IsSunlit = true;
   public double ShadowTransitionUT = double.PositiveInfinity;
 }

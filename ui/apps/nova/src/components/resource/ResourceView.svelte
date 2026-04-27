@@ -31,6 +31,7 @@
   import SegmentGauge from '../SegmentGauge.svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import { resourceMeta, resourceSortKey } from './resource-codes';
+  import { siPrefix, fmtMag } from '../../util/units';
 
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
@@ -114,18 +115,26 @@
     });
   });
 
-  function fmtAmount(v: number): string {
-    return Math.round(v).toString();
+  // Stored / capacity pair, in the resource's SI-prefixed base unit.
+  // Both values share the prefix selected from the larger absolute
+  // value so the divisor and dividend stay commensurable
+  // ("0.05/1.50 kJ" rather than "50 J/1.50 kJ").
+  function fmtAmountPair(stored: number, capacity: number, baseUnit: string):
+      { sMag: string; cMag: string; unit: string } {
+    const p = siPrefix(Math.max(Math.abs(stored), Math.abs(capacity)));
+    return {
+      sMag: fmtMag(stored / p.div),
+      cMag: fmtMag(capacity / p.div),
+      unit: p.letter + baseUnit,
+    };
   }
 
-  function fmtRate(value: number): string {
-    const abs = Math.abs(value);
-    let mag: string;
-    if (abs < 0.005) mag = '0.00';
-    else if (abs >= 100) mag = abs.toFixed(0);
-    else if (abs >= 10) mag = abs.toFixed(1);
-    else mag = abs.toFixed(2);
-    return (value < 0 ? '-' : ' ') + mag;
+  // Sign-free flow-rate readout — direction is encoded by the row's
+  // accent (filling) / warn (draining) tint, so the magnitude alone
+  // tells the user how fast.
+  function fmtRate(value: number, baseUnit: string): { mag: string; unit: string } {
+    const p = siPrefix(value);
+    return { mag: fmtMag(Math.abs(value) / p.div), unit: p.letter + baseUnit };
   }
 
   const fillFraction = (amount: number, capacity: number): number =>
@@ -175,11 +184,12 @@
   >{m.code}</span>
 {/snippet}
 
-{#snippet amountReadout(amount: number, capacity: number, unit: string)}
+{#snippet amountReadout(amount: number, capacity: number, baseUnit: string)}
+  {@const ap = fmtAmountPair(amount, capacity, baseUnit)}
   <span class="rsv__amount">
-    <span class="rsv__amount-val">{fmtAmount(amount)}</span><span
-      class="rsv__amount-cap">/{fmtAmount(capacity)}</span><span
-      class="rsv__amount-unit">{unit}</span>
+    <span class="rsv__amount-val">{ap.sMag}</span><span
+      class="rsv__amount-cap">/{ap.cMag}</span><span
+      class="rsv__amount-unit">{ap.unit}</span>
   </span>
 {/snippet}
 
@@ -233,6 +243,8 @@
               {#each p.state!.resources as r (r.resourceId)}
                 {@const m = resourceMeta(r.resourceId)}
                 {@const frac = fillFraction(r.amount, r.capacity)}
+                {@const ap = fmtAmountPair(r.amount, r.capacity, m.unit)}
+                {@const rp = fmtRate(r.rate, m.rateUnit)}
                 <li class="rsv__row"
                     style:--rsv-fill={frac}
                     style:--rsv-fill-color={fillColor(frac, m.color)}>
@@ -242,14 +254,14 @@
                        own resource, so units stay attached to amount
                        and rate. -->
                   <span class="rsv__row-readout">
-                    <span class="rsv__row-readout-val">{fmtAmount(r.amount)}</span><span
-                      class="rsv__row-readout-cap">/{fmtAmount(r.capacity)}</span><span
-                      class="rsv__row-readout-unit">{m.unit}</span>
+                    <span class="rsv__row-readout-val">{ap.sMag}</span><span
+                      class="rsv__row-readout-cap">/{ap.cMag}</span><span
+                      class="rsv__row-readout-unit">{ap.unit}</span>
                     <span class="rsv__row-readout-rate"
                           class:rsv__row-readout-rate--neg={r.rate < -RATE_EPSILON}
                           class:rsv__row-readout-rate--zero={isZero(r.rate)}>
-                      <span class="rsv__row-readout-sep">·</span>{fmtRate(r.rate)}<em
-                        class="rsv__row-readout-rate-unit">{m.rateUnit}</em>
+                      <span class="rsv__row-readout-sep">·</span>{rp.mag}<em
+                        class="rsv__row-readout-rate-unit">{rp.unit}</em>
                     </span>
                   </span>
                 </li>
@@ -269,6 +281,7 @@
         {@const m = resourceMeta(g.resourceId)}
         {@const frac = fillFraction(g.totalAmount, g.totalCapacity)}
         {@const groupIds = g.entries.map((e) => e.part.struct.id)}
+        {@const grp = fmtRate(g.totalRate, m.rateUnit)}
         <div class="rsv__node">
           <button
             type="button"
@@ -298,13 +311,15 @@
             <span class="rsv__rate"
                   class:rsv__rate--neg={g.totalRate < -RATE_EPSILON}
                   class:rsv__rate--zero={isZero(g.totalRate)}>
-              {fmtRate(g.totalRate)}<em>{m.rateUnit}</em>
+              {grp.mag}<em>{grp.unit}</em>
             </span>
           </div>
           {#if open}
             <ul class="rsv__rows rsv__rows--nested">
               {#each g.entries as e (e.part.struct.id)}
                 {@const efrac = fillFraction(e.flow.amount, e.flow.capacity)}
+                {@const eap = fmtAmountPair(e.flow.amount, e.flow.capacity, m.unit)}
+                {@const erp = fmtRate(e.flow.rate, m.rateUnit)}
                 <li class="rsv__row rsv__row--nested"
                     style:--rsv-fill={efrac}
                     style:--rsv-fill-color={fillColor(efrac, m.color)}
@@ -318,12 +333,12 @@
                        (already shows "ELECTRIC CHARGE 250/250 J · 0.00 W")
                        so per-part rows omit it. -->
                   <span class="rsv__row-readout">
-                    <span class="rsv__row-readout-val">{fmtAmount(e.flow.amount)}</span><span
-                      class="rsv__row-readout-cap">/{fmtAmount(e.flow.capacity)}</span>
+                    <span class="rsv__row-readout-val">{eap.sMag}</span><span
+                      class="rsv__row-readout-cap">/{eap.cMag}</span>
                     <span class="rsv__row-readout-rate"
                           class:rsv__row-readout-rate--neg={e.flow.rate < -RATE_EPSILON}
                           class:rsv__row-readout-rate--zero={isZero(e.flow.rate)}>
-                      <span class="rsv__row-readout-sep">·</span>{fmtRate(e.flow.rate)}
+                      <span class="rsv__row-readout-sep">·</span>{erp.mag}
                     </span>
                   </span>
                 </li>

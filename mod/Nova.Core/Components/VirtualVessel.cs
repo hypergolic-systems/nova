@@ -223,6 +223,7 @@ public class VirtualVessel {
       foreach (var component in AllComponents())
         component.OnPreSolve();
       solver.Solve();
+      DistributeSolarPanelCurrentRates();
       needsSolve = false;
       nextExpiry = ComputeNextExpiry(simulationTime);
     } catch (Exception e) {
@@ -230,6 +231,22 @@ public class VirtualVessel {
       needsSolve = false;
       nextExpiry = double.PositiveInfinity;
     }
+  }
+
+  // Spread the LP-solved aggregate solar output across panels in
+  // proportion to each panel's optimal share. Called post-Solve so
+  // the per-panel telemetry reflects what actually flowed, not what
+  // the panel could've produced in isolation.
+  private void DistributeSolarPanelCurrentRates() {
+    if (solarDevice == null || cachedOptimalRate <= 0) {
+      foreach (var panel in AllComponents().OfType<SolarPanel>())
+        panel.CurrentRate = 0;
+      return;
+    }
+    double actualOutput = solarDevice.Activity * totalChargeRate;
+    double scale = actualOutput / cachedOptimalRate;
+    foreach (var panel in AllComponents().OfType<SolarPanel>())
+      panel.CurrentRate = panel.EffectiveRate * scale;
   }
 
   public void Tick(double targetTime) {
