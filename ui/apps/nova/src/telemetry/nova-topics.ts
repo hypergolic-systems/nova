@@ -171,9 +171,10 @@ export interface NovaPartOps {
    * Extend (`true`) or retract (`false`) this part's deployable
    * solar panel. No-op if the part has no `NovaDeployableSolar`
    * module, if the panel is mid-animation, or if the requested
-   * state would retract a non-retractable panel in flight. Symmetry
-   * cousins are dispatched by the mod side — fire one op for the
-   * representative.
+   * state would retract a non-retractable panel in flight. Per-panel
+   * only — symmetry counterparts are NOT walked by the mod side, so
+   * fire one op per panel you want to actuate (or use the SOLAR
+   * subgroup bulk control to dispatch a fan-out).
    */
   setSolarDeployed(deployed: boolean): void;
 }

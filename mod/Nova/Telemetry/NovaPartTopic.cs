@@ -51,9 +51,10 @@ namespace Nova.Telemetry;
 //                                isn't reachable (already animating,
 //                                already in the requested state, or
 //                                trying to retract a non-retractable
-//                                panel in flight). Symmetry cousins
-//                                ride along — Extend/Retract walk
-//                                the symmetry list themselves.
+//                                panel in flight). Per-panel only —
+//                                symmetry counterparts are NOT walked,
+//                                so the UI sends one op per panel it
+//                                wants to deploy.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 

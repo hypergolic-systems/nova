@@ -54,6 +54,11 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     }
   }
 
+  // Per-panel deploy. Stock ModuleDeployablePart walks part.symmetryCounterparts
+  // here; Nova does not — each panel's Extend/Retract affects only the
+  // panel it was called on, so the PAW and the PWR UI both produce
+  // single-panel actions. Deploy a four-way symmetry group by clicking
+  // each panel (or the SOLAR subgroup bulk control in the UI).
   [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
     unfocusedRange = 4f, guiName = "Extend Solar Panel")]
   public void Extend() {
@@ -71,12 +76,6 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     anim.Play(animationName);
     animating = true;
     UpdateEvents();
-
-    foreach (var sym in part.symmetryCounterparts) {
-      var mod = sym.FindModuleImplementing<NovaDeployableSolarModule>();
-      if (mod != null && !mod.animating && !mod.isExtended)
-        mod.Extend();
-    }
   }
 
   [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
@@ -93,12 +92,6 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     anim.Play(animationName);
     animating = true;
     UpdateEvents();
-
-    foreach (var sym in part.symmetryCounterparts) {
-      var mod = sym.FindModuleImplementing<NovaDeployableSolarModule>();
-      if (mod != null && !mod.animating && mod.isExtended)
-        mod.Retract();
-    }
   }
 
   public void FixedUpdate() {

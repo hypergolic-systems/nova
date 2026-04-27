@@ -214,14 +214,66 @@
   onDestroy(() => stageOps.setHighlightParts([]));
 
   // Solar deploy controls. Per-part NovaPartTopic exposes
-  // setSolarDeployed(bool) — the mod side resolves the right
-  // NovaDeployableSolar module and walks symmetry cousins itself.
+  // setSolarDeployed(bool) — single-panel only on the mod side, so
+  // the bulk subgroup button has to fan out one op per panel. The
+  // pending map masks the click→animation-finish window: clicking
+  // sets a per-part deadline, the button reads as "moving", and the
+  // entry clears either when the topic state matches the requested
+  // direction or 4 s after the click (animation slack + a beat).
   const ksp = getKsp();
+  const PENDING_TIMEOUT_MS = 4000;
+
   function solarOf(p: NovaTaggedPart): SolarState | undefined {
     return p.state?.solar?.[0];
   }
+
+  let pending = $state<Record<string, { target: boolean; deadline: number }>>({});
+  let now = $state(performance.now());
+  // Drive the pending-expiry recompute. Cheap — only runs while an
+  // entry is live, and the visible state cuts over within ~120 ms.
+  $effect(() => {
+    if (Object.keys(pending).length === 0) return;
+    const id = window.setInterval(() => (now = performance.now()), 120);
+    return () => window.clearInterval(id);
+  });
+
+  function isPending(p: NovaTaggedPart): boolean {
+    const e = pending[p.struct.id];
+    if (!e) return false;
+    if (now >= e.deadline) return false;
+    const s = solarOf(p);
+    // Topic confirmed the requested state — clear the pending mark.
+    if (s && s.deployed === e.target) return false;
+    return true;
+  }
+
   function setSolarDeployed(partId: string, deployed: boolean): void {
     ksp.send(NovaPartTopic(partId), 'setSolarDeployed', deployed);
+    pending[partId] = { target: deployed, deadline: performance.now() + PENDING_TIMEOUT_MS };
+  }
+
+  // Bulk action across the SOLAR subgroup. Fans out one op per panel
+  // matching the source state — extend retracts, retract deployeds.
+  function bulkSetSolarDeployed(parts: NovaTaggedPart[], deployed: boolean): void {
+    for (const p of parts) {
+      const s = solarOf(p);
+      if (!s) continue;
+      if (s.deployed === deployed) continue;
+      if (!deployed && !s.retractable) continue;
+      setSolarDeployed(p.struct.id, deployed);
+    }
+  }
+
+  // Subgroup-level state — drives the bulk button label and which of
+  // EXT-ALL / RET-ALL is offered.
+  function subgroupAnyRetracted(parts: NovaTaggedPart[]): boolean {
+    return parts.some((p) => { const s = solarOf(p); return !!s && !s.deployed; });
+  }
+  function subgroupAnyExtendedRetractable(parts: NovaTaggedPart[]): boolean {
+    return parts.some((p) => {
+      const s = solarOf(p);
+      return !!s && s.deployed && s.retractable;
+    });
   }
 </script>
 
@@ -243,32 +295,63 @@
 
 <!-- Per-row solar deploy control. Renders nothing until the part's
      solar state lands. Once it does:
-       deployed=false              → "open" button (chevron-up)
-       deployed=true, retractable  → "close" button (chevron-down)
+       deployed=false              → "EXT" button (extend this panel)
+       deployed=true, retractable  → "RET" button (retract this panel)
        deployed=true, !retractable → no control (locked open)
+     A pending click — between the op send and the animation-end
+     state confirmation — renders as a dimmed "..." placeholder so
+     the user gets immediate feedback even though the topic state
+     hasn't flipped yet.
      Click stops propagation so the row's hover-highlight handlers
      stay coherent. -->
 {#snippet solarControl(p: NovaTaggedPart)}
   {@const s = solarOf(p)}
-  {#if s && !s.deployed}
-    <button type="button" class="pwr__row-action pwr__row-action--open"
-            aria-label="Extend solar panel"
-            title="Extend"
-            onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, true); }}>
-      <svg viewBox="0 0 8 8" aria-hidden="true">
-        <path d="M1.6 5.2 L4 2.6 L6.4 5.2" fill="none" stroke="currentColor"
-              stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+  {#if s}
+    {@const busy = isPending(p)}
+    {#if busy}
+      <span class="pwr__deploy-btn pwr__deploy-btn--busy"
+            aria-label="Solar panel moving">
+        <span>···</span>
+      </span>
+    {:else if !s.deployed}
+      <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ext"
+              aria-label="Extend solar panel"
+              title="Extend solar panel"
+              onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, true); }}>
+        <span>EXT</span>
+      </button>
+    {:else if s.deployed && s.retractable}
+      <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ret"
+              aria-label="Retract solar panel"
+              title="Retract solar panel"
+              onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, false); }}>
+        <span>RET</span>
+      </button>
+    {/if}
+  {/if}
+{/snippet}
+
+<!-- Subgroup-level bulk control. Shown when more than one panel is
+     present (the SOLAR subgroup is the only render path for this
+     snippet). Offers EXT-ALL when at least one panel is retracted,
+     otherwise RET-ALL when at least one panel is extended-and-
+     retractable. Mixed states (some retracted, some extended) get
+     EXT-ALL — finishing the deploy first matches the typical "I
+     need power, deploy everything" intent. -->
+{#snippet solarBulkControl(parts: NovaTaggedPart[])}
+  {#if subgroupAnyRetracted(parts)}
+    <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ext pwr__deploy-btn--bulk"
+            aria-label="Extend all retracted solar panels"
+            title="Extend all retracted solar panels"
+            onclick={(e) => { e.stopPropagation(); bulkSetSolarDeployed(parts, true); }}>
+      <span>EXT ALL</span>
     </button>
-  {:else if s && s.deployed && s.retractable}
-    <button type="button" class="pwr__row-action pwr__row-action--close"
-            aria-label="Retract solar panel"
-            title="Retract"
-            onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, false); }}>
-      <svg viewBox="0 0 8 8" aria-hidden="true">
-        <path d="M1.6 2.8 L4 5.4 L6.4 2.8" fill="none" stroke="currentColor"
-              stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+  {:else if subgroupAnyExtendedRetractable(parts)}
+    <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ret pwr__deploy-btn--bulk"
+            aria-label="Retract all retractable solar panels"
+            title="Retract all retractable solar panels"
+            onclick={(e) => { e.stopPropagation(); bulkSetSolarDeployed(parts, false); }}>
+      <span>RET ALL</span>
     </button>
   {/if}
 {/snippet}
@@ -294,24 +377,28 @@
         <ul class="pwr__rows">
           {#if genGroups.groupSolar}
             <li class="pwr__subgroup">
-              <button type="button" class="pwr__subgroup-head"
-                      aria-expanded={expanded.gen_solar}
-                      onclick={() => toggle('gen_solar')}
-                      onmouseenter={() => highlightOn(genGroups.solar.map(p => p.struct.id))}
-                      onmouseleave={highlightOff}>
-                {@render chev(expanded.gen_solar)}
-                <span class="pwr__row-icon pwr__row-icon--accent">
-                  <ComponentIcon kind="solar" />
-                </span>
-                <span class="pwr__subgroup-title">
-                  SOLAR <em>· {genGroups.solar.length}</em>
-                </span>
-                <span class="pwr__row-rate"
-                      class:pwr__row-rate--zero={isZero(genGroups.solarTotal)}>
-                  <span class="pwr__row-rate-cur">{solarSubgroupFmt.cMag}</span><span
-                    class="pwr__row-rate-max">/{solarSubgroupFmt.mMag}</span><em>{solarSubgroupFmt.unit}</em>
-                </span>
-              </button>
+              <div class="pwr__subgroup-head-wrap"
+                   onmouseenter={() => highlightOn(genGroups.solar.map(p => p.struct.id))}
+                   onmouseleave={highlightOff}
+                   role="presentation">
+                <button type="button" class="pwr__subgroup-head"
+                        aria-expanded={expanded.gen_solar}
+                        onclick={() => toggle('gen_solar')}>
+                  {@render chev(expanded.gen_solar)}
+                  <span class="pwr__row-icon pwr__row-icon--accent">
+                    <ComponentIcon kind="solar" />
+                  </span>
+                  <span class="pwr__subgroup-title">
+                    SOLAR <em>· {genGroups.solar.length}</em>
+                  </span>
+                  <span class="pwr__row-rate"
+                        class:pwr__row-rate--zero={isZero(genGroups.solarTotal)}>
+                    <span class="pwr__row-rate-cur">{solarSubgroupFmt.cMag}</span><span
+                      class="pwr__row-rate-max">/{solarSubgroupFmt.mMag}</span><em>{solarSubgroupFmt.unit}</em>
+                  </span>
+                </button>
+                {@render solarBulkControl(genGroups.solar)}
+              </div>
               {#if expanded.gen_solar}
                 <ul class="pwr__rows pwr__rows--nested">
                   {#each genGroups.solar as p (p.struct.id)}
@@ -940,52 +1027,95 @@
     letter-spacing: 0.24em;
   }
 
-  /* Per-row solar deploy action. A small bordered cell with the
-     chevron glyph; hover lifts to full accent. The row's hover
-     wash is still visible behind it. */
-  .pwr__row-action {
+  /* Per-row solar deploy action. A bordered display-font label
+     ("EXT" / "RET") instead of an iconographic chevron — the chevron
+     was tiny enough that users didn't recognise it as a button. The
+     label sits to the right of the panel name, before the rate
+     readout, with letter-spacing matching the tab chips so it reads
+     as part of the same visual family. */
+  .pwr__deploy-btn {
     appearance: none;
-    flex: 0 0 18px;
-    width: 18px;
-    height: 14px;
-    padding: 0;
+    flex: 0 0 auto;
+    padding: 1px 6px;
     margin: 0;
     background: transparent;
     border: 1px solid var(--accent-dim);
-    color: var(--fg-dim);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: 9px;
+    line-height: 12px;
+    letter-spacing: 0.16em;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border-radius: 1px;
+    user-select: none;
     transition:
       color 200ms cubic-bezier(0.4, 0, 0.2, 1),
       border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
       background 200ms cubic-bezier(0.4, 0, 0.2, 1),
       box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .pwr__row-action svg {
-    width: 8px;
-    height: 8px;
-    display: block;
-  }
-  .pwr__row-action:hover {
-    color: var(--accent);
-    border-color: var(--accent);
+  .pwr__deploy-btn:hover {
     background: rgba(126, 245, 184, 0.10);
+    border-color: var(--accent);
     box-shadow: 0 0 4px var(--accent-glow);
+    text-shadow: 0 0 4px var(--accent-glow);
   }
-  .pwr__row-action:focus-visible {
+  .pwr__deploy-btn:active {
+    background: rgba(126, 245, 184, 0.20);
+  }
+  .pwr__deploy-btn:focus-visible {
     outline: none;
     border-color: var(--accent);
-    color: var(--accent);
   }
-  /* The "open" variant calls a little more loudly when its row is
-     in the closed (dimmed) state — the user landed on a row that's
-     advertising "I'm offline, click here". */
-  .pwr__row--closed .pwr__row-action--open {
-    color: var(--accent);
-    border-color: var(--accent);
+  /* RET uses the warn palette so the two states read as distinct
+     directions (extending = lit-green, retracting = warning-amber)
+     rather than two interchangeable "click me" buttons. */
+  .pwr__deploy-btn--ret {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  }
+  .pwr__deploy-btn--ret:hover {
+    background: rgba(240, 180, 41, 0.10);
+    border-color: var(--warn);
+    box-shadow: 0 0 4px var(--warn-glow);
+    text-shadow: 0 0 4px var(--warn-glow);
+  }
+  /* Busy: action sent, animation in flight. Dimmed letters + a slow
+     pulse on the border so the user sees the click registered even
+     before the topic state catches up. Span (not button) so it can't
+     be re-clicked while moving. */
+  .pwr__deploy-btn--busy {
+    color: var(--fg-mute);
+    border-color: var(--line);
+    cursor: default;
+    animation: pwr-deploy-busy 1.2s ease-in-out infinite;
+    text-shadow: none;
+  }
+  @keyframes pwr-deploy-busy {
+    0%, 100% { border-color: var(--line); }
+    50%      { border-color: var(--accent-dim); box-shadow: 0 0 4px var(--accent-glow); }
+  }
+  /* Bulk variant — wider so EXT ALL / RET ALL fit. Sits trailing the
+     subgroup head, separated by a small gap. */
+  .pwr__deploy-btn--bulk {
+    flex: 0 0 auto;
+    padding: 1px 8px;
+  }
+
+  /* Subgroup head wrapper — places the head button and the bulk
+     deploy control on one row. The head fills available space; the
+     bulk button sits trailing, full-width-aware via flex-basis auto. */
+  .pwr__subgroup-head-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pwr__subgroup-head-wrap .pwr__subgroup-head {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   /* Closed solar panel row: dim the text/icon/rate per-element so
