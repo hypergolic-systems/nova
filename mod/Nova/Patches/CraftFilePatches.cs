@@ -121,16 +121,22 @@ public static class CraftFilePatches {
   }
 
   /// <summary>
-  /// SaveShip(string) — launch path. If the .hgc already exists, return
-  /// its path unchanged (it was written by an explicit Save earlier in
-  /// this session). Otherwise build the .hgc now, pinning craftIDs from
-  /// the cached ShipConfig so the just-built crew manifest (which was
-  /// built from ShipConfig) still matches the parts flight will load.
+  /// SaveShip(string) — launch path and editor auto-save. Always
+  /// re-serialize from the live ShipConstruct so editor-time mutations
+  /// (e.g. Set Tank Config) flow through to the .hgc that flight will
+  /// actually load. We pin craftIDs from the cached ShipConfig so the
+  /// just-built crew manifest still matches the parts flight will see.
   ///
   /// The earlier bug (dab113d) was that re-serializing via BuildFromParts
   /// read live `part.craftID` values, which could diverge from ShipConfig
   /// after events like `onAboutToSaveShip` or thumbnail capture. Reading
   /// IDs straight out of ShipConfig avoids that entire class of drift.
+  ///
+  /// Earlier this prefix short-circuited when the .hgc already existed
+  /// (assuming an explicit Save had just written it), but that lost
+  /// any mutation made between the prior save/auto-save and Launch —
+  /// the most common path being: place tank → right-click → Set Tank
+  /// Config → Launch, which would fly with the pre-mutation loadout.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch("SaveShip", typeof(string))]
@@ -139,11 +145,6 @@ public static class CraftFilePatches {
             + "/Ships/" + ShipConstruction.GetShipsSubfolderFor(EditorDriver.editorFacility);
     var sanitized = KSPUtil.SanitizeString(shipFilename, '_', true);
     var hgcPath = dir + "/" + sanitized + ".hgc";
-
-    if (File.Exists(hgcPath)) {
-      __result = hgcPath;
-      return false;
-    }
 
     var ship = EditorLogic.fetch?.ship;
     var shipConfig = ShipConstruction.ShipConfig;

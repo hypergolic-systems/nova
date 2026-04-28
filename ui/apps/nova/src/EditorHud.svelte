@@ -8,16 +8,13 @@
   //   1. Track cursor via a global mousedown listener — each PawTopic
   //      pulse arrives shortly after the click that produced it, so
   //      the most-recent mousedown coords are the correct anchor.
-  //   2. On pulse, subscribe to the per-part NovaPartTopic.
-  //      NovaSubscriptionManager attaches the topic to the part
-  //      GameObject; the broadcaster emits within ~100 ms.
-  //   3. First frame: if `tank.length > 0`, render a ContextMenu with
-  //      the six TANK_PRESETS entries, dispatching `setTankConfig` on
-  //      select. Otherwise the menu stays closed (per current scope:
-  //      no menu for parts Nova has no opinions about).
-  //   4. The per-part subscription is one-shot — unsubscribe after the
-  //      first frame so we don't keep the topic alive once the menu
-  //      is built.
+  //   2. On pulse, subscribe to NovaPartTopic just long enough to read
+  //      the first frame (tells us what components the part has).
+  //      Unsubscribe immediately — DG's OpDispatcher re-attaches the
+  //      Topic on demand when `setTankConfig` lands later.
+  //   3. If `tank.length > 0`, render a ContextMenu with the
+  //      TANK_PRESETS entries; on click, fire setTankConfig and
+  //      dismiss. Otherwise no menu (per current scope).
 
   import { onDestroy } from 'svelte';
   import { getKsp } from '@dragonglass/telemetry/svelte';
@@ -29,7 +26,6 @@
   const ksp = getKsp();
 
   let menu = $state<{ items: MenuItem[]; x: number; y: number } | null>(null);
-  let pendingSub: (() => void) | null = null;
 
   let cursorX = 0;
   let cursorY = 0;
@@ -46,36 +42,40 @@
     const partId = Array.isArray(raw) && typeof raw[0] === 'string' ? raw[0] : null;
     if (!partId) return;
 
-    pendingSub?.();
-    pendingSub = null;
-
     const partTopic = NovaPartTopic(partId);
     const x = cursorX;
     const y = cursorY;
+    let consumed = false;
+    let unsub: (() => void) | null = null;
 
-    pendingSub = ksp.subscribe(partTopic, (frame) => {
-      const part = decodePart(frame);
+    const onFrame = (frame: unknown) => {
+      if (consumed) return;
+      consumed = true;
+      // Defer the unsub until after the synchronous cached-frame
+      // dispatch returns; calling unsub here when subscribe hasn't
+      // yet returned its handle would leak the listener.
+      queueMicrotask(() => unsub?.());
+
+      const part = decodePart(frame as Parameters<typeof decodePart>[0]);
       if (part.tank.length === 0) {
         menu = null;
-      } else {
-        menu = {
-          x,
-          y,
-          items: TANK_PRESETS.map((p) => ({
-            label: p.label,
-            onSelect: () => ksp.send(partTopic, 'setTankConfig', p.id),
-          })),
-        };
+        return;
       }
-      pendingSub?.();
-      pendingSub = null;
-    });
+      menu = {
+        x,
+        y,
+        items: TANK_PRESETS.map((p) => ({
+          label: p.label,
+          onSelect: () => ksp.send(partTopic, 'setTankConfig', p.id),
+        })),
+      };
+    };
+
+    unsub = ksp.subscribe(partTopic, onFrame);
+    if (consumed) unsub();
   });
 
-  onDestroy(() => {
-    unsubPaw();
-    pendingSub?.();
-  });
+  onDestroy(unsubPaw);
 </script>
 
 {#if menu}
