@@ -124,7 +124,7 @@ The `.hgc` (craft) and `.hgs` (save) file formats are defined by `proto/nova.pro
 
 Conventions:
 - **Don't edit the generated `.cs`** — regenerate from the proto.
-- **Field numbers are wire-compat** — never reuse a number; use `reserved` for retired fields.
+- **No backwards compatibility.** Old proto bytes, old `.hgc`/`.hgs` files, old sidecar instances are all fair game to break. Field numbers can be reused freely; retired fields don't need to be `reserved`. Active-development mod, single user — re-saves and reinstalls are cheap, fallback/migration code in loaders is permanent overhead. If a schema change breaks an existing save, the right answer is "rebuild the craft," not a defensive load.
 - **Generated property names** follow protogen's pluralization (`repeated Kerbal crew` → `Crews`) and casing (`launch_id` → `LaunchId`). When a field name surprises you, check the generated file.
 - **Repeated message types** become get-only `List<T>` (use collection-initializer `Foo = { … }` or `.AddRange(…)`); **repeated primitive types** become `T[]` (writable).
 
