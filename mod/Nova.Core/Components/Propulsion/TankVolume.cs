@@ -78,6 +78,16 @@ public class TankVolume : VirtualComponent {
     return clone;
   }
 
+  // Replace Tanks in place. The list reference stays the same so any
+  // cached references (NovaTankModule.tankVolume, NovaPartModule.Components)
+  // see the new shape without re-plumbing. Used by the editor "Set Tank
+  // Config" path; not safe to call mid-flight (the solver topology is
+  // built from the buffer list at vessel-modify time).
+  public void Reconfigure(List<Buffer> newTanks) {
+    Tanks.Clear();
+    foreach (var t in newTanks) Tanks.Add(t);
+  }
+
   public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
     for (int i = 0; i < Tanks.Count; i++) {
       var tank = Tanks[i];

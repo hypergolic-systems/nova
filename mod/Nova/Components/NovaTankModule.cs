@@ -7,6 +7,8 @@ public class NovaTankModule : NovaPartModule, IPartMassModifier {
 
   private TankVolume tankVolume;
 
+  internal TankVolume TankVolume => tankVolume;
+
   public override void OnStart(StartState state) {
     base.OnStart(state);
     tankVolume = Components.OfType<TankVolume>().First();

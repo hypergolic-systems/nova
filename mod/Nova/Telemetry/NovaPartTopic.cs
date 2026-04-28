@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Dragonglass.Telemetry.Topics;
 using Nova.Components;
@@ -38,6 +39,7 @@ namespace Nova.Telemetry;
 //   ["W", maxEcRate, activity(0..1)]                                ReactionWheel
 //   ["L", maxEcRate, activity(0..1)]                                Light
 //   ["E", alternatorMaxRate, alternatorRateEc]                      Engine
+//   ["T", volume]                                                   TankVolume
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -55,6 +57,13 @@ namespace Nova.Telemetry;
 //                                symmetry counterparts are NOT walked,
 //                                so the UI sends one op per panel it
 //                                wants to deploy.
+//   "setTankConfig" [string]   — replace the part's tank loadout with
+//                                the named TankPresets preset, built
+//                                fresh against the current Volume.
+//                                Editor-only — rejected outside
+//                                GameScenes.EDITOR. No-op if the part
+//                                has no NovaTankModule or the preset
+//                                id is unknown.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -123,6 +132,26 @@ public sealed class NovaPartTopic : Topic {
         else module.Retract();
         return;
       }
+      case "setTankConfig": {
+        if (args == null || args.Count < 1 || !(args[0] is string presetId)) {
+          Debug.LogWarning(LogPrefix + Name + " setTankConfig: expected [string]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          Debug.Log(LogPrefix + Name + " setTankConfig rejected outside editor");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaTankModule>();
+        if (module?.TankVolume == null) return;
+        var preset = TankPresets.GetById(presetId);
+        if (preset == null) {
+          Debug.LogWarning(LogPrefix + Name + " setTankConfig: unknown preset '" + presetId + "'");
+          return;
+        }
+        module.TankVolume.Reconfigure(preset.Build(module.TankVolume.Volume));
+        MarkDirty();
+        return;
+      }
       default:
         base.HandleOp(op, args);
         return;
@@ -136,33 +165,44 @@ public sealed class NovaPartTopic : Topic {
     JsonWriter.Sep(sb, ref first);
     JsonWriter.WriteUintAsString(sb, _part.persistentId);
 
-    var virt = ResolveVirtualVessel();
+    var components = ResolveComponents();
 
     JsonWriter.Sep(sb, ref first);
-    WriteResources(sb, virt);
+    WriteResources(sb, components);
 
     JsonWriter.Sep(sb, ref first);
-    WriteComponents(sb, virt);
+    WriteComponents(sb, components);
 
     JsonWriter.End(sb, ']');
   }
 
-  private VirtualVessel ResolveVirtualVessel() {
-    if (_part == null || _part.vessel == null) return null;
-    var vm = _part.vessel.GetComponent<NovaVesselModule>();
-    return vm != null ? vm.Virtual : null;
+  // In flight, components live on NovaVesselModule.Virtual (the solver
+  // graph). In editor there's no vessel and no Virtual — read directly
+  // from the live NovaPartModule.Components list, populated by
+  // OnStartEditor from the prefab MODULE config (and mutated by
+  // setTankConfig). Returns an empty enumerable for parts with no
+  // Nova modules.
+  private IEnumerable<VirtualComponent> ResolveComponents() {
+    if (_part == null) return Enumerable.Empty<VirtualComponent>();
+    if (_part.vessel != null) {
+      var vm = _part.vessel.GetComponent<NovaVesselModule>();
+      if (vm?.Virtual != null) return vm.Virtual.GetComponents(_part.persistentId);
+    }
+    var modules = _part.Modules?.OfType<NovaPartModule>();
+    if (modules == null) return Enumerable.Empty<VirtualComponent>();
+    return modules
+      .Where(m => m.Components != null)
+      .SelectMany(m => m.Components);
   }
 
-  private void WriteResources(StringBuilder sb, VirtualVessel virt) {
+  private void WriteResources(StringBuilder sb, IEnumerable<VirtualComponent> components) {
     JsonWriter.Begin(sb, '[');
     bool first = true;
-    if (virt != null) {
-      foreach (var c in virt.GetComponents(_part.persistentId)) {
-        foreach (var buf in EnumerateBuffers(c)) {
-          if (buf == null || buf.Capacity <= 0) continue;
-          JsonWriter.Sep(sb, ref first);
-          WriteResource(sb, buf);
-        }
+    foreach (var c in components) {
+      foreach (var buf in EnumerateBuffers(c)) {
+        if (buf == null || buf.Capacity <= 0) continue;
+        JsonWriter.Sep(sb, ref first);
+        WriteResource(sb, buf);
       }
     }
     JsonWriter.End(sb, ']');
@@ -196,16 +236,14 @@ public sealed class NovaPartTopic : Topic {
     JsonWriter.End(sb, ']');
   }
 
-  private void WriteComponents(StringBuilder sb, VirtualVessel virt) {
+  private void WriteComponents(StringBuilder sb, IEnumerable<VirtualComponent> components) {
     JsonWriter.Begin(sb, '[');
     bool first = true;
-    if (virt != null) {
-      foreach (var c in virt.GetComponents(_part.persistentId)) {
-        if (!TryWriteComponent(sb, c, ref first)) {
-          // Unhandled kind — silently skip rather than emit an
-          // un-decodable frame. New kinds get a case here + a TS
-          // tuple in nova-topics.ts.
-        }
+    foreach (var c in components) {
+      if (!TryWriteComponent(sb, c, ref first)) {
+        // Unhandled kind — silently skip rather than emit an
+        // un-decodable frame. New kinds get a case here + a TS
+        // tuple in nova-topics.ts.
       }
     }
     JsonWriter.End(sb, ']');
@@ -267,6 +305,15 @@ public sealed class NovaPartTopic : Topic {
         WriteKind(sb, "E", ref f);
         WriteNum(sb, engine.AlternatorRate, ref f);
         WriteNum(sb, engine.AlternatorOutput, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case TankVolume tank: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "T", ref f);
+        WriteNum(sb, tank.Volume, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

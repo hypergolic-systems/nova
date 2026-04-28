@@ -37,13 +37,15 @@ export type NovaBatteryFrame = ['B', soc: number, capacity: number, rate: number
 export type NovaWheelFrame   = ['W', maxEcRate: number, activity: number];
 export type NovaLightFrame   = ['L', maxEcRate: number, activity: number];
 export type NovaEngineFrame  = ['E', alternatorMaxRate: number, alternatorRate: number];
+export type NovaTankFrame    = ['T', volume: number];
 
 export type NovaComponentFrame =
   | NovaSolarFrame
   | NovaBatteryFrame
   | NovaWheelFrame
   | NovaLightFrame
-  | NovaEngineFrame;
+  | NovaEngineFrame
+  | NovaTankFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -125,6 +127,14 @@ export interface EngineState {
   alternatorRate: number;
 }
 
+export interface TankState {
+  /** Geometric capacity of the tank in litres. The current resource
+   *  loadout is in `NovaPart.resources`; this `volume` is the input
+   *  the editor uses to compute new buffer capacities when the player
+   *  picks a different preset via Set Tank Config. */
+  volume: number;
+}
+
 export interface NovaPart {
   id: string;
   resources: NovaResourceFlow[];
@@ -133,6 +143,7 @@ export interface NovaPart {
   wheel: WheelState[];
   light: LightState[];
   engine: EngineState[];
+  tank: TankState[];
 }
 
 export interface NovaPartStruct {
@@ -177,6 +188,15 @@ export interface NovaPartOps {
    * subgroup bulk control to dispatch a fan-out).
    */
   setSolarDeployed(deployed: boolean): void;
+
+  /**
+   * Editor-only. Replace this part's tank loadout with the named
+   * preset (one of the ids in `editor/tank-presets.ts`), built fresh
+   * against the part's geometric `volume`. No-op if the part has no
+   * `NovaTankModule`, the preset id is unknown, or the call lands
+   * outside `GameScenes.EDITOR`.
+   */
+  setTankConfig(presetId: string): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -234,6 +254,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     wheel: [],
     light: [],
     engine: [],
+    tank: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -260,6 +281,9 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           alternatorMaxRate: c[1],
           alternatorRate: c[2],
         });
+        break;
+      case 'T':
+        out.tank.push({ volume: c[1] });
         break;
     }
   }

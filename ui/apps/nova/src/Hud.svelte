@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useGame } from '@dragonglass/telemetry/svelte';
   import FlightHud from './FlightHud.svelte';
+  import EditorHud from './EditorHud.svelte';
 
   const game = useGame();
   const label = $derived(game.scene ? game.scene.toLowerCase() : 'connecting…');
@@ -8,6 +9,8 @@
 
 {#if game.scene === 'FLIGHT'}
   <FlightHud />
+{:else if game.scene === 'EDITOR'}
+  <EditorHud />
 {:else}
   <div class="placeholder">
     <div class="placeholder__brand">NOVA</div>

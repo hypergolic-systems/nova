@@ -96,6 +96,17 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
         && part != null) {
       return true;
     }
+    if (HighLogic.LoadedScene == GameScenes.EDITOR
+        && EditorLogic.fetch?.ship != null) {
+      var ship = EditorLogic.fetch.ship;
+      for (int i = 0; i < ship.parts.Count; i++) {
+        var p = ship.parts[i];
+        if (p != null && p.persistentId == id) {
+          part = p;
+          return true;
+        }
+      }
+    }
     return false;
   }
 }

@@ -1,17 +1,17 @@
 import { mount } from 'svelte';
 import { getKsp } from '@dragonglass/telemetry/svelte';
-import { GameTopic, CAP_FLIGHT_UI } from '@dragonglass/telemetry/core';
+import { GameTopic, CAP_FLIGHT_UI, CAP_EDITOR_PAW } from '@dragonglass/telemetry/core';
 import Hud from './Hud.svelte';
 
 mount(Hud, { target: document.getElementById('app') ?? document.body });
 
-// Tell the plugin that Nova owns flight-scene UI so Dragonglass's
-// StockUiHider suppresses KSP's built-in navball, staging, etc.
-// Without this handshake stock KSP's chrome stays drawn alongside
-// Nova's HUD. PAW + editor caps are deliberately omitted — Nova
-// doesn't render those yet, so leaving them out keeps stock KSP's
-// right-click menus and editor screens functional.
+// Capabilities Nova owns:
+//   flight/ui   — Nova draws navball, staging, tapes; DG suppresses
+//                 stock chrome so they don't double-render.
+//   editor/paw  — Nova replaces stock right-click PAW with a context
+//                 menu (currently: Set Tank Config). Stock PAW stays
+//                 active in flight (no flight/paw declared).
 const ksp = getKsp();
 ksp.connect().then(() => {
-  ksp.send(GameTopic, 'setCapabilities', [CAP_FLIGHT_UI]);
+  ksp.send(GameTopic, 'setCapabilities', [CAP_FLIGHT_UI, CAP_EDITOR_PAW]);
 });
