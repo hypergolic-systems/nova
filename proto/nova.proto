@@ -4,8 +4,9 @@ package nova.v1;
 option csharp_namespace = "Nova.Core.Persistence.Protos";
 
 // Nova on-disk file format. Messages here back .hgc (craft) and .hgs
-// (save) files; field numbers are wire-compat with the legacy
-// hand-written Messages.cs and must not be reused.
+// (save) files. No backwards compatibility — Nova is an active-dev
+// mod with one user; old saves break freely on schema changes.
+// See `CLAUDE.md` → "Persistence wire format".
 
 // --- Common types ---
 
@@ -103,7 +104,6 @@ message PartStructure {
   // Prefab-only components (Engine, Rcs, etc.) are discovered from the prefab.
   TankVolumeStructure tank_volume = 8;
   BatteryStructure    battery = 9;
-  FuelCellStructure   fuel_cell = 10;
 }
 
 message Attachment {
@@ -134,12 +134,6 @@ message BatteryStructure {
   double capacity = 1;
 }
 
-message FuelCellStructure {
-  double lh2_rate  = 1;  // L/s of LH₂ at full demand
-  double lox_rate  = 2;  // L/s of LOx at full demand
-  double ec_output = 3;  // W (EC/s) at full demand
-}
-
 // --- State (dynamic, changes during flight or in editor) ---
 
 message VesselState {
@@ -158,8 +152,7 @@ message Stage {
 }
 
 message PartState {
-  uint32 id = 1;              // matches PartStructure.Id
-  reserved 2, 3;              // legacy slots, kept reserved for wire-compat
+  uint32 id = 1;
   // Only components with mutable runtime state.
   TankVolumeState tank_volume = 4;
   BatteryState    battery = 5;
@@ -176,7 +169,10 @@ message BatteryState {
 }
 
 message FuelCellState {
-  bool is_active = 1;
+  bool   is_active             = 1;
+  double lh2_manifold_contents = 2;  // L
+  double lox_manifold_contents = 3;  // L
+  bool   refill_active         = 4;  // hysteresis state for the refill device
 }
 
 // --- Flight state (only on in-flight vessels) ---

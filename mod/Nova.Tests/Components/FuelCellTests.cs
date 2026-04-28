@@ -14,13 +14,27 @@ public class FuelCellTests {
   private const double SmallLh2Rate = 4.96e-4;
   private const double SmallLoxRate = 2.31e-4;
   private const double SmallEcOutput = 2500;
+  private const double SmallLh2ManifoldCap = 1.0;
+  private const double SmallLoxManifoldCap = 0.466;
+  private const double SmallRefillRateLh2 = 0.1;
 
-  private static FuelCell MakeFuelCell(bool isActive = false, double ec = SmallEcOutput) {
+  private static FuelCell MakeFuelCell(
+      bool isActive = false,
+      double ec = SmallEcOutput,
+      double lh2Manifold = SmallLh2ManifoldCap,   // start full unless overridden
+      double loxManifold = SmallLoxManifoldCap,
+      bool refillActive = false) {
     return new FuelCell {
       Lh2Rate = SmallLh2Rate,
       LoxRate = SmallLoxRate,
       EcOutput = ec,
+      Lh2ManifoldCapacity = SmallLh2ManifoldCap,
+      LoxManifoldCapacity = SmallLoxManifoldCap,
+      RefillRateLh2 = SmallRefillRateLh2,
+      Lh2ManifoldContents = lh2Manifold,
+      LoxManifoldContents = loxManifold,
       IsActive = isActive,
+      RefillActive = refillActive,
     };
   }
 
@@ -70,40 +84,42 @@ public class FuelCellTests {
   [TestMethod]
   public void Clone_CopiesAllState() {
     var src = new FuelCell {
-      Lh2Rate = 1.0, LoxRate = 0.5, EcOutput = 1000, IsActive = true,
+      Lh2Rate = 1.0, LoxRate = 0.5, EcOutput = 1000,
+      Lh2ManifoldCapacity = 2.0, LoxManifoldCapacity = 1.0, RefillRateLh2 = 0.2,
+      Lh2ManifoldContents = 1.5, LoxManifoldContents = 0.8,
+      IsActive = true, RefillActive = true,
     };
     var dst = (FuelCell)src.Clone();
     Assert.AreEqual(1.0, dst.Lh2Rate);
     Assert.AreEqual(0.5, dst.LoxRate);
     Assert.AreEqual(1000, dst.EcOutput);
+    Assert.AreEqual(2.0, dst.Lh2ManifoldCapacity);
+    Assert.AreEqual(1.0, dst.LoxManifoldCapacity);
+    Assert.AreEqual(0.2, dst.RefillRateLh2);
+    Assert.AreEqual(1.5, dst.Lh2ManifoldContents);
+    Assert.AreEqual(0.8, dst.LoxManifoldContents);
     Assert.IsTrue(dst.IsActive);
+    Assert.IsTrue(dst.RefillActive);
   }
 
   [TestMethod]
-  public void Structure_RoundTripsThroughProto() {
-    var src = new FuelCell { Lh2Rate = 1e-3, LoxRate = 5e-4, EcOutput = 5000 };
-    var ps = new Nova.Core.Persistence.Protos.PartStructure();
-    src.SaveStructure(ps);
-
-    var dst = new FuelCell();
-    dst.LoadStructure(ps);
-    Assert.AreEqual(1e-3, dst.Lh2Rate);
-    Assert.AreEqual(5e-4, dst.LoxRate);
-    Assert.AreEqual(5000, dst.EcOutput);
-  }
-
-  [TestMethod]
-  public void State_RoundTripsIsActive() {
-    var src = new FuelCell { IsActive = true };
+  public void State_RoundTripsAllFields() {
+    var src = new FuelCell {
+      IsActive = true, RefillActive = true,
+      Lh2ManifoldContents = 0.42, LoxManifoldContents = 0.19,
+    };
     var state = new Nova.Core.Persistence.Protos.PartState();
     src.Save(state);
 
     var dst = new FuelCell();
     dst.Load(state);
     Assert.IsTrue(dst.IsActive);
+    Assert.IsTrue(dst.RefillActive);
+    Assert.AreEqual(0.42, dst.Lh2ManifoldContents);
+    Assert.AreEqual(0.19, dst.LoxManifoldContents);
   }
 
-  // ---------- Hysteresis ----------
+  // ---------- Production hysteresis ----------
 
   [TestMethod]
   public void Hysteresis_TurnsOnBelowTwentyPercent() {
@@ -167,6 +183,104 @@ public class FuelCellTests {
         "With no batteries to gate against, the cell runs continuously");
   }
 
+  // ---------- Refill hysteresis ----------
+
+  [TestMethod]
+  public void Refill_TurnsOnWhenManifoldLow() {
+    var fc = MakeFuelCell(isActive: false, refillActive: false,
+        lh2Manifold: 0.05);  // 5% of 1 L
+    var battery = MakeBattery(capacity: 1000, contents: 500);
+    var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
+        MakeTank(Resource.LiquidOxygen, 10));
+
+    vessel.Tick(1);
+
+    Assert.IsTrue(fc.RefillActive, "Manifold below 10% should flip refill ON");
+  }
+
+  [TestMethod]
+  public void Refill_TurnsOffWhenManifoldFull() {
+    var fc = MakeFuelCell(isActive: false, refillActive: true,
+        lh2Manifold: SmallLh2ManifoldCap, loxManifold: SmallLoxManifoldCap);
+    var battery = MakeBattery(capacity: 1000, contents: 500);
+    var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
+        MakeTank(Resource.LiquidOxygen, 10));
+
+    vessel.Tick(1);
+
+    Assert.IsFalse(fc.RefillActive, "Both manifolds at capacity should flip refill OFF");
+  }
+
+  [TestMethod]
+  public void Refill_HoldsInBand() {
+    // 50% manifold, refill OFF — neither threshold crossed, stays OFF.
+    var fc = MakeFuelCell(isActive: false, refillActive: false,
+        lh2Manifold: 0.5, loxManifold: 0.233);
+    var battery = MakeBattery(capacity: 1000, contents: 500);
+    var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
+        MakeTank(Resource.LiquidOxygen, 10));
+
+    vessel.Tick(1);
+
+    Assert.IsFalse(fc.RefillActive);
+  }
+
+  // ---------- Manifold integration ----------
+
+  [TestMethod]
+  public void Manifold_DrainsWhileProducing() {
+    // ON cell + thirsty battery + plenty of EC sink. Tick a window and
+    // confirm manifold contents drop. The drain rate is small (μL/s) so
+    // we look at the trend, not an exact figure.
+    var fc = MakeFuelCell(isActive: true);
+    var battery = MakeBattery(capacity: 100000, contents: 10000);
+    // No main tanks → refill can't run → manifold drains in isolation.
+    var vessel = BuildVessel(fc, battery);
+
+    // First Tick establishes Activities; integration before that runs
+    // with the default zero rates and would no-op the manifold.
+    vessel.Tick(0.001);
+    double initialLh2 = fc.Lh2ManifoldContents;
+    vessel.Tick(60.001);
+
+    Assert.IsTrue(fc.Lh2ManifoldContents < initialLh2,
+        $"Expected manifold drain, got {initialLh2} → {fc.Lh2ManifoldContents}");
+  }
+
+  [TestMethod]
+  public void Manifold_RefillsWhenLow() {
+    // Start at 5% manifold with cell OFF (no production), main tank full.
+    // Refill should trip on, fill manifold, trip off near capacity.
+    var fc = MakeFuelCell(isActive: false, refillActive: false,
+        lh2Manifold: 0.05, loxManifold: 0.0233);
+    // Battery above 80% so production stays OFF.
+    var battery = MakeBattery(capacity: 1000, contents: 900);
+    var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
+        MakeTank(Resource.LiquidOxygen, 10));
+
+    // Warmup so the first integration uses the post-solve refill rate.
+    vessel.Tick(0.001);
+    vessel.Tick(20.001);  // 20 s — well past the ~9.5 s refill at 0.1 L/s
+
+    Assert.IsTrue(fc.Lh2ManifoldContents > 0.9 * SmallLh2ManifoldCap,
+        $"Expected near-full manifold, got {fc.Lh2ManifoldContents}");
+  }
+
+  [TestMethod]
+  public void Manifold_StarvationStopsProduction() {
+    // Empty manifold, no main tanks → refill can't fill, production
+    // can't continue. Confirm CurrentOutput is zero.
+    var fc = MakeFuelCell(isActive: true, lh2Manifold: 0, loxManifold: 0);
+    var battery = MakeBattery(capacity: 1000, contents: 100);  // SoC=0.1, wants on
+    var vessel = BuildVessel(fc, battery);  // no LH2/LOx tanks
+
+    vessel.Tick(1);
+
+    Assert.IsTrue(fc.IsActive, "Cell wants to be ON (SoC=0.1)");
+    Assert.AreEqual(0, fc.CurrentOutput, 1e-6,
+        "But starved manifold + empty tanks → no production");
+  }
+
   // ---------- Forecast (post-solve, on converged rates) ----------
 
   [TestMethod]
@@ -213,6 +327,25 @@ public class FuelCellTests {
     vessel.Tick(1);
 
     Assert.AreEqual(double.PositiveInfinity, fc.ValidUntilSeconds);
+  }
+
+  [TestMethod]
+  public void ValidUntil_ProductionProjectsToManifoldEmpty() {
+    // ON cell, full manifold, no main tanks → refill is blocked, so
+    // production drains the manifold in isolation. ValidUntilSeconds
+    // should track time-to-empty rather than the (longer) SoC flip.
+    // Use a deliberately oversized battery so dtSocFlip ≫ dtMfdEmpty
+    // and the manifold-empty term is the binding one.
+    var fc = MakeFuelCell(isActive: true);
+    var battery = MakeBattery(capacity: 1e7, contents: 1e6);  // SoC=0.1, dtSocFlip≈2800s
+    var vessel = BuildVessel(fc, battery);
+
+    vessel.Tick(1);
+
+    // Expected: manifold ≈ 1 L LH₂, drain ≈ Activity·SmallLh2Rate.
+    // With Activity ≈ 1, dt ≈ 1.0 / 4.96e-4 ≈ 2016 s.
+    Assert.IsTrue(fc.ValidUntilSeconds > 1500 && fc.ValidUntilSeconds < 2500,
+        $"Expected ~2016 s manifold-empty horizon, got {fc.ValidUntilSeconds}");
   }
 
   // ---------- Integration ----------

@@ -65,19 +65,28 @@ public static class ComponentFactory {
       "Decoupler" => CreateDecoupler(moduleNode),
       "DockingPort" => CreateDockingPort(moduleNode),
       "Crew" => CreateCrew(moduleNode),
-      "Command" => new Command(),
+      "Command" => CreateCommand(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
 
   public static FuelCell CreateFuelCell(ConfigNode node) {
+    var lh2Cap = double.Parse(node.GetValue("lh2ManifoldCapacity"));
+    var loxCap = double.Parse(node.GetValue("loxManifoldCapacity"));
     return new FuelCell {
-      Lh2Rate = double.Parse(node.GetValue("lh2Rate")),
-      LoxRate = double.Parse(node.GetValue("loxRate")),
+      Lh2Rate  = double.Parse(node.GetValue("lh2Rate")),
+      LoxRate  = double.Parse(node.GetValue("loxRate")),
       EcOutput = double.Parse(node.GetValue("ecOutput")),
-      // Start OFF; VirtualVessel.UpdateFuelCellDevices flips on within
-      // a tick if SoC is already below the ON threshold.
+      Lh2ManifoldCapacity = lh2Cap,
+      LoxManifoldCapacity = loxCap,
+      RefillRateLh2 = double.Parse(node.GetValue("refillRateLh2")),
+      // A fresh cell ships with manifolds primed — same convention as
+      // batteries (capacity=value at build time). Editor save round-
+      // trips manifold contents, so subsequent loads honour drain.
+      Lh2ManifoldContents = lh2Cap,
+      LoxManifoldContents = loxCap,
       IsActive = false,
+      RefillActive = false,
     };
   }
 
@@ -124,13 +133,14 @@ public static class ComponentFactory {
   }
 
   public static Battery CreateBattery(ConfigNode node) {
+    var maxRate = double.Parse(node.GetValue("maxRate"));
     return new Battery {
       Buffer = new Buffer {
         Resource = Resource.ElectricCharge,
         Capacity = double.Parse(node.GetValue("capacity")),
         Contents = double.Parse(node.GetValue("value")),
-        MaxRateIn = 10,
-        MaxRateOut = 10,
+        MaxRateIn = maxRate,
+        MaxRateOut = maxRate,
       },
     };
   }
@@ -198,6 +208,13 @@ public static class ComponentFactory {
   public static Crew CreateCrew(ConfigNode node) {
     return new Crew {
       Capacity = int.Parse(node.GetValue("capacity")),
+    };
+  }
+
+  public static Command CreateCommand(ConfigNode node) {
+    return new Command {
+      IdleDraw = double.Parse(node.GetValue("idleDraw")),
+      TestLoadRate = double.Parse(node.GetValue("testLoadRate")),
     };
   }
 }

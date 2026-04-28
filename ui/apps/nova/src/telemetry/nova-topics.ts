@@ -38,7 +38,23 @@ export type NovaWheelFrame    = ['W', maxEcRate: number, activity: number];
 export type NovaLightFrame    = ['L', maxEcRate: number, activity: number];
 export type NovaEngineFrame   = ['E', alternatorMaxRate: number, alternatorRate: number];
 export type NovaTankFrame     = ['T', volume: number];
-export type NovaFuelCellFrame = ['F', currentOutput: number, maxOutput: number, isActive: 0 | 1, validUntilSec: number];
+export type NovaCommandFrame  = [
+  'C',
+  idleRate: number,
+  idleActivity: number,
+  testLoadRate: number,
+  testLoadActive: 0 | 1,
+];
+export type NovaFuelCellFrame = [
+  'F',
+  currentOutput: number,
+  maxOutput: number,
+  isActive: 0 | 1,
+  validUntilSec: number,
+  lh2ManifoldFraction: number,
+  loxManifoldFraction: number,
+  refillActive: 0 | 1,
+];
 
 export type NovaComponentFrame =
   | NovaSolarFrame
@@ -47,6 +63,7 @@ export type NovaComponentFrame =
   | NovaLightFrame
   | NovaEngineFrame
   | NovaTankFrame
+  | NovaCommandFrame
   | NovaFuelCellFrame;
 
 export type NovaPartFrame = [
@@ -137,6 +154,23 @@ export interface TankState {
   volume: number;
 }
 
+export interface CommandState {
+  /** Rated baseline EC draw at full availability (avionics + computer
+   *  + telemetry). Always-on. */
+  idleRate: number;
+  /** 0..1 fraction of the idle draw the LP actually delivered last
+   *  solve. Drops below 1 only when the bus is starved. */
+  idleActivity: number;
+  /** Rated debug "test load" draw — gated by `testLoadActive`. Used
+   *  to exercise the power system (force batteries to drain, trip
+   *  fuel cell hysteresis). */
+  testLoadRate: number;
+  /** Toggle state for the debug load. Reset to false on every load
+   *  (intentionally non-persistent — a forgotten toggle shouldn't
+   *  silently drain a vessel after a quickload). */
+  testLoadActive: boolean;
+}
+
 export interface FuelCellState {
   /** Live W output, post-LP-throttle. Drops to 0 when `isActive` is
    *  false or batteries are full and consumers don't want the power. */
@@ -146,10 +180,19 @@ export interface FuelCellState {
   /** Hysteresis state set by VirtualVessel each tick: ON below 20%
    *  vessel-wide battery SoC, OFF above 80%. Mid-band is "hold". */
   isActive: boolean;
-  /** Seconds until the next predicted ON↔OFF flip given the current
-   *  vessel-wide net charging rate. `Infinity` when no transition is
-   *  reachable from the current rate. */
+  /** Seconds until the next predicted production flip — the soonest
+   *  of SoC threshold crossing and manifold-empty event. `Infinity`
+   *  when no transition is reachable. */
   validUntilSec: number;
+  /** Internal LH₂ manifold fill, 0..1. Production drains the manifold
+   *  off-LP at the reactant rate; refill tops it up at envelope-
+   *  friendly L/s. See `docs/lp_hygiene.md`. */
+  lh2ManifoldFraction: number;
+  /** Internal LOx manifold fill, 0..1. */
+  loxManifoldFraction: number;
+  /** Refill device hysteresis state: ON when either manifold dips
+   *  below 10%, OFF when both reach 100%. */
+  refillActive: boolean;
 }
 
 export interface NovaPart {
@@ -161,6 +204,7 @@ export interface NovaPart {
   light: LightState[];
   engine: EngineState[];
   tank: TankState[];
+  command: CommandState[];
   fuelCell: FuelCellState[];
 }
 
@@ -215,6 +259,15 @@ export interface NovaPartOps {
    * outside `GameScenes.EDITOR`.
    */
   setTankConfig(presetId: string): void;
+
+  /**
+   * Toggle the debug "test load" on this part's command pod (a
+   * fixed-rate EC consumer used to exercise the power system).
+   * No-op if the part has no `NovaCommandModule` with a configured
+   * `testLoadRate`. The flag is non-persistent — every flight load
+   * resets it to false.
+   */
+  setCommandTestLoad(active: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -273,6 +326,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     light: [],
     engine: [],
     tank: [],
+    command: [],
     fuelCell: [],
   };
   for (const c of components) {
@@ -304,12 +358,23 @@ export function decodePart(f: NovaPartFrame): NovaPart {
       case 'T':
         out.tank.push({ volume: c[1] });
         break;
+      case 'C':
+        out.command.push({
+          idleRate: c[1],
+          idleActivity: c[2],
+          testLoadRate: c[3],
+          testLoadActive: c[4] === 1,
+        });
+        break;
       case 'F':
         out.fuelCell.push({
           currentOutput: c[1],
           maxOutput: c[2],
           isActive: c[3] === 1,
           validUntilSec: c[4],
+          lh2ManifoldFraction: c[5],
+          loxManifoldFraction: c[6],
+          refillActive: c[7] === 1,
         });
         break;
     }

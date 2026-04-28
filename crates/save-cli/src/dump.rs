@@ -278,6 +278,13 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
             .unwrap_or(f64::NAN);
         println!("{p2}Battery: {:.1}/{:.1}", value, b.capacity);
     }
+
+    if let Some(fc) = state.and_then(|s| s.fuel_cell.as_ref()) {
+        println!(
+            "{p2}FuelCell: lh2={:.4}L, lox={:.4}L (active={}, refill={})",
+            fc.lh2_manifold_contents, fc.lox_manifold_contents, fc.is_active, fc.refill_active
+        );
+    }
 }
 
 // --- Helpers ---------------------------------------------------------------

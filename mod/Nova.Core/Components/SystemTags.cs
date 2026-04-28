@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
 
@@ -34,6 +35,9 @@ public static class SystemTags {
         case SolarPanel _:
           set.Add(PowerGen);
           break;
+        case FuelCell _:
+          set.Add(PowerGen);
+          break;
         case Battery _:
           set.Add(PowerStore);
           set.Add(Storage);
@@ -44,6 +48,9 @@ public static class SystemTags {
         case ReactionWheel _:
           set.Add(PowerConsume);
           set.Add(Attitude);
+          break;
+        case Command cmd:
+          if (cmd.IdleDraw > 0 || cmd.TestLoadRate > 0) set.Add(PowerConsume);
           break;
         case Engine e:
           set.Add(Propulsion);

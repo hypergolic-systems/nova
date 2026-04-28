@@ -221,13 +221,22 @@ public class VirtualVessel {
   private const double FuelCellOnSocThreshold  = 0.20;
   private const double FuelCellOffSocThreshold = 0.80;
 
+  // Manifold refill hysteresis. The refill device pulls reactant from
+  // main tanks at envelope-friendly rates (~0.1 L/s) and tops up the
+  // component-internal manifold; production drains the manifold off-LP
+  // at the µL/s reactant rate. Refill kicks on when either manifold
+  // dips below 10% of capacity and turns off when both reach 100%.
+  private const double FuelCellRefillOnThreshold  = 0.10;
+  private const double FuelCellRefillOffThreshold = 1.00;
+
   // Pre-solve: aggregate vessel-wide battery SoC and apply hysteresis
-  // to each FuelCell's IsActive flag. Sets Device.Demand for the
-  // upcoming solve. The forecast (ValidUntilSeconds + Device.ValidUntil)
-  // is intentionally NOT computed here — Buffer.Rate at this point is
-  // from the previous solve, and the demand change we just made will
-  // shift the rates the moment Solve runs. The post-solve sibling
-  // DistributeFuelCellState reads the freshly-converged rates instead.
+  // to each FuelCell's IsActive (production) and RefillActive (manifold
+  // top-up) flags. Sets Demand on both devices for the upcoming solve.
+  // The valid-until forecasts are intentionally NOT computed here —
+  // Activity at this point is from the previous solve, and the demand
+  // changes we just made will shift things the moment Solve runs. The
+  // post-solve sibling DistributeFuelCellState reads the freshly
+  // converged Activities instead.
   //
   // The "no batteries" branch keeps the cell on continuously — without
   // a SoC signal there's no reason to throttle.
@@ -244,8 +253,9 @@ public class VirtualVessel {
     double soc = noBatteries ? 0 : contents / capacity;
 
     foreach (var fc in fuelCells) {
-      if (fc.device == null) continue;
+      if (fc.production == null || fc.refill == null) continue;
 
+      // Production hysteresis (SoC band).
       if (noBatteries) {
         fc.IsActive = true;
       } else if (fc.IsActive && soc > FuelCellOffSocThreshold) {
@@ -253,48 +263,161 @@ public class VirtualVessel {
       } else if (!fc.IsActive && soc < FuelCellOnSocThreshold) {
         fc.IsActive = true;
       }
-      fc.device.Demand = fc.IsActive ? 1.0 : 0.0;
+
+      // Refill hysteresis (manifold fill band). Trip on the lower
+      // manifold; turn off only when both reach capacity, so a single
+      // device with a ratio-locked LH₂/LOx draw fills both in lockstep.
+      double lh2Frac = fc.Lh2ManifoldCapacity > 0
+          ? fc.Lh2ManifoldContents / fc.Lh2ManifoldCapacity : 1.0;
+      double loxFrac = fc.LoxManifoldCapacity > 0
+          ? fc.LoxManifoldContents / fc.LoxManifoldCapacity : 1.0;
+      double minFrac = Math.Min(lh2Frac, loxFrac);
+      if (fc.RefillActive && minFrac >= FuelCellRefillOffThreshold) {
+        fc.RefillActive = false;
+      } else if (!fc.RefillActive && minFrac < FuelCellRefillOnThreshold) {
+        fc.RefillActive = true;
+      }
+
+      bool hasFuel = fc.Lh2ManifoldContents > 0 && fc.LoxManifoldContents > 0;
+      fc.production.Demand = (fc.IsActive && hasFuel) ? 1.0 : 0.0;
+      fc.refill.Demand     = fc.RefillActive ? 1.0 : 0.0;
     }
   }
 
-  // Post-solve: compute the valid-until forecast for each fuel cell
-  // using the *converged* battery rates. Setting Device.ValidUntil
-  // tells ComputeNextExpiry when the LP needs re-evaluation —
-  // typically the next ON↔OFF threshold crossing.
+  // Post-solve: compute valid-until forecasts for each fuel cell using
+  // the *converged* Activities. Setting Device.ValidUntil tells
+  // ComputeNextExpiry when the LP needs re-evaluation.
   //
-  // Forecast cases:
-  //   ON  + charging → time until SoC reaches the OFF threshold (80%)
-  //   OFF + draining → time until SoC reaches the ON threshold  (20%)
-  //   anything else  → +∞ (the rate doesn't move SoC toward a flip)
+  // Production flips on:
+  //   • SoC reaches a hysteresis threshold
+  //   • manifold runs dry (production was active, can't continue)
+  //
+  // Refill flips on:
+  //   • either manifold drops below 10% (turn ON)
+  //   • both manifolds reach capacity (turn OFF)
+  //
+  // ValidUntilSeconds is the production-side forecast — the user-facing
+  // "when will the on/off badge change". Refill cycles are an internal
+  // implementation detail and don't surface in the dashboard number.
   private void DistributeFuelCellState() {
     var fuelCells = AllComponents().OfType<FuelCell>().ToList();
     if (fuelCells.Count == 0) return;
 
-    double contents = 0, capacity = 0, rate = 0;
+    double contents = 0, capacity = 0, batteryRate = 0;
     foreach (var b in AllComponents().OfType<Battery>()) {
       contents += b.Buffer.Contents;
       capacity += b.Buffer.Capacity;
-      rate     += b.Buffer.Rate;  // signed: + = charging, − = draining
+      batteryRate += b.Buffer.Rate;  // signed: + = charging, − = draining
     }
     bool noBatteries = capacity < 1e-9;
 
     foreach (var fc in fuelCells) {
-      if (fc.device == null) continue;
+      if (fc.production == null || fc.refill == null) continue;
 
-      double dtToFlip = double.PositiveInfinity;
-      if (!noBatteries && Math.Abs(rate) > 1e-9) {
-        if (fc.IsActive && rate > 0) {
+      // -------- Production ValidUntil --------
+
+      // SoC threshold flip (existing logic).
+      double dtSocFlip = double.PositiveInfinity;
+      if (!noBatteries && Math.Abs(batteryRate) > 1e-9) {
+        if (fc.IsActive && batteryRate > 0) {
           double remaining = FuelCellOffSocThreshold * capacity - contents;
-          if (remaining > 0) dtToFlip = remaining / rate;
-        } else if (!fc.IsActive && rate < 0) {
+          if (remaining > 0) dtSocFlip = remaining / batteryRate;
+        } else if (!fc.IsActive && batteryRate < 0) {
           double remaining = contents - FuelCellOnSocThreshold * capacity;
-          if (remaining > 0) dtToFlip = remaining / (-rate);
+          if (remaining > 0) dtSocFlip = remaining / (-batteryRate);
         }
       }
-      fc.ValidUntilSeconds = dtToFlip;
-      fc.device.ValidUntil = double.IsPositiveInfinity(dtToFlip)
+
+      // Manifold-empty time (production gated off when fuel runs out).
+      // Net drain rate accounts for parallel refill — refill is so much
+      // faster than reactant draw (200×) that this term only matters
+      // when the main tank is empty and refill.Activity is forced to 0.
+      double dtMfdEmpty = double.PositiveInfinity;
+      if (fc.production.Activity > 1e-9) {
+        double netDrainLh2 = fc.production.Activity * fc.Lh2Rate
+                           - fc.refill.Activity     * fc.RefillRateLh2;
+        double netDrainLox = fc.production.Activity * fc.LoxRate
+                           - fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate);
+        if (netDrainLh2 > 1e-12 && fc.Lh2ManifoldContents > 0)
+          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.Lh2ManifoldContents / netDrainLh2);
+        if (netDrainLox > 1e-12 && fc.LoxManifoldContents > 0)
+          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.LoxManifoldContents / netDrainLox);
+      }
+
+      double dtProdFlip = Math.Min(dtSocFlip, dtMfdEmpty);
+      fc.ValidUntilSeconds = dtProdFlip;
+      fc.production.ValidUntil = double.IsPositiveInfinity(dtProdFlip)
         ? double.PositiveInfinity
-        : simulationTime + dtToFlip;
+        : simulationTime + dtProdFlip;
+
+      // -------- Refill ValidUntil --------
+
+      double netFillLh2 = fc.refill.Activity     * fc.RefillRateLh2
+                        - fc.production.Activity * fc.Lh2Rate;
+      double netFillLox = fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate)
+                        - fc.production.Activity * fc.LoxRate;
+
+      double dtRefillFlip = double.PositiveInfinity;
+      if (fc.RefillActive) {
+        // Flip OFF when *both* manifolds reach 100% — wait for the slower.
+        double dtLh2 = TimeToFraction(fc.Lh2ManifoldContents, fc.Lh2ManifoldCapacity,
+            FuelCellRefillOffThreshold, netFillLh2, filling: true);
+        double dtLox = TimeToFraction(fc.LoxManifoldContents, fc.LoxManifoldCapacity,
+            FuelCellRefillOffThreshold, netFillLox, filling: true);
+        dtRefillFlip = Math.Max(dtLh2, dtLox);
+      } else {
+        // Flip ON when *either* drops below 10% — earliest wins.
+        double dtLh2 = TimeToFraction(fc.Lh2ManifoldContents, fc.Lh2ManifoldCapacity,
+            FuelCellRefillOnThreshold, netFillLh2, filling: false);
+        double dtLox = TimeToFraction(fc.LoxManifoldContents, fc.LoxManifoldCapacity,
+            FuelCellRefillOnThreshold, netFillLox, filling: false);
+        dtRefillFlip = Math.Min(dtLh2, dtLox);
+      }
+      fc.refill.ValidUntil = double.IsPositiveInfinity(dtRefillFlip)
+        ? double.PositiveInfinity
+        : simulationTime + dtRefillFlip;
+    }
+  }
+
+  // Time for `contents` to reach `targetFrac × capacity` given a signed
+  // `netRate` (positive = filling). `filling=true` means "approaching
+  // from below"; `filling=false` means "approaching from above".
+  // Returns +∞ when the rate doesn't move toward the target.
+  private static double TimeToFraction(
+      double contents, double capacity, double targetFrac, double netRate, bool filling) {
+    if (capacity <= 0) return double.PositiveInfinity;
+    double target = targetFrac * capacity;
+    if (filling) {
+      if (netRate <= 1e-12) return double.PositiveInfinity;
+      double remaining = target - contents;
+      return remaining <= 0 ? 0 : remaining / netRate;
+    } else {
+      if (netRate >= -1e-12) return double.PositiveInfinity;
+      double slack = contents - target;
+      return slack <= 0 ? 0 : slack / -netRate;
+    }
+  }
+
+  // Drain/fill manifold contents using the previous solve's Activities.
+  // Same staleness contract as Buffer.Rate-based integration: rates
+  // come from the prior Solve, integrate over `deltaT`, next Solve
+  // reads the new state. Clamp at [0, capacity] so an over-shoot
+  // between solves doesn't push the manifold negative — the
+  // production ValidUntil set in DistributeFuelCellState ensures we
+  // re-solve before the over-shoot grows large.
+  private void IntegrateFuelCellManifolds(double deltaT) {
+    if (deltaT <= 0) return;
+    foreach (var fc in AllComponents().OfType<FuelCell>()) {
+      if (fc.production == null || fc.refill == null) continue;
+      double drainLh2 = fc.production.Activity * fc.Lh2Rate;
+      double drainLox = fc.production.Activity * fc.LoxRate;
+      double fillLh2  = fc.refill.Activity     * fc.RefillRateLh2;
+      double fillLox  = fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate);
+
+      fc.Lh2ManifoldContents = Math.Max(0,
+          Math.Min(fc.Lh2ManifoldCapacity, fc.Lh2ManifoldContents + (fillLh2 - drainLh2) * deltaT));
+      fc.LoxManifoldContents = Math.Max(0,
+          Math.Min(fc.LoxManifoldCapacity, fc.LoxManifoldContents + (fillLox - drainLox) * deltaT));
     }
   }
 
@@ -350,7 +473,9 @@ public class VirtualVessel {
       var nextStop = Math.Min(targetTime, nextExpiry);
 
       if (nextStop > simulationTime) {
-        IntegrateBuffers(nextStop - simulationTime);
+        var dt = nextStop - simulationTime;
+        IntegrateBuffers(dt);
+        IntegrateFuelCellManifolds(dt);
         simulationTime = nextStop;
       } else if (!needsSolve && simulationTime >= nextExpiry) {
         needsSolve = true;

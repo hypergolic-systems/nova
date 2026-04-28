@@ -12,7 +12,9 @@
     | 'wheel'
     | 'light'
     | 'engine'
-    | 'tank';
+    | 'tank'
+    | 'fuelCell'
+    | 'command';
 
   let { kind }: { kind: ComponentKind } = $props();
 </script>
@@ -71,6 +73,26 @@
           stroke-width="0.95" stroke-linejoin="round" />
     <line x1="4.3" y1="3.5" x2="7.7" y2="3.5"
           stroke="currentColor" stroke-width="0.95" stroke-linecap="round" />
+  {:else if kind === 'fuelCell'}
+    <!-- A short stack of plates, evoking PEM cell membranes. Three
+         filled bars with thin gaps between read clearly at 12 px and
+         distinguish from the battery's thicker outline + terminal cap. -->
+    <rect x="2.4" y="2.4" width="7.2" height="1.4" fill="currentColor" />
+    <rect x="2.4" y="5.3" width="7.2" height="1.4" fill="currentColor" />
+    <rect x="2.4" y="8.2" width="7.2" height="1.4" fill="currentColor" />
+  {:else if kind === 'command'}
+    <!-- Avionics / flight computer: a chip outline with four short
+         pin stubs on the top and bottom edges. -->
+    <rect x="3" y="3.5" width="6" height="5" rx="0.5"
+          stroke="currentColor" fill="none" stroke-width="0.95" />
+    <g stroke="currentColor" stroke-width="0.85" stroke-linecap="round">
+      <line x1="4.4" y1="2.2" x2="4.4" y2="3.4" />
+      <line x1="6"   y1="2.2" x2="6"   y2="3.4" />
+      <line x1="7.6" y1="2.2" x2="7.6" y2="3.4" />
+      <line x1="4.4" y1="8.6" x2="4.4" y2="9.8" />
+      <line x1="6"   y1="8.6" x2="6"   y2="9.8" />
+      <line x1="7.6" y1="8.6" x2="7.6" y2="9.8" />
+    </g>
   {:else if kind === 'tank'}
     <!-- Vertical fuel tank: capsule body with two thin horizontal
          bands suggesting the welded bulkheads at top and bottom of a

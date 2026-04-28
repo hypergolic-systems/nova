@@ -13,7 +13,7 @@
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
-  import type { SolarState } from '../../telemetry/nova-topics';
+  import type { SolarState, CommandState } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
@@ -51,7 +51,23 @@
     let total = 0;
     for (const s of p.state.solar) total += s.rate;
     for (const e of p.state.engine) total += e.alternatorRate;
+    for (const fc of p.state.fuelCell) total += fc.currentOutput;
     return total;
+  }
+
+  // Per-cell sums for the fuel-cell row. A part should only ever
+  // hold one fuel cell, but iterate to stay symmetric with the rest
+  // of the helpers.
+  function fuelCellOutput(p: NovaTaggedPart): { current: number; max: number } {
+    let current = 0;
+    let max = 0;
+    if (p.state) {
+      for (const fc of p.state.fuelCell) {
+        current += fc.currentOutput;
+        max += fc.maxOutput;
+      }
+    }
+    return { current, max };
   }
 
   // Solar current+max in one pass — every solar component on a part
@@ -74,7 +90,29 @@
     let total = 0;
     for (const w of p.state.wheel) total += w.maxEcRate * w.activity;
     for (const l of p.state.light) total += l.maxEcRate * l.activity;
+    for (const c of p.state.command) {
+      total += c.idleRate * c.idleActivity;
+      // Test load: while active, show its current draw. We don't
+      // ship a per-test-load activity in the wire frame (rare event,
+      // not worth the bytes), so approximate as full rate. The LP
+      // throttles it down naturally if the bus is starved; the
+      // displayed total may briefly over-state until the next solve
+      // catches up.
+      if (c.testLoadActive) total += c.testLoadRate;
+    }
     return total;
+  }
+
+  // Pull the live Command state for a part (one Command per part).
+  function commandOf(p: NovaTaggedPart): CommandState | undefined {
+    return p.state?.command?.[0];
+  }
+  function hasTestLoad(p: NovaTaggedPart): boolean {
+    const c = commandOf(p);
+    return !!c && c.testLoadRate > 0;
+  }
+  function setCommandTestLoad(partId: string, active: boolean): void {
+    ksp.send(NovaPartTopic(partId), 'setCommandTestLoad', active);
   }
 
   function batteryStored(p: NovaTaggedPart): number {
@@ -101,11 +139,19 @@
   // Per-row icon choice. State-driven when loaded; falls back to the
   // section's dominant kind so first-frame rows aren't iconless.
   function genKind(p: NovaTaggedPart): ComponentKind {
+    if (p.state && p.state.fuelCell.length > 0) return 'fuelCell';
     if (p.state && p.state.engine.length > 0 && p.state.solar.length === 0) return 'engine';
     return 'solar';
   }
+  // Pick the dominant consumer for a part with mixed component kinds.
+  // Reaction wheel wins over light wins over command — rationale: the
+  // wheel is the most operationally distinctive marker, while command's
+  // always-on draw is a baseline noise floor visible on every probe core.
   function consumeKind(p: NovaTaggedPart): ComponentKind {
-    if (p.state && p.state.light.length > 0 && p.state.wheel.length === 0) return 'light';
+    if (!p.state) return 'wheel';
+    if (p.state.wheel.length > 0) return 'wheel';
+    if (p.state.light.length > 0) return 'light';
+    if (p.state.command.length > 0) return 'command';
     return 'wheel';
   }
 
@@ -114,6 +160,9 @@
   // stay top-level so they don't get hidden inside a SOLAR header.
   function isSolarPart(p: NovaTaggedPart): boolean {
     return !!p.state && p.state.solar.length > 0 && p.state.engine.length === 0;
+  }
+  function isFuelCellPart(p: NovaTaggedPart): boolean {
+    return !!p.state && p.state.fuelCell.length > 0;
   }
 
   const genGroups = $derived.by(() => {
@@ -426,33 +475,76 @@
             </li>
           {/if}
           {#each genGroups.inline as p (p.struct.id)}
-            {@const isSolar = isSolarPart(p)}
-            {@const s = isSolar ? solarOf(p) : undefined}
-            <li class="pwr__row"
-                class:pwr__row--closed={s && !s.deployed}
-                onmouseenter={() => highlightOn([p.struct.id])}
-                onmouseleave={highlightOff}>
-              <span class="pwr__row-icon">
-                <ComponentIcon kind={genKind(p)} />
-              </span>
-              <span class="pwr__row-name">{p.struct.title}</span>
-              {#if isSolar}{@render solarControl(p)}{/if}
-              {#if isSolar}
-                {@const sr = solarRates(p)}
-                {@const sp = fmtRatePair(sr.current, sr.max)}
-                <span class="pwr__row-rate"
-                      class:pwr__row-rate--zero={isZero(sr.current)}>
-                  <span class="pwr__row-rate-cur">{sp.cMag}</span><span
-                    class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+            {#if isFuelCellPart(p)}
+              {@const fc = p.state!.fuelCell[0]}
+              {@const fco = fuelCellOutput(p)}
+              {@const fcr = fmtRatePair(fco.current, fco.max)}
+              <li class="pwr__row pwr__row--storage pwr__row--fuel-cell"
+                  onmouseenter={() => highlightOn([p.struct.id])}
+                  onmouseleave={highlightOff}>
+                <span class="pwr__row-icon">
+                  <ComponentIcon kind="fuelCell" />
                 </span>
-              {:else}
-                {@const gr = fmtRate(generationRate(p))}
-                <span class="pwr__row-rate"
-                      class:pwr__row-rate--zero={isZero(generationRate(p))}>
-                  {gr.mag}<em>{gr.unit}</em>
+                <div class="pwr__row-stack">
+                  <div class="pwr__row-line">
+                    <span class="pwr__row-name">{p.struct.title}</span>
+                    <span class="pwr__fc-tag"
+                          class:pwr__fc-tag--on={fc.isActive}
+                          class:pwr__fc-tag--off={!fc.isActive}
+                          title={fc.isActive ? 'Producing — battery SoC below 80%' : 'Standby — battery SoC above 20%'}>
+                      {fc.isActive ? 'ON' : 'OFF'}
+                    </span>
+                    <span class="pwr__row-rate"
+                          class:pwr__row-rate--zero={isZero(fco.current)}>
+                      <span class="pwr__row-rate-cur">{fcr.cMag}</span><span
+                        class="pwr__row-rate-max">/{fcr.mMag}</span><em>{fcr.unit}</em>
+                    </span>
+                  </div>
+                  <div class="pwr__row-line pwr__row-line--gauge pwr__fc-gauges">
+                    <span class="pwr__fc-gauge"
+                          class:pwr__fc-gauge--refilling={fc.refillActive}
+                          title="LH₂ manifold">
+                      <span class="pwr__fc-gauge-label">H</span>
+                      <SegmentGauge fraction={fc.lh2ManifoldFraction} />
+                    </span>
+                    <span class="pwr__fc-gauge"
+                          class:pwr__fc-gauge--refilling={fc.refillActive}
+                          title="LOx manifold">
+                      <span class="pwr__fc-gauge-label">O</span>
+                      <SegmentGauge fraction={fc.loxManifoldFraction} />
+                    </span>
+                  </div>
+                </div>
+              </li>
+            {:else}
+              {@const isSolar = isSolarPart(p)}
+              {@const s = isSolar ? solarOf(p) : undefined}
+              <li class="pwr__row"
+                  class:pwr__row--closed={s && !s.deployed}
+                  onmouseenter={() => highlightOn([p.struct.id])}
+                  onmouseleave={highlightOff}>
+                <span class="pwr__row-icon">
+                  <ComponentIcon kind={genKind(p)} />
                 </span>
-              {/if}
-            </li>
+                <span class="pwr__row-name">{p.struct.title}</span>
+                {#if isSolar}{@render solarControl(p)}{/if}
+                {#if isSolar}
+                  {@const sr = solarRates(p)}
+                  {@const sp = fmtRatePair(sr.current, sr.max)}
+                  <span class="pwr__row-rate"
+                        class:pwr__row-rate--zero={isZero(sr.current)}>
+                    <span class="pwr__row-rate-cur">{sp.cMag}</span><span
+                      class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+                  </span>
+                {:else}
+                  {@const gr = fmtRate(generationRate(p))}
+                  <span class="pwr__row-rate"
+                        class:pwr__row-rate--zero={isZero(generationRate(p))}>
+                    {gr.mag}<em>{gr.unit}</em>
+                  </span>
+                {/if}
+              </li>
+            {/if}
           {/each}
         </ul>
       {/if}
@@ -480,6 +572,7 @@
           {#each consumers.current as p (p.struct.id)}
             {@const v = consumptionRate(p)}
             {@const r = fmtRate(v)}
+            {@const cmd = commandOf(p)}
             <li class="pwr__row"
                 onmouseenter={() => highlightOn([p.struct.id])}
                 onmouseleave={highlightOff}>
@@ -487,6 +580,16 @@
                 <ComponentIcon kind={consumeKind(p)} />
               </span>
               <span class="pwr__row-name">{p.struct.title}</span>
+              {#if hasTestLoad(p) && cmd}
+                <button type="button"
+                        class="pwr__deploy-btn pwr__test-load-btn"
+                        class:pwr__test-load-btn--on={cmd.testLoadActive}
+                        aria-label={cmd.testLoadActive ? 'Disable test load' : 'Enable test load'}
+                        title={`Toggle ${cmd.testLoadRate} W debug load`}
+                        onclick={(e) => { e.stopPropagation(); setCommandTestLoad(p.struct.id, !cmd.testLoadActive); }}>
+                  <span>LOAD</span>
+                </button>
+              {/if}
               <span class="pwr__row-rate"
                     class:pwr__row-rate--neg={!isZero(v)}
                     class:pwr__row-rate--zero={isZero(v)}>
@@ -919,6 +1022,67 @@
     padding: 0 1px;
   }
 
+  /* Fuel cell rows: borrow the storage row's double-height layout
+     (icon left, two-line stack right), but render two manifold gauges
+     side-by-side on the second line. The H/O letter tabs ahead of
+     each gauge keep the LH₂ vs LOx assignment legible without forcing
+     a wider label column. */
+  .pwr__row--fuel-cell .pwr__row-name {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .pwr__fc-tag {
+    flex: 0 0 auto;
+    padding: 0 5px;
+    margin: 0 4px 0 0;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: 8px;
+    line-height: 11px;
+    letter-spacing: 0.16em;
+    border-radius: 1px;
+    user-select: none;
+  }
+  /* OFF reads as standby — same dim-grey rhythm we use for zero rates,
+     so the row visually quiets down when the cell isn't producing. */
+  .pwr__fc-tag--off {
+    color: var(--fg-dim);
+    border-color: var(--line);
+  }
+  .pwr__fc-gauges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* Each gauge wrapper takes equal slack so the two manifolds split
+     the row width evenly regardless of label width. */
+  .pwr__fc-gauge {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+  .pwr__fc-gauge-label {
+    flex: 0 0 auto;
+    font-family: var(--font-display);
+    font-size: 8px;
+    color: var(--fg-mute);
+    letter-spacing: 0.14em;
+  }
+  .pwr__fc-gauge :global(.sg) {
+    flex: 1 1 auto;
+  }
+  /* While refill is filling the manifold, brighten the label so the
+     two states (passive at-rest, actively refilling from main tanks)
+     are distinguishable at a glance without colour-coding the gauge
+     itself (the gauge fill already encodes fill fraction). */
+  .pwr__fc-gauge--refilling .pwr__fc-gauge-label {
+    color: var(--accent);
+    text-shadow: 0 0 3px var(--accent-glow);
+  }
+
   /* Solar sub-group: a soft header inside Generation, then panels
      listed beneath at the same row rhythm but indented to advertise
      the hierarchy. The L-bracket left-rule reinforces the tree
@@ -1103,6 +1267,33 @@
   .pwr__deploy-btn--bulk {
     flex: 0 0 auto;
     padding: 1px 8px;
+  }
+
+  /* Test load toggle — same chip-shape as EXT/RET so the row reads
+     consistently. Off state is dim accent (the load is latent); on
+     state borrows the warn palette to signal "this is draining the
+     bus on purpose." */
+  .pwr__test-load-btn {
+    color: var(--fg-mute);
+    border-color: var(--line);
+  }
+  .pwr__test-load-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.06);
+    box-shadow: none;
+    text-shadow: none;
+  }
+  .pwr__test-load-btn--on {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+    background: rgba(240, 180, 41, 0.06);
+  }
+  .pwr__test-load-btn--on:hover {
+    background: rgba(240, 180, 41, 0.16);
+    border-color: var(--warn);
+    box-shadow: 0 0 4px var(--warn-glow);
+    text-shadow: 0 0 4px var(--warn-glow);
   }
 
   /* Subgroup head wrapper — places the head button and the bulk

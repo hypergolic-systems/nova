@@ -4,6 +4,7 @@ using System.Text;
 using Dragonglass.Telemetry.Topics;
 using Nova.Components;
 using Nova.Core.Components;
+using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
 using Nova.Core.Resources;
@@ -40,7 +41,9 @@ namespace Nova.Telemetry;
 //   ["L", maxEcRate, activity(0..1)]                                Light
 //   ["E", alternatorMaxRate, alternatorRateEc]                      Engine
 //   ["T", volume]                                                   TankVolume
-//   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec]    FuelCell
+//   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
+//          lh2ManifoldFraction, loxManifoldFraction, refillActive]   FuelCell
+//   ["C", idleRate, idleActivity, testLoadRate, testLoadActive]     Command
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -131,6 +134,23 @@ public sealed class NovaPartTopic : Topic {
         if (module == null) return;
         if (deployed) module.Extend();
         else module.Retract();
+        return;
+      }
+      case "setCommandTestLoad": {
+        if (args == null || args.Count < 1 || !(args[0] is bool active)) {
+          Debug.LogWarning(LogPrefix + Name + " setCommandTestLoad: expected [bool]");
+          return;
+        }
+        // Reach through the live VirtualVessel to find the part's
+        // Command component. Editor scope has no Virtual; rejected.
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        var cmp = vesselModule?.Virtual?.GetComponents(_part.persistentId)
+            .OfType<Command>()
+            .FirstOrDefault();
+        if (cmp == null) return;
+        cmp.TestLoadActive = active;
+        vesselModule.Virtual.Invalidate();
+        MarkDirty();
         return;
       }
       case "setTankConfig": {
@@ -318,6 +338,19 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.End(sb, ']');
         return true;
       }
+      case Command command: {
+        if (command.IdleDraw <= 0 && command.TestLoadRate <= 0) return false;
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "C", ref f);
+        WriteNum(sb, command.IdleDraw, ref f);
+        WriteNum(sb, command.IdleActivity, ref f);
+        WriteNum(sb, command.TestLoadRate, ref f);
+        WriteBit(sb, command.TestLoadActive, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
       case FuelCell fuelCell: {
         JsonWriter.Sep(sb, ref first);
         JsonWriter.Begin(sb, '[');
@@ -327,6 +360,13 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, fuelCell.EcOutput, ref f);
         WriteBit(sb, fuelCell.IsActive, ref f);
         WriteNum(sb, fuelCell.ValidUntilSeconds, ref f);
+        var lh2Frac = fuelCell.Lh2ManifoldCapacity > 0
+            ? fuelCell.Lh2ManifoldContents / fuelCell.Lh2ManifoldCapacity : 0.0;
+        var loxFrac = fuelCell.LoxManifoldCapacity > 0
+            ? fuelCell.LoxManifoldContents / fuelCell.LoxManifoldCapacity : 0.0;
+        WriteNum(sb, lh2Frac, ref f);
+        WriteNum(sb, loxFrac, ref f);
+        WriteBit(sb, fuelCell.RefillActive, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
