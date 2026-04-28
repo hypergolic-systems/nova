@@ -31,7 +31,7 @@ public class NovaPartModule : PartModule {
     virtualComponentStatus = $"{string.Join(", ", Components.Select(c => c.Name))} ({(state == StartState.Editor ? "Editor" : "Flight")})";
   }
 
-  private ConfigNode GetPrefabModuleConfig() {
+  internal ConfigNode GetPrefabModuleConfig() {
     return part.partInfo.partConfig.GetNodes("MODULE")
       .FirstOrDefault(n => n.GetValue("name") == GetType().Name);
   }

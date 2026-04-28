@@ -215,7 +215,15 @@ public class NovaVesselModule : VesselModule {
       var partInfo = PartLoader.getPartInfoByName(partName);
       if (partInfo == null) continue;
 
-      var components = CreateComponentsFromPrefab(partInfo);
+      // Prefer live module.Components when populated — that path carries
+      // proto-loaded state from NovaPartInstantiator (incl. editor-time
+      // reconfigurations like Set Tank Config). Falls back to the prefab
+      // for vessels that bypass the proto path (e.g. brand-new in-flight
+      // construction).
+      var partModule = part.Modules.OfType<NovaPartModule>().FirstOrDefault();
+      var components = (partModule?.Components != null && partModule.Components.Any())
+        ? partModule.Components.ToList()
+        : CreateComponentsFromPrefab(partInfo);
       var dryMassKg = partInfo.partPrefab.mass * 1000;
 
       if (components.Count > 0)

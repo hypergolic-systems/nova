@@ -75,6 +75,36 @@ public class ComponentMappingTests {
   }
 
   [TestMethod]
+  public void TankVolume_LoadStructure_OverwritesPriorTanks() {
+    // Models the editor → flight launch sequence: a tank is first built
+    // from its prefab MODULE config (kerolox here), then NovaPartInstantiator
+    // calls LoadStructure with the proto-saved structure (hydrolox after
+    // the player picked Set Tank Config → LH2 + LOx). The proto must win.
+    var tank = new TankVolume { Volume = 6400 };
+    tank.Tanks.Add(new Buffer { Resource = Resource.RP1, Capacity = 2560, Contents = 1000 });
+    tank.Tanks.Add(new Buffer { Resource = Resource.LiquidOxygen, Capacity = 3840 });
+
+    var ps = new PartStructure {
+      TankVolume = new TankVolumeStructure {
+        Volume = 6400,
+        Tanks = {
+          new TankStructure { Resource = "Liquid Hydrogen", Capacity = 4736 },
+          new TankStructure { Resource = "Liquid Oxygen", Capacity = 1664 },
+        },
+      },
+    };
+    tank.LoadStructure(ps);
+
+    Assert.AreEqual(6400, tank.Volume);
+    Assert.AreEqual(2, tank.Tanks.Count);
+    Assert.AreEqual("Liquid Hydrogen", tank.Tanks[0].Resource.Name);
+    Assert.AreEqual(4736, tank.Tanks[0].Capacity);
+    Assert.AreEqual(4736, tank.Tanks[0].Contents);
+    Assert.AreEqual("Liquid Oxygen", tank.Tanks[1].Resource.Name);
+    Assert.AreEqual(1664, tank.Tanks[1].Capacity);
+  }
+
+  [TestMethod]
   public void TankVolume_FullRoundTrip() {
     var original = new TankVolume { Volume = 2080 };
     original.Tanks.Add(new Buffer { Resource = Resource.RP1, Capacity = 1560, Contents = 800 });

@@ -89,14 +89,26 @@ public static class NovaPartInstantiator {
       }
     }
 
-    // Apply Nova component structure + state
+    // Apply Nova component structure + state. Components are normally
+    // initialized in NovaPartModule.OnStart, which hasn't run yet — so
+    // we eagerly populate from the prefab MODULE config here, then let
+    // LoadStructure overwrite with the proto's persisted shape (which
+    // may differ if the player reconfigured the part in the editor).
+    // Without this seeding, the LoadStructure loop is a no-op and any
+    // editor-time mutation silently reverts on launch.
     for (int i = 0; i < structure.Parts.Count; i++) {
       var ps = structure.Parts[i];
       var part = parts[i];
       stateById.TryGetValue(ps.Id, out var partState);
 
       foreach (var module in part.Modules.OfType<NovaPartModule>()) {
-        if (module.Components == null) continue;
+        if (module.Components == null) {
+          var moduleConfig = module.GetPrefabModuleConfig();
+          if (moduleConfig == null) continue;
+          module.Components = new List<Nova.Core.Components.VirtualComponent> {
+            ComponentFactory.Create(moduleConfig),
+          };
+        }
         foreach (var cmp in module.Components) {
           cmp.LoadStructure(ps);
           if (partState != null)
