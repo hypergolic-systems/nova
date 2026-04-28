@@ -226,6 +226,11 @@ public class ResourceSolver {
         ExtractResults();
         return;
       }
+      // Snapshot the LP solution into Activity / Rate before mutating the
+      // pin bounds. SetBounds on a Constraint invalidates the GLOP basis,
+      // which makes Variable.SolutionValue() return 0 until the LP is
+      // re-solved — even if no actual change to the optimum is required.
+      ExtractResults();
       var aStar = lpSolver.Objective().Value();
       if (aStar > 1e-9)
         devicePin[(int)devPri].SetBounds(aStar - 1e-9, double.PositiveInfinity);
@@ -236,12 +241,16 @@ public class ResourceSolver {
     // first); same-DP pools at same cost (LP picks based on basis). FillVar
     // is uncosted, so degenerate (supply=X, fill=X) collapses to (0, 0) —
     // the asymmetry is what eliminates same-pool and cross-pool sloshing.
-    // If no pools exist, drainCostExpr is null — do a no-op final solve to
-    // refresh SolutionValue caches that the pin SetBounds calls invalidated.
+    //
+    // If drain-min returns ABNORMAL — typical when the drain gradient is
+    // below GLOP's tolerance, e.g. fuel cells with µL/s reactant flow
+    // whose pool weights are ~1e-6 × ~1e-4 — we keep the priority-loop
+    // values already captured above. The drain-min only refines tie-breaks
+    // and produces no useful information when the gradient is degenerate.
     lpSolver.Minimize(drainCostExpr ?? new LinearExpr());
-    lpSolver.Solve();
-
-    ExtractResults();
+    if (lpSolver.Solve() == Solver.ResultStatus.OPTIMAL) {
+      ExtractResults();
+    }
   }
 
   // ── Topology finalization ────────────────────────────────────────────

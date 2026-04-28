@@ -27,6 +27,10 @@ public class Resource {
   }
 
   static Resource() {
+    // Convention: EC quantity is Joules (1 EC = 1 J), EC rate is Watts
+    // (1 EC/s = 1 W). The "Watt" label below is the canonical *rate*
+    // unit; Buffer.Capacity / Buffer.Contents store energy in J, and
+    // Buffer.Rate × dt = ΔContents lands in W·s = J as expected.
     registry["Electric Charge"] = new Resource {
       Name = "Electric Charge",
       Abbreviation = "EC",

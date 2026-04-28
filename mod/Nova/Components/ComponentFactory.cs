@@ -22,6 +22,7 @@ public static class ComponentFactory {
     ["NovaEngineModule"] = "Engine",
     ["NovaDecouplerModule"] = "Decoupler",
     ["NovaBatteryModule"] = "Battery",
+    ["NovaFuelCellModule"] = "FuelCell",
     ["NovaLightModule"] = "Light",
     ["NovaRcsModule"] = "Rcs",
     ["NovaReactionWheelModule"] = "ReactionWheel",
@@ -56,6 +57,7 @@ public static class ComponentFactory {
       "Engine" => CreateEngine(moduleNode),
       "TankVolume" => CreateTankVolume(moduleNode),
       "Battery" => CreateBattery(moduleNode),
+      "FuelCell" => CreateFuelCell(moduleNode),
       "Rcs" => CreateRcs(moduleNode),
       "ReactionWheel" => CreateReactionWheel(moduleNode),
       "SolarPanel" => CreateSolarPanel(moduleNode),
@@ -65,6 +67,17 @@ public static class ComponentFactory {
       "Crew" => CreateCrew(moduleNode),
       "Command" => new Command(),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
+    };
+  }
+
+  public static FuelCell CreateFuelCell(ConfigNode node) {
+    return new FuelCell {
+      Lh2Rate = double.Parse(node.GetValue("lh2Rate")),
+      LoxRate = double.Parse(node.GetValue("loxRate")),
+      EcOutput = double.Parse(node.GetValue("ecOutput")),
+      // Start OFF; VirtualVessel.UpdateFuelCellDevices flips on within
+      // a tick if SoC is already below the ON threshold.
+      IsActive = false,
     };
   }
 

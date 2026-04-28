@@ -214,16 +214,102 @@ public class VirtualVessel {
     solarDevice.ValidUntil = nextShadowTransitionUT;
   }
 
+  // Hysteresis bands for fuel cell auto-on/auto-off. Centralised here so
+  // the same numbers drive both the on/off transition and the
+  // valid-until forecast — there's exactly one place to update if the
+  // bands ever need tuning.
+  private const double FuelCellOnSocThreshold  = 0.20;
+  private const double FuelCellOffSocThreshold = 0.80;
+
+  // Pre-solve: aggregate vessel-wide battery SoC and apply hysteresis
+  // to each FuelCell's IsActive flag. Sets Device.Demand for the
+  // upcoming solve. The forecast (ValidUntilSeconds + Device.ValidUntil)
+  // is intentionally NOT computed here — Buffer.Rate at this point is
+  // from the previous solve, and the demand change we just made will
+  // shift the rates the moment Solve runs. The post-solve sibling
+  // DistributeFuelCellState reads the freshly-converged rates instead.
+  //
+  // The "no batteries" branch keeps the cell on continuously — without
+  // a SoC signal there's no reason to throttle.
+  private void UpdateFuelCellDevices() {
+    var fuelCells = AllComponents().OfType<FuelCell>().ToList();
+    if (fuelCells.Count == 0) return;
+
+    double contents = 0, capacity = 0;
+    foreach (var b in AllComponents().OfType<Battery>()) {
+      contents += b.Buffer.Contents;
+      capacity += b.Buffer.Capacity;
+    }
+    bool noBatteries = capacity < 1e-9;
+    double soc = noBatteries ? 0 : contents / capacity;
+
+    foreach (var fc in fuelCells) {
+      if (fc.device == null) continue;
+
+      if (noBatteries) {
+        fc.IsActive = true;
+      } else if (fc.IsActive && soc > FuelCellOffSocThreshold) {
+        fc.IsActive = false;
+      } else if (!fc.IsActive && soc < FuelCellOnSocThreshold) {
+        fc.IsActive = true;
+      }
+      fc.device.Demand = fc.IsActive ? 1.0 : 0.0;
+    }
+  }
+
+  // Post-solve: compute the valid-until forecast for each fuel cell
+  // using the *converged* battery rates. Setting Device.ValidUntil
+  // tells ComputeNextExpiry when the LP needs re-evaluation —
+  // typically the next ON↔OFF threshold crossing.
+  //
+  // Forecast cases:
+  //   ON  + charging → time until SoC reaches the OFF threshold (80%)
+  //   OFF + draining → time until SoC reaches the ON threshold  (20%)
+  //   anything else  → +∞ (the rate doesn't move SoC toward a flip)
+  private void DistributeFuelCellState() {
+    var fuelCells = AllComponents().OfType<FuelCell>().ToList();
+    if (fuelCells.Count == 0) return;
+
+    double contents = 0, capacity = 0, rate = 0;
+    foreach (var b in AllComponents().OfType<Battery>()) {
+      contents += b.Buffer.Contents;
+      capacity += b.Buffer.Capacity;
+      rate     += b.Buffer.Rate;  // signed: + = charging, − = draining
+    }
+    bool noBatteries = capacity < 1e-9;
+
+    foreach (var fc in fuelCells) {
+      if (fc.device == null) continue;
+
+      double dtToFlip = double.PositiveInfinity;
+      if (!noBatteries && Math.Abs(rate) > 1e-9) {
+        if (fc.IsActive && rate > 0) {
+          double remaining = FuelCellOffSocThreshold * capacity - contents;
+          if (remaining > 0) dtToFlip = remaining / rate;
+        } else if (!fc.IsActive && rate < 0) {
+          double remaining = contents - FuelCellOnSocThreshold * capacity;
+          if (remaining > 0) dtToFlip = remaining / (-rate);
+        }
+      }
+      fc.ValidUntilSeconds = dtToFlip;
+      fc.device.ValidUntil = double.IsPositiveInfinity(dtToFlip)
+        ? double.PositiveInfinity
+        : simulationTime + dtToFlip;
+    }
+  }
+
   private const int MaxTickIterations = 100;
 
   private void DoSolve() {
     try {
       UpdateShadowState();
       UpdateSolarDeviceDemand();
+      UpdateFuelCellDevices();
       foreach (var component in AllComponents())
         component.OnPreSolve();
       solver.Solve();
       DistributeSolarPanelCurrentRates();
+      DistributeFuelCellState();
       needsSolve = false;
       nextExpiry = ComputeNextExpiry(simulationTime);
     } catch (Exception e) {

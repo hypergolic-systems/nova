@@ -103,6 +103,7 @@ message PartStructure {
   // Prefab-only components (Engine, Rcs, etc.) are discovered from the prefab.
   TankVolumeStructure tank_volume = 8;
   BatteryStructure    battery = 9;
+  FuelCellStructure   fuel_cell = 10;
 }
 
 message Attachment {
@@ -133,6 +134,12 @@ message BatteryStructure {
   double capacity = 1;
 }
 
+message FuelCellStructure {
+  double lh2_rate  = 1;  // L/s of LH₂ at full demand
+  double lox_rate  = 2;  // L/s of LOx at full demand
+  double ec_output = 3;  // W (EC/s) at full demand
+}
+
 // --- State (dynamic, changes during flight or in editor) ---
 
 message VesselState {
@@ -157,6 +164,7 @@ message PartState {
   TankVolumeState tank_volume = 4;
   BatteryState    battery = 5;
   bool activated = 6;         // Part.state == ACTIVE (engine staged, etc.)
+  FuelCellState   fuel_cell = 7;
 }
 
 message TankVolumeState {
@@ -165,6 +173,10 @@ message TankVolumeState {
 
 message BatteryState {
   double value = 1;
+}
+
+message FuelCellState {
+  bool is_active = 1;
 }
 
 // --- Flight state (only on in-flight vessels) ---
