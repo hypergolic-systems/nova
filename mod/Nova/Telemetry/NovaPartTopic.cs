@@ -34,16 +34,19 @@ namespace Nova.Telemetry;
 // Battery cells both contribute):
 //   [resourceName, amount, capacity, currentRate]
 //
-// Component frames:
+// Component frames. Every numeric is a physical observable —
+// rates in W, fractions in 0..1 (for fills/SoC), absolutes in their
+// natural unit. No solver-internal "activity" leaks into the wire;
+// callers that want "current draw" get it directly.
 //   ["S", currentEcRate, maxEcRate, deployed, sunlit, retractable]  SolarPanel
 //   ["B", soc(0..1), capacity, currentRate]                         Battery
-//   ["W", maxEcRate, activity(0..1)]                                ReactionWheel
-//   ["L", maxEcRate, activity(0..1)]                                Light
-//   ["E", alternatorMaxRate, alternatorRateEc]                      Engine
+//   ["W", currentRate]                                              ReactionWheel
+//   ["L", currentRate]                                              Light
+//   ["E", alternatorMaxRate, alternatorRate]                        Engine
 //   ["T", volume]                                                   TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
 //          lh2ManifoldFraction, loxManifoldFraction, refillActive]   FuelCell
-//   ["C", idleRate, idleActivity, testLoadRate, testLoadActive]     Command
+//   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -304,8 +307,7 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.Begin(sb, '[');
         bool f = true;
         WriteKind(sb, "W", ref f);
-        WriteNum(sb, wheel.ElectricRate, ref f);
-        WriteNum(sb, wheel.Activity, ref f);
+        WriteNum(sb, wheel.ElectricRate * wheel.Activity, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -314,8 +316,7 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.Begin(sb, '[');
         bool f = true;
         WriteKind(sb, "L", ref f);
-        WriteNum(sb, light.Rate, ref f);
-        WriteNum(sb, light.Activity, ref f);
+        WriteNum(sb, light.Rate * light.Activity, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -344,8 +345,8 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.Begin(sb, '[');
         bool f = true;
         WriteKind(sb, "C", ref f);
-        WriteNum(sb, command.IdleDraw, ref f);
-        WriteNum(sb, command.IdleActivity, ref f);
+        WriteNum(sb, command.IdleDraw * command.IdleActivity, ref f);
+        WriteNum(sb, command.TestLoadRate * command.TestLoadActivity, ref f);
         WriteNum(sb, command.TestLoadRate, ref f);
         WriteBit(sb, command.TestLoadActive, ref f);
         JsonWriter.End(sb, ']');

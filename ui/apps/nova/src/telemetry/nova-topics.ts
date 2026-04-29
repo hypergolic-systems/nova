@@ -34,15 +34,15 @@ export type NovaResourceFrame = [
 // specific frame type it cares about without re-narrowing the union.
 export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1];
 export type NovaBatteryFrame  = ['B', soc: number, capacity: number, rate: number];
-export type NovaWheelFrame    = ['W', maxEcRate: number, activity: number];
-export type NovaLightFrame    = ['L', maxEcRate: number, activity: number];
+export type NovaWheelFrame    = ['W', rate: number];
+export type NovaLightFrame    = ['L', rate: number];
 export type NovaEngineFrame   = ['E', alternatorMaxRate: number, alternatorRate: number];
 export type NovaTankFrame     = ['T', volume: number];
 export type NovaCommandFrame  = [
   'C',
   idleRate: number,
-  idleActivity: number,
   testLoadRate: number,
+  testLoadMaxRate: number,
   testLoadActive: 0 | 1,
 ];
 export type NovaFuelCellFrame = [
@@ -127,14 +127,13 @@ export interface BatteryState {
 }
 
 export interface WheelState {
-  maxEcRate: number;
-  /** Saturation, 0..1. Multiply by `maxEcRate` for current draw. */
-  activity: number;
+  /** Live EC/s draw, post-LP-throttle. */
+  rate: number;
 }
 
 export interface LightState {
-  maxEcRate: number;
-  activity: number;
+  /** Live EC/s draw, post-LP-throttle. */
+  rate: number;
 }
 
 export interface EngineState {
@@ -155,18 +154,20 @@ export interface TankState {
 }
 
 export interface CommandState {
-  /** Rated baseline EC draw at full availability (avionics + computer
-   *  + telemetry). Always-on. */
+  /** Live W consumed by the always-on avionics baseline (post-LP-
+   *  throttle — drops below the rated draw only when the bus is
+   *  starved). */
   idleRate: number;
-  /** 0..1 fraction of the idle draw the LP actually delivered last
-   *  solve. Drops below 1 only when the bus is starved. */
-  idleActivity: number;
-  /** Rated debug "test load" draw — gated by `testLoadActive`. Used
-   *  to exercise the power system (force batteries to drain, trip
-   *  fuel cell hysteresis). */
+  /** Live W consumed by the debug test load. Zero when the toggle
+   *  is off; capped at `testLoadMaxRate` when on; throttled below
+   *  that under starvation. */
   testLoadRate: number;
-  /** Toggle state for the debug load. Reset to false on every load
-   *  (intentionally non-persistent — a forgotten toggle shouldn't
+  /** Configured ceiling for the test load — what it would draw on
+   *  a healthy bus when toggled on. Surfaced for tooltips ("Toggle
+   *  1000 W debug load"). */
+  testLoadMaxRate: number;
+  /** Toggle state for the debug load. Reset to false on every flight
+   *  load (intentionally non-persistent — a forgotten toggle shouldn't
    *  silently drain a vessel after a quickload). */
   testLoadActive: boolean;
 }
@@ -344,10 +345,10 @@ export function decodePart(f: NovaPartFrame): NovaPart {
         out.battery.push({ soc: c[1], capacity: c[2], rate: c[3] });
         break;
       case 'W':
-        out.wheel.push({ maxEcRate: c[1], activity: c[2] });
+        out.wheel.push({ rate: c[1] });
         break;
       case 'L':
-        out.light.push({ maxEcRate: c[1], activity: c[2] });
+        out.light.push({ rate: c[1] });
         break;
       case 'E':
         out.engine.push({
@@ -361,8 +362,8 @@ export function decodePart(f: NovaPartFrame): NovaPart {
       case 'C':
         out.command.push({
           idleRate: c[1],
-          idleActivity: c[2],
-          testLoadRate: c[3],
+          testLoadRate: c[2],
+          testLoadMaxRate: c[3],
           testLoadActive: c[4] === 1,
         });
         break;

@@ -88,18 +88,9 @@
   function consumptionRate(p: NovaTaggedPart): number {
     if (!p.state) return 0;
     let total = 0;
-    for (const w of p.state.wheel) total += w.maxEcRate * w.activity;
-    for (const l of p.state.light) total += l.maxEcRate * l.activity;
-    for (const c of p.state.command) {
-      total += c.idleRate * c.idleActivity;
-      // Test load: while active, show its current draw. We don't
-      // ship a per-test-load activity in the wire frame (rare event,
-      // not worth the bytes), so approximate as full rate. The LP
-      // throttles it down naturally if the bus is starved; the
-      // displayed total may briefly over-state until the next solve
-      // catches up.
-      if (c.testLoadActive) total += c.testLoadRate;
-    }
+    for (const w of p.state.wheel) total += w.rate;
+    for (const l of p.state.light) total += l.rate;
+    for (const c of p.state.command) total += c.idleRate + c.testLoadRate;
     return total;
   }
 
