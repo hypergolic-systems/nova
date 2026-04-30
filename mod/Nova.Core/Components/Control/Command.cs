@@ -40,11 +40,18 @@ public class Command : VirtualComponent {
 
   public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
     if (IdleDraw > 0) {
-      idleDevice = node.AddDevice(ResourceSolver.Priority.Low);
+      // Avionics baseline runs at Priority.High — without flight
+      // computer power the vessel loses control authority, so the LP
+      // satisfies it ahead of opportunistic loads (wheel-buffer
+      // refill, lights, etc.) when the bus is contended.
+      idleDevice = node.AddDevice(ResourceSolver.Priority.High);
       idleDevice.AddInput(Resource.ElectricCharge, IdleDraw);
       idleDevice.Demand = 1.0;
     }
     if (TestLoadRate > 0) {
+      // Test load is a debug bus-exerciser, NOT a real avionics
+      // dependency — keep it at Low so it competes with refills and
+      // lights, the loads it's actually meant to stress-test.
       testLoadDevice = node.AddDevice(ResourceSolver.Priority.Low);
       testLoadDevice.AddInput(Resource.ElectricCharge, TestLoadRate);
       testLoadDevice.Demand = TestLoadActive ? 1.0 : 0.0;
