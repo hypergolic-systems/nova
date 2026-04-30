@@ -157,12 +157,23 @@ public static class ComponentFactory {
   }
 
   public static ReactionWheel CreateReactionWheel(ConfigNode node) {
-    return new ReactionWheel {
+    var wheel = new ReactionWheel {
       PitchTorque = double.Parse(node.GetValue("pitchTorque")),
       YawTorque = double.Parse(node.GetValue("yawTorque")),
       RollTorque = double.Parse(node.GetValue("rollTorque")),
       ElectricRate = double.Parse(node.GetValue("electricRate")),
     };
+    // Prime the buffer to full so editor saves round-trip with a
+    // charged wheel — without this, the editor's `Save` writes
+    // `Contents = 0` (Buffer is still null at that point) and the
+    // flight `Load` faithfully restores an empty buffer, starving
+    // the wheel on launch. Capacity comes from the component's own
+    // derived property; the factory stays formula-free.
+    wheel.Buffer = new Accumulator {
+      Capacity = wheel.BufferCapacityJoules,
+      Contents = wheel.BufferCapacityJoules,
+    };
+    return wheel;
   }
 
   public static SolarPanel CreateSolarPanel(ConfigNode node) {
