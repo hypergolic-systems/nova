@@ -11,7 +11,7 @@ public class Engine : VirtualComponent {
   public double Thrust; // kN (vacuum) — also serves as MaxThrust on the wire
   public double Isp; // s (vacuum)
   public double Throttle;
-  public double AlternatorRate; // EC/s at full output (0 = no alternator)
+  public double AlternatorRate; // W at full output (0 = no alternator)
 
   // Gimbal authority. `GimbalRangeRad` of 0 means non-gimbaling
   // (LV-T30); a positive value enables thrust-vectoring. The attitude
