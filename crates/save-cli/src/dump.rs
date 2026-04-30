@@ -280,9 +280,19 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
     }
 
     if let Some(fc) = state.and_then(|s| s.fuel_cell.as_ref()) {
+        let lh2 = fc.lh2_manifold.as_ref().map(|m| m.contents).unwrap_or(0.0);
+        let lox = fc.lox_manifold.as_ref().map(|m| m.contents).unwrap_or(0.0);
         println!(
             "{p2}FuelCell: lh2={:.4}L, lox={:.4}L (active={}, refill={})",
-            fc.lh2_manifold_contents, fc.lox_manifold_contents, fc.is_active, fc.refill_active
+            lh2, lox, fc.is_active, fc.refill_active
+        );
+    }
+
+    if let Some(rw) = state.and_then(|s| s.reaction_wheel.as_ref()) {
+        let buf = rw.buffer.as_ref().map(|b| b.contents).unwrap_or(0.0);
+        println!(
+            "{p2}ReactionWheel: buffer={:.1}J (refill={})",
+            buf, rw.refill_active
         );
     }
 }

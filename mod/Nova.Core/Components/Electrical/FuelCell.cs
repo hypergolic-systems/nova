@@ -12,10 +12,10 @@ namespace Nova.Core.Components.Electrical;
 //                  inputs (Solar-style "free" producer). Activity gated
 //                  by IsActive (SoC hysteresis) AND hasFuel (manifolds non-zero).
 //
-// The manifold is component-internal state — plain doubles, NOT an LP
-// `Buffer`. Keeping it off-LP entirely is the whole point: production
-// drains the manifold at µL/s outside the LP, conservation never sees
-// those rates. See `docs/lp_hygiene.md` for the design rationale.
+// The manifolds are component-internal `Accumulator`s — plain doubles
+// in storage, NOT LP `Buffer`s. Production drains the manifolds at µL/s
+// outside the LP, so conservation never sees those rates. See
+// `docs/lp_hygiene.md` for the design rationale.
 //
 // Auto-controlled by VirtualVessel.UpdateFuelCellDevices (production
 // hysteresis) and the same orchestrator's refill hysteresis:
@@ -33,15 +33,13 @@ public class FuelCell : VirtualComponent {
   public double Lh2Rate;             // L/s of LH₂ at full production
   public double LoxRate;             // L/s of LOx at full production
   public double EcOutput;            // W (EC/s) at full production
-  public double Lh2ManifoldCapacity; // L
-  public double LoxManifoldCapacity; // L
   public double RefillRateLh2;       // L/s; LOx side scales by LoxRate/Lh2Rate
 
-  // Hysteresis + manifold state. Persisted in FuelCellState.
+  // Persisted state.
   public bool IsActive;
   public bool RefillActive;
-  public double Lh2ManifoldContents;
-  public double LoxManifoldContents;
+  public Accumulator Lh2Manifold = new();
+  public Accumulator LoxManifold = new();
 
   // Seconds until the next predicted production state flip given the
   // current rates. +∞ when no transition is reachable.
@@ -59,13 +57,15 @@ public class FuelCell : VirtualComponent {
       Lh2Rate = Lh2Rate,
       LoxRate = LoxRate,
       EcOutput = EcOutput,
-      Lh2ManifoldCapacity = Lh2ManifoldCapacity,
-      LoxManifoldCapacity = LoxManifoldCapacity,
       RefillRateLh2 = RefillRateLh2,
       IsActive = IsActive,
       RefillActive = RefillActive,
-      Lh2ManifoldContents = Lh2ManifoldContents,
-      LoxManifoldContents = LoxManifoldContents,
+      Lh2Manifold = new Accumulator {
+        Capacity = Lh2Manifold.Capacity, Contents = Lh2Manifold.Contents,
+      },
+      LoxManifold = new Accumulator {
+        Capacity = LoxManifold.Capacity, Contents = LoxManifold.Contents,
+      },
     };
   }
 
@@ -82,7 +82,7 @@ public class FuelCell : VirtualComponent {
     production.AddOutput(Resource.ElectricCharge, EcOutput);
     // Initial demand reflects persisted state. UpdateFuelCellDevices
     // overrides each tick once it sees live SoC + manifold state.
-    bool hasFuel = Lh2ManifoldContents > 0 && LoxManifoldContents > 0;
+    bool hasFuel = !Lh2Manifold.IsEmpty && !LoxManifold.IsEmpty;
     production.Demand = (IsActive && hasFuel) ? 1.0 : 0.0;
   }
 
@@ -90,8 +90,8 @@ public class FuelCell : VirtualComponent {
     state.FuelCell = new FuelCellState {
       IsActive = IsActive,
       RefillActive = RefillActive,
-      Lh2ManifoldContents = Lh2ManifoldContents,
-      LoxManifoldContents = LoxManifoldContents,
+      Lh2Manifold = new AccumulatorState { Contents = Lh2Manifold.Contents },
+      LoxManifold = new AccumulatorState { Contents = LoxManifold.Contents },
     };
   }
 
@@ -99,7 +99,9 @@ public class FuelCell : VirtualComponent {
     if (state.FuelCell == null) return;
     IsActive = state.FuelCell.IsActive;
     RefillActive = state.FuelCell.RefillActive;
-    Lh2ManifoldContents = state.FuelCell.Lh2ManifoldContents;
-    LoxManifoldContents = state.FuelCell.LoxManifoldContents;
+    if (state.FuelCell.Lh2Manifold != null)
+      Lh2Manifold.Contents = state.FuelCell.Lh2Manifold.Contents;
+    if (state.FuelCell.LoxManifold != null)
+      LoxManifold.Contents = state.FuelCell.LoxManifold.Contents;
   }
 }

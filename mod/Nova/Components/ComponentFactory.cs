@@ -73,18 +73,16 @@ public static class ComponentFactory {
   public static FuelCell CreateFuelCell(ConfigNode node) {
     var lh2Cap = double.Parse(node.GetValue("lh2ManifoldCapacity"));
     var loxCap = double.Parse(node.GetValue("loxManifoldCapacity"));
+    // A fresh cell ships with manifolds primed — same convention as
+    // batteries (capacity=value at build time). Editor save round-
+    // trips manifold contents, so subsequent loads honour drain.
     return new FuelCell {
       Lh2Rate  = double.Parse(node.GetValue("lh2Rate")),
       LoxRate  = double.Parse(node.GetValue("loxRate")),
       EcOutput = double.Parse(node.GetValue("ecOutput")),
-      Lh2ManifoldCapacity = lh2Cap,
-      LoxManifoldCapacity = loxCap,
       RefillRateLh2 = double.Parse(node.GetValue("refillRateLh2")),
-      // A fresh cell ships with manifolds primed — same convention as
-      // batteries (capacity=value at build time). Editor save round-
-      // trips manifold contents, so subsequent loads honour drain.
-      Lh2ManifoldContents = lh2Cap,
-      LoxManifoldContents = loxCap,
+      Lh2Manifold = new Accumulator { Capacity = lh2Cap, Contents = lh2Cap },
+      LoxManifold = new Accumulator { Capacity = loxCap, Contents = loxCap },
       IsActive = false,
       RefillActive = false,
     };

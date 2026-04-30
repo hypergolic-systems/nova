@@ -463,8 +463,9 @@ public class NovaVesselModule : VesselModule {
       foreach (var mod in rcsModules) mod.ClearThrottles();
       foreach (var mod in wheelModules) {
         var w = mod.Wheel;
-        if (Math.Abs(w.ThrottlePitch) + Math.Abs(w.ThrottleRoll) + Math.Abs(w.ThrottleYaw) > 0.01)
-          Virtual?.Invalidate();
+        // Intensity changes don't invalidate the LP — the wheel's
+        // off-LP buffer absorbs them; the LP only re-solves when the
+        // buffer hysteresis flips. See ReactionWheel.cs.
         w.ThrottlePitch = 0;
         w.ThrottleRoll = 0;
         w.ThrottleYaw = 0;
@@ -630,13 +631,12 @@ public class NovaVesselModule : VesselModule {
       double yPlus = solved[idx++], yMinus = solved[idx++];
 
       var w = mod.Wheel;
-      double prevIntensity = Math.Abs(w.ThrottlePitch) + Math.Abs(w.ThrottleRoll) + Math.Abs(w.ThrottleYaw);
+      // Intensity changes don't invalidate the LP — the wheel's off-LP
+      // buffer absorbs them; the LP only re-solves when the buffer
+      // hysteresis flips. See ReactionWheel.cs.
       w.ThrottlePitch = pPlus - pMinus;
       w.ThrottleRoll = rPlus - rMinus;
       w.ThrottleYaw = yPlus - yMinus;
-      double newIntensity = Math.Abs(w.ThrottlePitch) + Math.Abs(w.ThrottleRoll) + Math.Abs(w.ThrottleYaw);
-      if (Math.Abs(newIntensity - prevIntensity) > 0.01)
-        Virtual?.Invalidate();
 
       // Net torque in vessel-local space, scaled by electricity satisfaction.
       var sat = w.Satisfaction;

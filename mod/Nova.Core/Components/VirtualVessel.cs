@@ -20,6 +20,12 @@ public class VirtualVessel {
   private double simulationTime;
   private double nextExpiry = double.PositiveInfinity;
 
+  // Monotonic count of LP solves. Useful for tests asserting that a
+  // particular event (e.g. wheel-buffer crossing) DID or DIDN'T trigger
+  // a re-solve, and for production debug logs that want to observe
+  // solve cadence without instrumenting DoSolve directly.
+  public int SolveCount { get; private set; }
+
   // Vessel-level solar aggregation. One Device on the root node sums
   // every panel's ChargeRate as its topology output coefficient; per-tick
   // Demand caps the LP variable so output tops out at the SolarOptimizer
@@ -267,18 +273,14 @@ public class VirtualVessel {
       // Refill hysteresis (manifold fill band). Trip on the lower
       // manifold; turn off only when both reach capacity, so a single
       // device with a ratio-locked LH₂/LOx draw fills both in lockstep.
-      double lh2Frac = fc.Lh2ManifoldCapacity > 0
-          ? fc.Lh2ManifoldContents / fc.Lh2ManifoldCapacity : 1.0;
-      double loxFrac = fc.LoxManifoldCapacity > 0
-          ? fc.LoxManifoldContents / fc.LoxManifoldCapacity : 1.0;
-      double minFrac = Math.Min(lh2Frac, loxFrac);
+      double minFrac = Math.Min(fc.Lh2Manifold.FillFraction, fc.LoxManifold.FillFraction);
       if (fc.RefillActive && minFrac >= FuelCellRefillOffThreshold) {
         fc.RefillActive = false;
       } else if (!fc.RefillActive && minFrac < FuelCellRefillOnThreshold) {
         fc.RefillActive = true;
       }
 
-      bool hasFuel = fc.Lh2ManifoldContents > 0 && fc.LoxManifoldContents > 0;
+      bool hasFuel = !fc.Lh2Manifold.IsEmpty && !fc.LoxManifold.IsEmpty;
       fc.production.Demand = (fc.IsActive && hasFuel) ? 1.0 : 0.0;
       fc.refill.Demand     = fc.RefillActive ? 1.0 : 0.0;
     }
@@ -338,10 +340,10 @@ public class VirtualVessel {
                            - fc.refill.Activity     * fc.RefillRateLh2;
         double netDrainLox = fc.production.Activity * fc.LoxRate
                            - fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate);
-        if (netDrainLh2 > 1e-12 && fc.Lh2ManifoldContents > 0)
-          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.Lh2ManifoldContents / netDrainLh2);
-        if (netDrainLox > 1e-12 && fc.LoxManifoldContents > 0)
-          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.LoxManifoldContents / netDrainLox);
+        if (netDrainLh2 > 1e-12 && fc.Lh2Manifold.Contents > 0)
+          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.Lh2Manifold.Contents / netDrainLh2);
+        if (netDrainLox > 1e-12 && fc.LoxManifold.Contents > 0)
+          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.LoxManifold.Contents / netDrainLox);
       }
 
       double dtProdFlip = Math.Min(dtSocFlip, dtMfdEmpty);
@@ -360,17 +362,13 @@ public class VirtualVessel {
       double dtRefillFlip = double.PositiveInfinity;
       if (fc.RefillActive) {
         // Flip OFF when *both* manifolds reach 100% — wait for the slower.
-        double dtLh2 = TimeToFraction(fc.Lh2ManifoldContents, fc.Lh2ManifoldCapacity,
-            FuelCellRefillOffThreshold, netFillLh2, filling: true);
-        double dtLox = TimeToFraction(fc.LoxManifoldContents, fc.LoxManifoldCapacity,
-            FuelCellRefillOffThreshold, netFillLox, filling: true);
+        double dtLh2 = fc.Lh2Manifold.TimeToFraction(FuelCellRefillOffThreshold, netFillLh2);
+        double dtLox = fc.LoxManifold.TimeToFraction(FuelCellRefillOffThreshold, netFillLox);
         dtRefillFlip = Math.Max(dtLh2, dtLox);
       } else {
         // Flip ON when *either* drops below 10% — earliest wins.
-        double dtLh2 = TimeToFraction(fc.Lh2ManifoldContents, fc.Lh2ManifoldCapacity,
-            FuelCellRefillOnThreshold, netFillLh2, filling: false);
-        double dtLox = TimeToFraction(fc.LoxManifoldContents, fc.LoxManifoldCapacity,
-            FuelCellRefillOnThreshold, netFillLox, filling: false);
+        double dtLh2 = fc.Lh2Manifold.TimeToFraction(FuelCellRefillOnThreshold, netFillLh2);
+        double dtLox = fc.LoxManifold.TimeToFraction(FuelCellRefillOnThreshold, netFillLox);
         dtRefillFlip = Math.Min(dtLh2, dtLox);
       }
       fc.refill.ValidUntil = double.IsPositiveInfinity(dtRefillFlip)
@@ -379,31 +377,12 @@ public class VirtualVessel {
     }
   }
 
-  // Time for `contents` to reach `targetFrac × capacity` given a signed
-  // `netRate` (positive = filling). `filling=true` means "approaching
-  // from below"; `filling=false` means "approaching from above".
-  // Returns +∞ when the rate doesn't move toward the target.
-  private static double TimeToFraction(
-      double contents, double capacity, double targetFrac, double netRate, bool filling) {
-    if (capacity <= 0) return double.PositiveInfinity;
-    double target = targetFrac * capacity;
-    if (filling) {
-      if (netRate <= 1e-12) return double.PositiveInfinity;
-      double remaining = target - contents;
-      return remaining <= 0 ? 0 : remaining / netRate;
-    } else {
-      if (netRate >= -1e-12) return double.PositiveInfinity;
-      double slack = contents - target;
-      return slack <= 0 ? 0 : slack / -netRate;
-    }
-  }
-
   // Drain/fill manifold contents using the previous solve's Activities.
   // Same staleness contract as Buffer.Rate-based integration: rates
   // come from the prior Solve, integrate over `deltaT`, next Solve
-  // reads the new state. Clamp at [0, capacity] so an over-shoot
-  // between solves doesn't push the manifold negative — the
-  // production ValidUntil set in DistributeFuelCellState ensures we
+  // reads the new state. Accumulator.Integrate clamps at [0, capacity]
+  // so an over-shoot between solves doesn't push the manifold negative —
+  // the production ValidUntil set in DistributeFuelCellState ensures we
   // re-solve before the over-shoot grows large.
   private void IntegrateFuelCellManifolds(double deltaT) {
     if (deltaT <= 0) return;
@@ -414,16 +393,99 @@ public class VirtualVessel {
       double fillLh2  = fc.refill.Activity     * fc.RefillRateLh2;
       double fillLox  = fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate);
 
-      fc.Lh2ManifoldContents = Math.Max(0,
-          Math.Min(fc.Lh2ManifoldCapacity, fc.Lh2ManifoldContents + (fillLh2 - drainLh2) * deltaT));
-      fc.LoxManifoldContents = Math.Max(0,
-          Math.Min(fc.LoxManifoldCapacity, fc.LoxManifoldContents + (fillLox - drainLox) * deltaT));
+      fc.Lh2Manifold.Integrate(fillLh2 - drainLh2, deltaT);
+      fc.LoxManifold.Integrate(fillLox - drainLox, deltaT);
     }
+  }
+
+  // Drain/fill reaction-wheel accumulators off-LP. Drain comes from
+  // live intensity (sum of |throttles| set this frame by SolveAttitude);
+  // refill comes from the LP-solved refill device's previous Activity.
+  // The hysteresis flip itself happens in ReactionWheel.OnPreSolve
+  // (mirrors UpdateFuelCellDevices); this method just integrates the
+  // buffer and refreshes the per-wheel ValidUntil forecast so the Tick
+  // scheduler steps to the right next event.
+  private void IntegrateReactionWheelBuffers(double deltaT) {
+    if (deltaT <= 0) return;
+
+    foreach (var w in AllComponents().OfType<ReactionWheel>()) {
+      if (w.refill == null || w.Buffer == null) continue;
+
+      double intensity = Math.Abs(w.ThrottlePitch)
+                       + Math.Abs(w.ThrottleRoll)
+                       + Math.Abs(w.ThrottleYaw);
+      double desiredDrain = intensity * w.ElectricRate;
+      double fillRate     = w.refill.Activity * w.RefillRateWatts;
+      // Available power this tick = whatever's in the buffer plus this
+      // tick's worth of LP-supplied refill. Drain can't exceed it.
+      double available    = w.Buffer.Contents / deltaT + fillRate;
+      double effective    = Math.Min(desiredDrain, available);
+      double net          = fillRate - effective;
+
+      w.Buffer.Integrate(net, deltaT);
+      w.Satisfaction = desiredDrain > 1e-9 ? effective / desiredDrain : 1.0;
+      w.CurrentDrain = effective;
+      w.CurrentRefill = fillRate;
+
+      UpdateReactionWheelForecast(w);
+    }
+  }
+
+  // Refresh refill.ValidUntil for each wheel based on current
+  // intensity + buffer state + last-solve refill.Activity. Called at
+  // three hooks where any of those inputs may have just changed:
+  //   1. Top of Tick — SolveAttitude may have changed intensity since
+  //      the last solve.
+  //   2. After IntegrateReactionWheelBuffers — buffer state advances.
+  //   3. End of DoSolve — refill.Activity changes when the LP solves
+  //      with a flipped Demand.
+  // Together these guarantee `nextExpiry` reflects the true time of
+  // the next hysteresis flip, so the Tick loop can step there directly
+  // (matters for long-interval catch-up; loaded vessels at 50 Hz would
+  // be fine without it, but the refresh is cheap).
+  private void UpdateReactionWheelForecasts() {
+    foreach (var w in AllComponents().OfType<ReactionWheel>())
+      UpdateReactionWheelForecast(w);
+  }
+
+  private void UpdateReactionWheelForecast(ReactionWheel w) {
+    if (w.refill == null || w.Buffer == null) return;
+
+    double intensity = Math.Abs(w.ThrottlePitch)
+                     + Math.Abs(w.ThrottleRoll)
+                     + Math.Abs(w.ThrottleYaw);
+    double drain = intensity * w.ElectricRate;
+    double fill  = w.refill.Activity * w.RefillRateWatts;
+    double net   = fill - drain;
+
+    // Next flip is at the OPPOSITE threshold from the current state.
+    double dt = w.RefillActive
+      ? w.Buffer.TimeToFraction(ReactionWheel.RefillOffFraction, net)
+      : w.Buffer.TimeToFraction(ReactionWheel.RefillOnFraction,  net);
+
+    w.refill.ValidUntil = double.IsPositiveInfinity(dt)
+      ? double.PositiveInfinity
+      : simulationTime + dt;
   }
 
   private const int MaxTickIterations = 100;
 
+  // Floor for the per-iteration step in Tick. A device's `ValidUntil` can
+  // legitimately land within FP precision of the current simulationTime
+  // (e.g. a wheel-buffer forecast where slack/rate < ulp(simTime) makes
+  // `simulationTime + dt == simulationTime` exactly). Without a floor,
+  // `nextStop - simulationTime` is then 0, no integration runs, the
+  // OnPreSolve check sees a frac that's still strictly below threshold,
+  // and the loop spins on the same time point until MaxTickIterations
+  // forces it through. 1 µs is well above representable-time precision
+  // even at multi-year simTime, and small enough to be physically
+  // unobservable. The integration over MinTickStep also overshoots any
+  // sub-precision gap to the threshold (rate × 1 µs ≫ ulp), so the
+  // accumulator clamps to capacity and the next solve flips cleanly.
+  private const double MinTickStep = 1e-6;
+
   private void DoSolve() {
+    SolveCount++;
     try {
       UpdateShadowState();
       UpdateSolarDeviceDemand();
@@ -433,6 +495,9 @@ public class VirtualVessel {
       solver.Solve();
       DistributeSolarPanelCurrentRates();
       DistributeFuelCellState();
+      // Wheel forecasts depend on the freshly-solved refill.Activity —
+      // refresh after Solve so nextExpiry reflects the new state.
+      UpdateReactionWheelForecasts();
       needsSolve = false;
       nextExpiry = ComputeNextExpiry(simulationTime);
     } catch (Exception e) {
@@ -461,6 +526,13 @@ public class VirtualVessel {
   public void Tick(double targetTime) {
     if (solver == null) return;
 
+    // SolveAttitude (NovaVesselModule.FixedUpdate, runs before this
+    // Tick) may have changed wheel intensity since the last solve —
+    // refresh the per-wheel forecasts so the cached `nextExpiry`
+    // reflects current drain/fill rates before the loop consumes it.
+    UpdateReactionWheelForecasts();
+    nextExpiry = ComputeNextExpiry(simulationTime);
+
     var iterations = 0;
 
     while (simulationTime < targetTime) {
@@ -470,15 +542,23 @@ public class VirtualVessel {
         break;
       }
 
-      var nextStop = Math.Min(targetTime, nextExpiry);
+      // Floor the step at MinTickStep ahead of simulationTime — a
+      // ValidUntil within FP precision of `now` would otherwise land
+      // nextStop == simulationTime and stall. Capped by targetTime so
+      // we never overshoot the requested target.
+      var nextStop = Math.Min(targetTime,
+          Math.Max(nextExpiry, simulationTime + MinTickStep));
 
-      if (nextStop > simulationTime) {
-        var dt = nextStop - simulationTime;
+      var dt = nextStop - simulationTime;
+      if (dt > 0) {
         IntegrateBuffers(dt);
         IntegrateFuelCellManifolds(dt);
+        IntegrateReactionWheelBuffers(dt);  // refreshes per-wheel ValidUntil
         simulationTime = nextStop;
-      } else if (!needsSolve && simulationTime >= nextExpiry) {
-        needsSolve = true;
+        // Don't recompute nextExpiry here — keep the cached value so
+        // the expiry check below can fire for the event we just hit.
+        // The post-DoSolve refresh + Tick-start refresh keep the cache
+        // current at the actual decision points.
       }
 
       if (needsSolve || simulationTime >= nextExpiry) {

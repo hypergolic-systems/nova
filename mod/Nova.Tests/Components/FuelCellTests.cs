@@ -28,11 +28,9 @@ public class FuelCellTests {
       Lh2Rate = SmallLh2Rate,
       LoxRate = SmallLoxRate,
       EcOutput = ec,
-      Lh2ManifoldCapacity = SmallLh2ManifoldCap,
-      LoxManifoldCapacity = SmallLoxManifoldCap,
       RefillRateLh2 = SmallRefillRateLh2,
-      Lh2ManifoldContents = lh2Manifold,
-      LoxManifoldContents = loxManifold,
+      Lh2Manifold = new Accumulator { Capacity = SmallLh2ManifoldCap, Contents = lh2Manifold },
+      LoxManifold = new Accumulator { Capacity = SmallLoxManifoldCap, Contents = loxManifold },
       IsActive = isActive,
       RefillActive = refillActive,
     };
@@ -85,19 +83,20 @@ public class FuelCellTests {
   public void Clone_CopiesAllState() {
     var src = new FuelCell {
       Lh2Rate = 1.0, LoxRate = 0.5, EcOutput = 1000,
-      Lh2ManifoldCapacity = 2.0, LoxManifoldCapacity = 1.0, RefillRateLh2 = 0.2,
-      Lh2ManifoldContents = 1.5, LoxManifoldContents = 0.8,
+      RefillRateLh2 = 0.2,
+      Lh2Manifold = new Accumulator { Capacity = 2.0, Contents = 1.5 },
+      LoxManifold = new Accumulator { Capacity = 1.0, Contents = 0.8 },
       IsActive = true, RefillActive = true,
     };
     var dst = (FuelCell)src.Clone();
     Assert.AreEqual(1.0, dst.Lh2Rate);
     Assert.AreEqual(0.5, dst.LoxRate);
     Assert.AreEqual(1000, dst.EcOutput);
-    Assert.AreEqual(2.0, dst.Lh2ManifoldCapacity);
-    Assert.AreEqual(1.0, dst.LoxManifoldCapacity);
+    Assert.AreEqual(2.0, dst.Lh2Manifold.Capacity);
+    Assert.AreEqual(1.0, dst.LoxManifold.Capacity);
     Assert.AreEqual(0.2, dst.RefillRateLh2);
-    Assert.AreEqual(1.5, dst.Lh2ManifoldContents);
-    Assert.AreEqual(0.8, dst.LoxManifoldContents);
+    Assert.AreEqual(1.5, dst.Lh2Manifold.Contents);
+    Assert.AreEqual(0.8, dst.LoxManifold.Contents);
     Assert.IsTrue(dst.IsActive);
     Assert.IsTrue(dst.RefillActive);
   }
@@ -106,17 +105,22 @@ public class FuelCellTests {
   public void State_RoundTripsAllFields() {
     var src = new FuelCell {
       IsActive = true, RefillActive = true,
-      Lh2ManifoldContents = 0.42, LoxManifoldContents = 0.19,
+      Lh2Manifold = new Accumulator { Capacity = 1.0, Contents = 0.42 },
+      LoxManifold = new Accumulator { Capacity = 0.5, Contents = 0.19 },
     };
     var state = new Nova.Core.Persistence.Protos.PartState();
     src.Save(state);
 
-    var dst = new FuelCell();
+    var dst = new FuelCell {
+      // Capacity isn't persisted (cfg-derived); seed the load target.
+      Lh2Manifold = new Accumulator { Capacity = 1.0 },
+      LoxManifold = new Accumulator { Capacity = 0.5 },
+    };
     dst.Load(state);
     Assert.IsTrue(dst.IsActive);
     Assert.IsTrue(dst.RefillActive);
-    Assert.AreEqual(0.42, dst.Lh2ManifoldContents);
-    Assert.AreEqual(0.19, dst.LoxManifoldContents);
+    Assert.AreEqual(0.42, dst.Lh2Manifold.Contents);
+    Assert.AreEqual(0.19, dst.LoxManifold.Contents);
   }
 
   // ---------- Production hysteresis ----------
@@ -240,11 +244,11 @@ public class FuelCellTests {
     // First Tick establishes Activities; integration before that runs
     // with the default zero rates and would no-op the manifold.
     vessel.Tick(0.001);
-    double initialLh2 = fc.Lh2ManifoldContents;
+    double initialLh2 = fc.Lh2Manifold.Contents;
     vessel.Tick(60.001);
 
-    Assert.IsTrue(fc.Lh2ManifoldContents < initialLh2,
-        $"Expected manifold drain, got {initialLh2} → {fc.Lh2ManifoldContents}");
+    Assert.IsTrue(fc.Lh2Manifold.Contents < initialLh2,
+        $"Expected manifold drain, got {initialLh2} → {fc.Lh2Manifold.Contents}");
   }
 
   [TestMethod]
@@ -262,8 +266,8 @@ public class FuelCellTests {
     vessel.Tick(0.001);
     vessel.Tick(20.001);  // 20 s — well past the ~9.5 s refill at 0.1 L/s
 
-    Assert.IsTrue(fc.Lh2ManifoldContents > 0.9 * SmallLh2ManifoldCap,
-        $"Expected near-full manifold, got {fc.Lh2ManifoldContents}");
+    Assert.IsTrue(fc.Lh2Manifold.Contents > 0.9 * SmallLh2ManifoldCap,
+        $"Expected near-full manifold, got {fc.Lh2Manifold.Contents}");
   }
 
   [TestMethod]

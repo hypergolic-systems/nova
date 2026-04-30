@@ -40,7 +40,7 @@ namespace Nova.Telemetry;
 // callers that want "current draw" get it directly.
 //   ["S", currentEcRate, maxEcRate, deployed, sunlit, retractable]  SolarPanel
 //   ["B", soc(0..1), capacity, currentRate]                         Battery
-//   ["W", currentRate]                                              ReactionWheel
+//   ["W", motorRate, busRate, bufferFraction, refillActive]          ReactionWheel
 //   ["L", currentRate]                                              Light
 //   ["E", alternatorMaxRate, alternatorRate]                        Engine
 //   ["T", volume]                                                   TankVolume
@@ -307,7 +307,15 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.Begin(sb, '[');
         bool f = true;
         WriteKind(sb, "W", ref f);
-        WriteNum(sb, wheel.ElectricRate * wheel.Activity, ref f);
+        // motorRate / busRate frame the wheel's energy balance
+        // honestly: motor draw can be supplied from the buffer, the
+        // bus, or both, and the UI needs both halves to show the
+        // signed buffer flow (= busRate − motorRate) without solver
+        // internals.
+        WriteNum(sb, wheel.CurrentDrain, ref f);
+        WriteNum(sb, wheel.CurrentRefill, ref f);
+        WriteNum(sb, wheel.Buffer?.FillFraction ?? 1.0, ref f);
+        WriteBit(sb, wheel.RefillActive, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -361,12 +369,8 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, fuelCell.EcOutput, ref f);
         WriteBit(sb, fuelCell.IsActive, ref f);
         WriteNum(sb, fuelCell.ValidUntilSeconds, ref f);
-        var lh2Frac = fuelCell.Lh2ManifoldCapacity > 0
-            ? fuelCell.Lh2ManifoldContents / fuelCell.Lh2ManifoldCapacity : 0.0;
-        var loxFrac = fuelCell.LoxManifoldCapacity > 0
-            ? fuelCell.LoxManifoldContents / fuelCell.LoxManifoldCapacity : 0.0;
-        WriteNum(sb, lh2Frac, ref f);
-        WriteNum(sb, loxFrac, ref f);
+        WriteNum(sb, fuelCell.Lh2Manifold.FillFraction, ref f);
+        WriteNum(sb, fuelCell.LoxManifold.FillFraction, ref f);
         WriteBit(sb, fuelCell.RefillActive, ref f);
         JsonWriter.End(sb, ']');
         return true;

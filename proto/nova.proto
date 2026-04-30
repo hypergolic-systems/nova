@@ -154,10 +154,11 @@ message Stage {
 message PartState {
   uint32 id = 1;
   // Only components with mutable runtime state.
-  TankVolumeState tank_volume = 4;
-  BatteryState    battery = 5;
-  bool activated = 6;         // Part.state == ACTIVE (engine staged, etc.)
-  FuelCellState   fuel_cell = 7;
+  TankVolumeState     tank_volume    = 4;
+  BatteryState        battery        = 5;
+  bool                activated      = 6;  // Part.state == ACTIVE (engine staged, etc.)
+  FuelCellState       fuel_cell      = 7;
+  ReactionWheelState  reaction_wheel = 8;
 }
 
 message TankVolumeState {
@@ -168,11 +169,25 @@ message BatteryState {
   double value = 1;
 }
 
+// Off-LP accumulator state — see Nova.Core/Components/Accumulator.cs.
+// Capacity is component-derived (cfg-declared for fuel-cell manifolds,
+// formula-derived inside ReactionWheel) and not persisted: it gets
+// recomputed at OnBuildSolver time, so a cfg edit (e.g. retuning
+// electricRate) takes effect on next vessel load.
+message AccumulatorState {
+  double contents = 1;
+}
+
 message FuelCellState {
-  bool   is_active             = 1;
-  double lh2_manifold_contents = 2;  // L
-  double lox_manifold_contents = 3;  // L
-  bool   refill_active         = 4;  // hysteresis state for the refill device
+  bool              is_active     = 1;
+  bool              refill_active = 2;
+  AccumulatorState lh2_manifold  = 3;
+  AccumulatorState lox_manifold  = 4;
+}
+
+message ReactionWheelState {
+  bool              refill_active = 1;
+  AccumulatorState buffer        = 2;
 }
 
 // --- Flight state (only on in-flight vessels) ---

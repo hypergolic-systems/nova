@@ -34,7 +34,7 @@ export type NovaResourceFrame = [
 // specific frame type it cares about without re-narrowing the union.
 export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1];
 export type NovaBatteryFrame  = ['B', soc: number, capacity: number, rate: number];
-export type NovaWheelFrame    = ['W', rate: number];
+export type NovaWheelFrame    = ['W', motorRate: number, busRate: number, bufferFraction: number, refillActive: 0 | 1];
 export type NovaLightFrame    = ['L', rate: number];
 export type NovaEngineFrame   = ['E', alternatorMaxRate: number, alternatorRate: number];
 export type NovaTankFrame     = ['T', volume: number];
@@ -127,8 +127,22 @@ export interface BatteryState {
 }
 
 export interface WheelState {
-  /** Live EC/s draw, post-LP-throttle. */
-  rate: number;
+  /** Live W flowing into the motor this tick — the torque-side
+   *  consumption, sourced from the buffer + bus combined. Always
+   *  non-negative. */
+  motorRate: number;
+  /** Live W flowing from the EC bus into the wheel system this tick
+   *  (the refill device's actual delivery). 0 when refill is off; up
+   *  to `RefillRateWatts` when on. The bus-facing draw — what the
+   *  rest of the vessel sees the wheel pulling. */
+  busRate: number;
+  /** Energy-buffer fill, 0..1. The buffer holds ~10 s of single-axis
+   *  full operation; refill (from EC bus) trips on at 10 % and off at
+   *  100 %. */
+  bufferFraction: number;
+  /** True while the buffer is refilling from the bus (between the
+   *  10 % trip-on and the 100 % trip-off). */
+  refillActive: boolean;
 }
 
 export interface LightState {
@@ -345,7 +359,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
         out.battery.push({ soc: c[1], capacity: c[2], rate: c[3] });
         break;
       case 'W':
-        out.wheel.push({ rate: c[1] });
+        out.wheel.push({
+          motorRate: c[1],
+          busRate: c[2],
+          bufferFraction: c[3],
+          refillActive: c[4] === 1,
+        });
         break;
       case 'L':
         out.light.push({ rate: c[1] });

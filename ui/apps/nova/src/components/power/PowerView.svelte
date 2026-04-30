@@ -13,7 +13,7 @@
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
-  import type { SolarState, CommandState } from '../../telemetry/nova-topics';
+  import type { SolarState, CommandState, WheelState } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
@@ -44,6 +44,16 @@
   });
   function toggle(k: NodeKey): void {
     expanded[k] = !expanded[k];
+  }
+
+  // Per-row expansion in the consumption section. Wheel rows expand
+  // into Torque + Buffer sub-detail; other rows aren't expandable.
+  let expandedRow = $state<Record<string, boolean>>({});
+  function toggleRow(key: string): void {
+    expandedRow[key] = !(expandedRow[key] ?? false);
+  }
+  function isRowExpanded(key: string): boolean {
+    return expandedRow[key] ?? false;
   }
 
   function generationRate(p: NovaTaggedPart): number {
@@ -85,25 +95,92 @@
     return { current, max };
   }
 
+  function setCommandTestLoad(partId: string, active: boolean): void {
+    ksp.send(NovaPartTopic(partId), 'setCommandTestLoad', active);
+  }
+
+  // Per-component consumer row. Each Command / ReactionWheel / Light
+  // on a part becomes its own row at the top consumption level —
+  // the bus-facing rate is what the row reports as its "draw", so
+  // a wheel that's idling on a full buffer reads `0 W` (no bus
+  // inflow), even when the motor is being driven from buffered
+  // energy. The wheel's expandable detail lines surface that
+  // separately so the energy balance stays visible.
+  type ConsumerRowKind = 'command' | 'wheel' | 'light';
+  interface ConsumerRow {
+    key: string;
+    partId: string;
+    partTitle: string;
+    kind: ConsumerRowKind;
+    /** Bus-facing W. For Command this is idleRate + testLoadRate; for
+     *  Wheel it is the refill device's busRate (motor draw is shown
+     *  in the wheel-detail Torque sub-row, not here); for Light it's
+     *  light.rate. */
+    busRate: number;
+    command?: CommandState;
+    wheel?: WheelState;
+  }
+
+  function buildConsumerRows(p: NovaTaggedPart): ConsumerRow[] {
+    const rows: ConsumerRow[] = [];
+    if (!p.state) return rows;
+    const partId = p.struct.id;
+    const partTitle = p.struct.title;
+    for (let i = 0; i < p.state.command.length; i++) {
+      const c = p.state.command[i];
+      // Don't filter on the live rate — `idleRate` is the post-LP
+      // throttle (idleDraw × idleActivity), so a transiently starved
+      // bus would otherwise make the row vanish entirely. The C#
+      // side already gates emission for parts without a configured
+      // IdleDraw / TestLoadRate, so any frame that arrives here
+      // represents a real flight-computer load worth displaying.
+      rows.push({
+        key: `${partId}:c${i}`, partId, partTitle,
+        kind: 'command',
+        busRate: c.idleRate + c.testLoadRate,
+        command: c,
+      });
+    }
+    for (let i = 0; i < p.state.wheel.length; i++) {
+      const w = p.state.wheel[i];
+      rows.push({
+        key: `${partId}:w${i}`, partId, partTitle,
+        kind: 'wheel',
+        busRate: w.busRate,
+        wheel: w,
+      });
+    }
+    for (let i = 0; i < p.state.light.length; i++) {
+      const l = p.state.light[i];
+      rows.push({
+        key: `${partId}:l${i}`, partId, partTitle,
+        kind: 'light',
+        busRate: l.rate,
+      });
+    }
+    return rows;
+  }
+
+  function rowKindIcon(kind: ConsumerRowKind): ComponentKind {
+    if (kind === 'command') return 'command';
+    if (kind === 'wheel') return 'wheel';
+    return 'light';
+  }
+
+  const consumerRows = $derived.by((): ConsumerRow[] =>
+    consumers.current.flatMap(buildConsumerRows));
+
+  // Update the section total to reflect each component's bus-facing
+  // rate (matches the per-row totals, so summing rows = consumption
+  // total). Wheel rows now contribute `busRate` instead of motor
+  // power.
   function consumptionRate(p: NovaTaggedPart): number {
     if (!p.state) return 0;
     let total = 0;
-    for (const w of p.state.wheel) total += w.rate;
+    for (const w of p.state.wheel) total += w.busRate;
     for (const l of p.state.light) total += l.rate;
     for (const c of p.state.command) total += c.idleRate + c.testLoadRate;
     return total;
-  }
-
-  // Pull the live Command state for a part (one Command per part).
-  function commandOf(p: NovaTaggedPart): CommandState | undefined {
-    return p.state?.command?.[0];
-  }
-  function hasTestLoad(p: NovaTaggedPart): boolean {
-    const c = commandOf(p);
-    return !!c && c.testLoadRate > 0;
-  }
-  function setCommandTestLoad(partId: string, active: boolean): void {
-    ksp.send(NovaPartTopic(partId), 'setCommandTestLoad', active);
   }
 
   function batteryStored(p: NovaTaggedPart): number {
@@ -134,18 +211,6 @@
     if (p.state && p.state.engine.length > 0 && p.state.solar.length === 0) return 'engine';
     return 'solar';
   }
-  // Pick the dominant consumer for a part with mixed component kinds.
-  // Reaction wheel wins over light wins over command — rationale: the
-  // wheel is the most operationally distinctive marker, while command's
-  // always-on draw is a baseline noise floor visible on every probe core.
-  function consumeKind(p: NovaTaggedPart): ComponentKind {
-    if (!p.state) return 'wheel';
-    if (p.state.wheel.length > 0) return 'wheel';
-    if (p.state.light.length > 0) return 'light';
-    if (p.state.command.length > 0) return 'command';
-    return 'wheel';
-  }
-
   // A part is "solar" for grouping purposes when it carries solar
   // components and no engine alternator. Engine-with-alternator parts
   // stay top-level so they don't get hidden inside a SOLAR header.
@@ -202,14 +267,14 @@
     fmtRatePair(genGroups.solarTotal, genGroups.solarMaxTotal),
   );
 
-  // Signed flow-rate readout. Reserves a leading sign slot (NBSP for
-  // non-negative) so a value flipping sign doesn't shift the column.
+  // Unsigned flow-rate readout. Sign is conveyed entirely by colour
+  // (green = power flowing OUT / provider; amber = power flowing IN /
+  // consumer); the magnitude is always shown without a leading `-`.
   // Unit is the SI-prefixed Watt — energy flow rate, J/s.
   function fmtRate(value: number): { mag: string; unit: string } {
-    const p = siPrefix(value);
-    const raw = fmtMag(value / p.div);
-    const mag = value < 0 ? raw : ' ' + raw;
-    return { mag, unit: p.letter + 'W' };
+    const abs = Math.abs(value);
+    const p = siPrefix(abs);
+    return { mag: fmtMag(abs / p.div), unit: p.letter + 'W' };
   }
 
   // Pair scaling for current/max: both share the prefix selected from
@@ -331,6 +396,100 @@
     <span class="pwr__empty-text">{text}</span>
     <span class="pwr__empty-rule"></span>
   </p>
+{/snippet}
+
+<!-- Flat consumer row: Command / Light. The whole row is the part title
+     with an icon and a single rate readout. Command also carries the
+     LOAD test-load toggle when configured. -->
+{#snippet consumerFlatRow(row: ConsumerRow)}
+  {@const r = fmtRate(row.busRate)}
+  <li class="pwr__row"
+      onmouseenter={() => highlightOn([row.partId])}
+      onmouseleave={highlightOff}>
+    <span class="pwr__row-chev-spacer" aria-hidden="true"></span>
+    <span class="pwr__row-icon">
+      <ComponentIcon kind={rowKindIcon(row.kind)} />
+    </span>
+    <span class="pwr__row-name">{row.partTitle}</span>
+    {#if row.kind === 'command' && row.command && row.command.testLoadRate > 0}
+      <button type="button"
+              class="pwr__deploy-btn pwr__test-load-btn"
+              class:pwr__test-load-btn--on={row.command.testLoadActive}
+              aria-label={row.command.testLoadActive ? 'Disable test load' : 'Enable test load'}
+              title={`Toggle ${row.command.testLoadRate} W debug load`}
+              onclick={(e) => { e.stopPropagation(); setCommandTestLoad(row.partId, !row.command!.testLoadActive); }}>
+        <span>LOAD</span>
+      </button>
+    {/if}
+    <span class="pwr__row-rate"
+          class:pwr__row-rate--neg={!isZero(row.busRate)}
+          class:pwr__row-rate--zero={isZero(row.busRate)}>
+      {r.mag}<em>{r.unit}</em>
+    </span>
+  </li>
+{/snippet}
+
+<!-- Reaction-wheel row. The collapsed head shows the bus-facing draw
+     (refill device's actual delivery) — `0 W` when refill is off,
+     positive when on. Expanding splits the wheel's energy balance
+     into two sub-lines:
+       Torque  — instantaneous W into the motor (sourced from buffer
+                 + bus combined). Always non-negative; amber.
+       Buffer  — signed W in/out of the energy buffer (= busRate −
+                 motorRate). Positive when filling (buffer consuming
+                 bus power, amber); negative when draining (buffer
+                 providing motor power, accent green).
+     The buffer sub-line includes the fill gauge. The energy balance
+     `motorRate + bufferRate = busRate` always holds. -->
+{#snippet wheelRow(row: ConsumerRow, w: WheelState)}
+  {@const isOpen = isRowExpanded(row.key)}
+  {@const busFmt = fmtRate(row.busRate)}
+  {@const motorFmt = fmtRate(w.motorRate)}
+  {@const bufferRate = w.busRate - w.motorRate}
+  {@const bufferFmt = fmtRate(bufferRate)}
+  <li class="pwr__row pwr__row--wheel"
+      class:pwr__row--wheel-open={isOpen}
+      onmouseenter={() => highlightOn([row.partId])}
+      onmouseleave={highlightOff}>
+    <button type="button" class="pwr__wheel-head"
+            aria-expanded={isOpen}
+            onclick={() => toggleRow(row.key)}>
+      {@render chev(isOpen)}
+      <span class="pwr__row-icon">
+        <ComponentIcon kind="wheel" />
+      </span>
+      <span class="pwr__row-name">{row.partTitle}</span>
+      <span class="pwr__row-rate"
+            class:pwr__row-rate--neg={!isZero(row.busRate)}
+            class:pwr__row-rate--zero={isZero(row.busRate)}>
+        {busFmt.mag}<em>{busFmt.unit}</em>
+      </span>
+    </button>
+    {#if isOpen}
+      <div class="pwr__wheel-detail">
+        <div class="pwr__wheel-detail-line">
+          <span class="pwr__wheel-detail-label">Torque</span>
+          <span class="pwr__row-rate"
+                class:pwr__row-rate--neg={!isZero(w.motorRate)}
+                class:pwr__row-rate--zero={isZero(w.motorRate)}>
+            {motorFmt.mag}<em>{motorFmt.unit}</em>
+          </span>
+        </div>
+        <div class="pwr__wheel-detail-line pwr__wheel-detail-line--gauge"
+             class:pwr__wheel-gauge--refilling={w.refillActive}
+             title={w.refillActive
+               ? 'Buffer refilling from bus'
+               : 'Buffer (drains during use, refills below 10%)'}>
+          <SegmentGauge fraction={w.bufferFraction} />
+          <span class="pwr__row-rate"
+                class:pwr__row-rate--neg={bufferRate > RATE_EPSILON}
+                class:pwr__row-rate--zero={isZero(bufferRate)}>
+            {bufferFmt.mag}<em>{bufferFmt.unit}</em>
+          </span>
+        </div>
+      </div>
+    {/if}
+  </li>
 {/snippet}
 
 <!-- Per-row solar deploy control. Renders nothing until the part's
@@ -556,37 +715,16 @@
       </span>
     </button>
     {#if expanded.consume}
-      {#if consumers.current.length === 0}
+      {#if consumerRows.length === 0}
         {@render emptyMsg('NO CONSUMERS')}
       {:else}
         <ul class="pwr__rows">
-          {#each consumers.current as p (p.struct.id)}
-            {@const v = consumptionRate(p)}
-            {@const r = fmtRate(v)}
-            {@const cmd = commandOf(p)}
-            <li class="pwr__row"
-                onmouseenter={() => highlightOn([p.struct.id])}
-                onmouseleave={highlightOff}>
-              <span class="pwr__row-icon">
-                <ComponentIcon kind={consumeKind(p)} />
-              </span>
-              <span class="pwr__row-name">{p.struct.title}</span>
-              {#if hasTestLoad(p) && cmd}
-                <button type="button"
-                        class="pwr__deploy-btn pwr__test-load-btn"
-                        class:pwr__test-load-btn--on={cmd.testLoadActive}
-                        aria-label={cmd.testLoadActive ? 'Disable test load' : 'Enable test load'}
-                        title={`Toggle ${cmd.testLoadRate} W debug load`}
-                        onclick={(e) => { e.stopPropagation(); setCommandTestLoad(p.struct.id, !cmd.testLoadActive); }}>
-                  <span>LOAD</span>
-                </button>
-              {/if}
-              <span class="pwr__row-rate"
-                    class:pwr__row-rate--neg={!isZero(v)}
-                    class:pwr__row-rate--zero={isZero(v)}>
-                {r.mag}<em>{r.unit}</em>
-              </span>
-            </li>
+          {#each consumerRows as row (row.key)}
+            {#if row.kind === 'wheel' && row.wheel}
+              {@render wheelRow(row, row.wheel)}
+            {:else}
+              {@render consumerFlatRow(row)}
+            {/if}
           {/each}
         </ul>
       {/if}
@@ -639,7 +777,7 @@
                     <span class="pwr__row-rate-stored">{cp.sMag}</span>
                     <span class="pwr__row-rate-cap">/{cp.cMag} {cp.unit}</span>
                     <span class="pwr__row-rate-net"
-                          class:pwr__row-rate-net--neg={rate < -RATE_EPSILON}
+                          class:pwr__row-rate-net--neg={rate > RATE_EPSILON}
                           class:pwr__row-rate-net--zero={isZero(rate)}>
                       <span class="pwr__row-rate-sep">·</span>{rp.mag} {rp.unit}
                     </span>
@@ -973,6 +1111,11 @@
     margin: 0 4px 0 6px;
     letter-spacing: 0;
   }
+  /* Battery net rate. Default tint (accent / green) is the
+     "providing" state — battery draining onto the bus. The `--neg`
+     variant flips to warn (amber) for the "consuming" state — battery
+     charging from the bus. Mirrors the system-wide rate-colour
+     convention: green out, amber in. */
   .pwr__row-rate-net {
     color: var(--accent);
   }
@@ -1072,6 +1215,88 @@
   .pwr__fc-gauge--refilling .pwr__fc-gauge-label {
     color: var(--accent);
     text-shadow: 0 0 3px var(--accent-glow);
+  }
+
+  /* Empty leading slot used by flat consumer rows so their icons sit
+     in the same horizontal column as the wheel-head chevron's icon
+     (chev-width + flex gap). Without this the same-row alignment
+     drifts visibly when a wheel and a command row sit adjacent. */
+  .pwr__row-chev-spacer {
+    flex: 0 0 8px;
+    width: 8px;
+  }
+
+  /* Reaction-wheel row. The head is a button that takes the standard
+     row layout (chevron + icon + title + rate); the detail block sits
+     below it as a stack of small label/value lines, indented under
+     the icon. When closed the detail is unrendered, so the row reads
+     identically to a flat consumer row but with a leading chevron. */
+  .pwr__row--wheel {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+  }
+  .pwr__row--wheel-open {
+    padding-bottom: 6px;
+  }
+  /* Head row inherits the per-row hover/highlight rhythm by reusing
+     the standard row paddings. The button is a transparent shell —
+     all visual state comes from .pwr__row up top. */
+  .pwr__wheel-head {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    margin: 0;
+  }
+  .pwr__wheel-head:focus-visible {
+    outline: none;
+  }
+  /* The detail block: indented under the icon column, separated from
+     the head by a faint divider that brightens on row hover. The
+     label/value rhythm matches the head row's mono font + tabular
+     numerals so columns line up vertically. */
+  .pwr__wheel-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 2px 6px 0 30px;  /* 30px ≈ chev + icon + gap */
+    margin-top: 2px;
+    border-top: 1px solid rgba(126, 245, 184, 0.06);
+  }
+  .pwr__wheel-detail-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .pwr__wheel-detail-label {
+    flex: 1 1 auto;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+  /* Buffer gauge sub-row: gauge fills the slack, signed rate readout
+     sits to the right. The gauge accent on `--refilling` matches the
+     fuel-cell convention — soft glow rather than colour shift, since
+     the readout's sign already signals direction. */
+  .pwr__wheel-detail-line--gauge {
+    gap: 8px;
+  }
+  .pwr__wheel-detail-line--gauge :global(.sg) {
+    flex: 1 1 auto;
+  }
+  .pwr__wheel-gauge--refilling :global(.sg) {
+    filter: drop-shadow(0 0 2px var(--accent-glow));
   }
 
   /* Solar sub-group: a soft header inside Generation, then panels
