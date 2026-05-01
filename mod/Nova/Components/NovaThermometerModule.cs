@@ -33,17 +33,47 @@ public class NovaThermometerModule : NovaPartModule {
 
     var ctx = BuildSubjectContext();
 
+    // Atmospheric Profile — edge-detected layer transitions.
     var atmExp = registry.Get(AtmosphericProfileExperiment.ExperimentId);
     SubjectKey? atmSubject = atmExp?.ResolveSubject(ctx);
-
     if (atmSubject.HasValue && !atmSubject.Equals(lastAtmSubject)) {
       EmitFile(atmSubject.Value, atmExp.FileSizeBytes, fidelity: 1.0, ut: ctx.UT);
     }
     lastAtmSubject = atmSubject;
 
-    // For M2, "active" tracks atm-profile applicability. M3 ORs in
-    // long-term-study applicability when the LTS accumulator path lands.
-    thermometer.IsActive = atmSubject.HasValue;
+    // Long-term study — situation/body change detection. Subject change
+    // finalises the old slice's accumulator (partial-fidelity file)
+    // and starts a fresh one. The slice-rollover logic itself lives in
+    // Thermometer.Update, scheduled via VirtualComponent.ValidUntil.
+    var ltsExp = registry.Get(LongTermStudyExperiment.ExperimentId);
+    SubjectKey? ltsSubject = ltsExp?.ResolveSubject(ctx);
+    if (ltsSubject.HasValue && !SubjectsMatchSituationAndBody(thermometer, ltsSubject.Value, ctx)) {
+      thermometer.OnSubjectChanged(
+          ltsSubject,
+          ctx.Situation,
+          ctx.BodyId,
+          ctx.BodyName,
+          ctx.BodyYearSeconds,
+          ctx.UT);
+    } else if (!ltsSubject.HasValue && !string.IsNullOrEmpty(thermometer.ActiveSubjectId)) {
+      // No longer applicable — exit LTS, finalise current accumulator.
+      thermometer.OnSubjectChanged(null, Situation.None, 0, "", 0, ctx.UT);
+    }
+
+    thermometer.IsActive = atmSubject.HasValue || ltsSubject.HasValue;
+  }
+
+  // True iff the thermometer's active LTS subject already matches the
+  // current observable's situation+body. Slice-index alone changing
+  // does NOT count — that's a slice rollover, handled by Update, not a
+  // subject change.
+  private static bool SubjectsMatchSituationAndBody(Thermometer t, SubjectKey newKey, SubjectContext ctx) {
+    return t.LastKnownBody == ctx.BodyId
+        && t.LastKnownSituation == ctx.Situation
+        && !string.IsNullOrEmpty(t.ActiveSubjectId)
+        && SubjectKey.TryParse(t.ActiveSubjectId, out var active)
+        && active.BodyName == newKey.BodyName
+        && active.Variant == newKey.Variant;
   }
 
   private SubjectContext BuildSubjectContext() {

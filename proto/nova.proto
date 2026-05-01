@@ -231,6 +231,8 @@ message ThermometerState {
   double last_known_satisfaction     = 4;  // [0,1] EC fulfilment ratio
   int32  last_known_situation        = 5;  // ExperimentSituations enum
   uint32 last_known_body             = 6;  // CelestialBody flightGlobalsIndex
+  string last_known_body_name        = 7;  // mirror of body — used for SubjectKey
+  double last_known_body_year_seconds = 8; // resolved via BodyYear walk
 }
 
 // --- Flight state (only on in-flight vessels) ---
