@@ -104,6 +104,8 @@ message PartStructure {
   // Prefab-only components (Engine, Rcs, etc.) are discovered from the prefab.
   TankVolumeStructure tank_volume = 8;
   BatteryStructure    battery = 9;
+  DataStorageStructure data_storage = 10;
+  ThermometerStructure thermometer = 11;
 }
 
 message Attachment {
@@ -134,6 +136,16 @@ message BatteryStructure {
   double capacity = 1;
 }
 
+// --- Science structure ---
+
+message DataStorageStructure {
+  int64 capacity_bytes = 1;
+}
+
+message ThermometerStructure {
+  double ec_rate = 1;       // EC consumed per second when active
+}
+
 // --- State (dynamic, changes during flight or in editor) ---
 
 message VesselState {
@@ -159,6 +171,8 @@ message PartState {
   bool                activated      = 6;  // Part.state == ACTIVE (engine staged, etc.)
   FuelCellState       fuel_cell      = 7;
   ReactionWheelState  reaction_wheel = 8;
+  DataStorageState    data_storage   = 9;
+  ThermometerState    thermometer    = 10;
 }
 
 message TankVolumeState {
@@ -188,6 +202,35 @@ message FuelCellState {
 message ReactionWheelState {
   bool              refill_active = 1;
   AccumulatorState buffer        = 2;
+}
+
+// --- Science state ---
+
+// One observation result. Lives in a DataStorage. No payload — at view
+// time the UI synthesizes display values deterministically from
+// (subject_id, fidelity).
+message ScienceFile {
+  string subject_id    = 1;   // SubjectKey.ToString(), e.g. "lts@Kerbin:SrfLanded:7"
+  string experiment_id = 2;   // "atm-profile", "lts", etc.
+  double fidelity      = 3;   // [0,1]
+  double produced_at   = 4;   // UT when emitted
+}
+
+message DataStorageState {
+  repeated ScienceFile files = 1;
+}
+
+// Snapshot of the long-term-study accumulator. Sufficient state to keep
+// advancing on an unloaded vessel via VirtualVessel.Tick — no live
+// Vessel access required (last_known_* mirror what the PartModule last
+// saw on the loaded vessel).
+message ThermometerState {
+  string active_subject_id           = 1;  // "" when no active LTS
+  double accumulated_active_seconds  = 2;
+  double last_update_ut              = 3;
+  double last_known_satisfaction     = 4;  // [0,1] EC fulfilment ratio
+  int32  last_known_situation        = 5;  // ExperimentSituations enum
+  uint32 last_known_body             = 6;  // CelestialBody flightGlobalsIndex
 }
 
 // --- Flight state (only on in-flight vessels) ---

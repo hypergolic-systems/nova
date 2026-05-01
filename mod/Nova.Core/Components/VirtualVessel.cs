@@ -561,6 +561,12 @@ public class VirtualVessel {
         // current at the actual decision points.
       }
 
+      // Fire any component whose ValidUntil has elapsed (slice rollover,
+      // scheduled emissions). Component-driven Demand changes propagate
+      // via the needsSolve flag — DoSolve below picks them up.
+      if (FireComponentUpdates(simulationTime))
+        needsSolve = true;
+
       if (needsSolve || simulationTime >= nextExpiry) {
         DoSolve();
       }
@@ -598,7 +604,30 @@ public class VirtualVessel {
         if (device.ValidUntil < earliest)
           earliest = device.ValidUntil;
     }
+    // Component-level expiries (e.g. science slice rollovers). Default
+    // VirtualComponent.ValidUntil is +Infinity, so any non-event-driven
+    // component contributes nothing to this min.
+    foreach (var cmp in AllComponents())
+      if (cmp.ValidUntil < earliest)
+        earliest = cmp.ValidUntil;
     return earliest;
+  }
+
+  // Fire Update(now) on every component whose ValidUntil has elapsed.
+  // Component contract: Update MUST advance ValidUntil before returning
+  // (or set it back to +Infinity to stop scheduling), or this method
+  // would re-fire the same component repeatedly. Returns true iff any
+  // component fired — caller marks needsSolve so any Demand changes
+  // propagate on the next solve.
+  private bool FireComponentUpdates(double now) {
+    bool any = false;
+    foreach (var cmp in AllComponents()) {
+      if (cmp.ValidUntil <= now) {
+        cmp.Update(now);
+        any = true;
+      }
+    }
+    return any;
   }
 
   /// <summary>
