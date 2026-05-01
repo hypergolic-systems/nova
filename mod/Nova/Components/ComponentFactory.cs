@@ -5,6 +5,7 @@ using Nova.Core.Components.Crew;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Science;
 using Nova.Core.Components.Structural;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
@@ -31,6 +32,8 @@ public static class ComponentFactory {
     ["NovaDockingModule"] = "DockingPort",
     ["NovaCrewModule"] = "Crew",
     ["NovaCommandModule"] = "Command",
+    ["NovaThermometerModule"] = "Thermometer",
+    ["NovaDataStorageModule"] = "DataStorage",
   };
 
   public static void RegisterModuleMapping(string moduleName, string typeName) {
@@ -66,6 +69,8 @@ public static class ComponentFactory {
       "DockingPort" => CreateDockingPort(moduleNode),
       "Crew" => CreateCrew(moduleNode),
       "Command" => CreateCommand(moduleNode),
+      "Thermometer" => CreateThermometer(moduleNode),
+      "DataStorage" => CreateDataStorage(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
@@ -224,6 +229,18 @@ public static class ComponentFactory {
     return new Command {
       IdleDraw = double.Parse(node.GetValue("idleDraw")),
       TestLoadRate = double.Parse(node.GetValue("testLoadRate")),
+    };
+  }
+
+  public static Thermometer CreateThermometer(ConfigNode node) {
+    return new Thermometer {
+      EcRate = double.Parse(node.GetValue("ecRate")),
+    };
+  }
+
+  public static DataStorage CreateDataStorage(ConfigNode node) {
+    return new DataStorage {
+      CapacityBytes = long.Parse(node.GetValue("capacityBytes")),
     };
   }
 }

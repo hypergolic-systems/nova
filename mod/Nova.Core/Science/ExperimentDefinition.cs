@@ -6,6 +6,11 @@ namespace Nova.Core.Science;
 public abstract class ExperimentDefinition {
   public abstract string Id { get; }
 
+  // Bytes a single file from this experiment occupies in storage.
+  // Constant per experiment for now; refine if/when partial transmission
+  // or variable-sized payloads land.
+  public abstract long FileSizeBytes { get; }
+
   // Is this experiment runnable in the given context?
   public abstract bool IsApplicable(SubjectContext ctx);
 

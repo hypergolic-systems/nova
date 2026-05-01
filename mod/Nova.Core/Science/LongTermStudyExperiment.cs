@@ -12,6 +12,8 @@ public class LongTermStudyExperiment : ExperimentDefinition {
 
   public override string Id => ExperimentId;
 
+  public override long FileSizeBytes => 5_000;
+
   public override bool IsApplicable(SubjectContext ctx) =>
       ctx.Situation != Situation.None && ctx.BodyYearSeconds > 0;
 

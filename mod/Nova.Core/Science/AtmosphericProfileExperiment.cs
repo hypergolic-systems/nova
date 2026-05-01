@@ -16,6 +16,8 @@ public class AtmosphericProfileExperiment : ExperimentDefinition {
 
   public override string Id => ExperimentId;
 
+  public override long FileSizeBytes => 1_000;
+
   public override bool IsApplicable(SubjectContext ctx) =>
       layers.LayerAt(ctx.BodyName, ctx.Altitude).HasValue;
 
