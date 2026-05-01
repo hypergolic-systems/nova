@@ -19,6 +19,13 @@ public class Thermometer : VirtualComponent {
   // Prefab — set by ComponentFactory from cfg. Not persisted.
   public double EcRate;
 
+  // Player-facing name stamped onto every emitted file. Set by the
+  // mod-side PartModule from `part.partInfo.title` so the UI can show
+  // "2HOT Thermometer" without needing to round-trip through the
+  // structure topic. Falls back to the class name when the mod side
+  // hasn't initialised yet (tests).
+  public string InstrumentName = "Thermometer";
+
   // State.
   public bool   AtmActive;
   public bool   LtsActive;
@@ -50,6 +57,7 @@ public class Thermometer : VirtualComponent {
       ExperimentId = subject.ExperimentId,
       Fidelity     = 1.0,
       ProducedAt   = nowUT,
+      Instrument   = InstrumentName,
     }, AtmosphericProfileExperiment.FileSizeBytes);
   }
 
@@ -102,6 +110,7 @@ public class Thermometer : VirtualComponent {
       ExperimentId = LongTermStudyExperiment.ExperimentId,
       Fidelity     = fidelity,
       ProducedAt   = nowUT,
+      Instrument   = InstrumentName,
     }, LongTermStudyExperiment.FileSizeBytes);
   }
 

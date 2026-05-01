@@ -401,6 +401,8 @@ public sealed class NovaPartTopic : Topic {
           JsonWriter.WriteString(sb, file.ExperimentId ?? "");
           WriteNum(sb, file.Fidelity, ref ff);
           WriteNum(sb, file.ProducedAt, ref ff);
+          JsonWriter.Sep(sb, ref ff);
+          JsonWriter.WriteString(sb, file.Instrument ?? "");
           JsonWriter.End(sb, ']');
         }
         JsonWriter.End(sb, ']');

@@ -209,6 +209,7 @@ message ScienceFile {
   string experiment_id = 2;   // "atm-profile", "lts", etc.
   double fidelity      = 3;   // [0,1]
   double produced_at   = 4;   // UT when emitted
+  string instrument    = 5;   // Player-facing name of the instrument that produced it
 }
 
 message DataStorageState {

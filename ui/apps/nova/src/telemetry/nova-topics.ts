@@ -66,6 +66,7 @@ export type NovaScienceFileFrame = [
   experimentId: string,
   fidelity: number,
   producedAt: number,
+  instrument: string,
 ];
 
 export type NovaDataStorageFrame = [
@@ -218,6 +219,10 @@ export interface ScienceFile {
   fidelity: number;
   /** UT (seconds) when the file was sealed. */
   producedAt: number;
+  /** Player-facing name of the instrument that produced this file
+   *  ("2HOT Thermometer", etc.). Stamped at emit-time so files in
+   *  storage carry attribution after the producing part is gone. */
+  instrument: string;
 }
 
 export interface DataStorageState {
@@ -450,11 +455,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           usedBytes: c[1],
           capacityBytes: c[2],
           fileCount: c[3],
-          files: c[4].map(([subjectId, experimentId, fidelity, producedAt]) => ({
+          files: c[4].map(([subjectId, experimentId, fidelity, producedAt, instrument]) => ({
             subjectId,
             experimentId,
             fidelity,
             producedAt,
+            instrument,
           })),
         });
         break;

@@ -133,11 +133,7 @@
               <div class="sci__row-stack">
                 <div class="sci__row-line">
                   <span class="sci__row-name">{p.struct.title}</span>
-                  <span class="sci__row-meta">
-                    <span class="sci__row-files">{t.files} file{t.files === 1 ? '' : 's'}</span>
-                    <span class="sci__row-sep">·</span>
-                    <span class="sci__row-bytes">{fmtBytes(t.used)}<em>/{fmtBytes(t.cap)}</em></span>
-                  </span>
+                  <span class="sci__row-count">{t.files}</span>
                   <button
                     type="button"
                     class="sci__view-btn"
@@ -376,22 +372,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .sci__row-meta {
+  .sci__row-count {
     flex: 0 0 auto;
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    font-variant-numeric: tabular-nums;
     color: var(--fg-dim);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-  }
-  .sci__row-files { color: var(--fg-dim); }
-  .sci__row-sep   { color: var(--fg-mute); }
-  .sci__row-bytes { color: var(--fg); }
-  .sci__row-bytes em {
-    font-style: normal;
-    color: var(--fg-mute);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    min-width: 24px;
+    text-align: right;
   }
 
   /* The VIEW button — small, monospaced, accent-bordered. Mirrors

@@ -43,10 +43,24 @@
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
   });
+
+  // Portal: pop the backdrop out of the in-tree stacking context (the
+  // FloatingWindow uses backdrop-filter, which makes its descendants'
+  // `position: fixed` resolve relative to it instead of the viewport).
+  // Re-parent to document.body so the modal genuinely covers the page.
+  function portalToBody(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  }
 </script>
 
 {#if open}
   <div
+    use:portalToBody
     class="md__backdrop"
     role="presentation"
     onclick={onBackdropClick}
@@ -98,9 +112,8 @@
   }
 
   .md__panel {
-    min-width: 360px;
-    max-width: min(720px, 90vw);
-    max-height: 80vh;
+    width: min(1400px, 96vw);
+    height: min(900px, 92vh);
     display: flex;
     flex-direction: column;
     background: var(--bg-panel-strong);

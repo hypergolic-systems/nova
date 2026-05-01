@@ -35,13 +35,15 @@ export function fmtMag(value: number): string {
   return value.toFixed(2);
 }
 
-// Bytes → "1.40 MB" / "120 KB" / "512 B" — binary KiB, but labelled with
-// the colloquial K/M/G letters that everyone reads as "size on disk".
+// Bytes → "1.40 MB" / "120 KB" / "512 B" — SI-decimal thresholds
+// (1000-based) since drive labelling is universally SI; reads more
+// honestly than binary KiB for a column the player thinks of as
+// "size on disk".
 export function fmtBytes(bytes: number): string {
   const abs = Math.abs(bytes);
-  if (abs >= 1024 * 1024 * 1024) return `${fmtMag(bytes / (1024 * 1024 * 1024))} GB`;
-  if (abs >= 1024 * 1024)        return `${fmtMag(bytes / (1024 * 1024))} MB`;
-  if (abs >= 1024)               return `${fmtMag(bytes / 1024)} KB`;
+  if (abs >= 1_000_000_000) return `${fmtMag(bytes / 1_000_000_000)} GB`;
+  if (abs >= 1_000_000)     return `${fmtMag(bytes / 1_000_000)} MB`;
+  if (abs >= 1_000)         return `${fmtMag(bytes / 1_000)} KB`;
   return `${Math.round(bytes)} B`;
 }
 

@@ -23,6 +23,12 @@ public class NovaThermometerModule : NovaPartModule {
     var thermometer = Components.OfType<Thermometer>().FirstOrDefault();
     if (thermometer == null) return;
 
+    // Stamp the part title once so subsequent emits (atm crossings,
+    // slice rollovers fired from VirtualVessel.Tick) carry a
+    // player-facing name without needing live KSP context.
+    if (thermometer.InstrumentName == "Thermometer" && part?.partInfo?.title != null)
+      thermometer.InstrumentName = part.partInfo.title;
+
     var c = thermometer.Vessel.Context;
     double ut = Planetarium.GetUniversalTime();
 
