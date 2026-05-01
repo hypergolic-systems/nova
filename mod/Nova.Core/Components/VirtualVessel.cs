@@ -5,7 +5,6 @@ using System.Linq;
 using Nova.Core.Components;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
-using Nova.Core.Components.Science;
 using Nova.Core.Components.Structural;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
@@ -44,6 +43,16 @@ public class VirtualVessel {
   public double BodyRadius;
   public bool OrbitingSun;
 
+  // Current environment. Populated by the mod-side NovaVesselModule
+  // ahead of each Tick. For unloaded vessels these are stable (the
+  // body and situation don't change while parked). Read by science
+  // components for slice / subject computation.
+  public string BodyName;
+  public uint BodyId;
+  public Nova.Core.Science.Situation Situation;
+  public double BodyYearSeconds;
+  public double Altitude;
+
   public Action<string> Log;
 
   public ResourceSolver Solver => solver;
@@ -74,6 +83,7 @@ public class VirtualVessel {
       parts[id] = new Part { partName = partName, dryMass = dryMass, components = components };
     }
     partDryMasses[id] = dryMass;
+    foreach (var cmp in components) cmp.Vessel = this;
   }
 
   public void SetPartDryMass(uint id, double dryMass) {
@@ -94,28 +104,9 @@ public class VirtualVessel {
     WalkPartTree(rootNode, root.Key);
 
     BuildSolarDevice(rootNode);
-    WireScienceComponents();
 
     needsSolve = true;
     simulationTime = time;
-  }
-
-  // Hook each Thermometer's deposit callback to a closure that finds
-  // the first capacity-having DataStorage on this vessel. Called from
-  // InitializeSolver so Clone() (which calls InitializeSolver on the
-  // clone) re-binds to the clone, not the original.
-  private void WireScienceComponents() {
-    foreach (var t in AllComponents().OfType<Thermometer>()) {
-      t.Deposit = (file, sizeBytes) => {
-        var storage = AllComponents().OfType<DataStorage>()
-            .FirstOrDefault(s => s.CanDeposit(sizeBytes));
-        if (storage == null) {
-          Log?.Invoke($"[Science] No storage with capacity for {file.SubjectId}; dropped");
-          return false;
-        }
-        return storage.Deposit(file, sizeBytes);
-      };
-    }
   }
 
   // Sum every panel's rated ChargeRate and create one aggregate producer
@@ -146,6 +137,7 @@ public class VirtualVessel {
     var partDryMass = partDryMasses.TryGetValue(partId, out var mass) ? mass : 0;
 
     if (partEntry != null) {
+      foreach (var cmp in partEntry.components) cmp.Vessel = this;
       var decoupler = partEntry.components.OfType<Decoupler>().FirstOrDefault();
       if (decoupler != null) {
         var childNode = solver.AddNode();
@@ -518,10 +510,6 @@ public class VirtualVessel {
       // Wheel forecasts depend on the freshly-solved refill.Activity —
       // refresh after Solve so nextExpiry reflects the new state.
       UpdateReactionWheelForecasts();
-      // Science satisfaction tracking — accrue at OLD satisfaction up
-      // to simulationTime, then store the new value. Has to run after
-      // Solve so device.Satisfaction reflects the converged result.
-      RecordScienceSatisfaction();
       needsSolve = false;
       nextExpiry = ComputeNextExpiry(simulationTime);
     } catch (Exception e) {
@@ -652,12 +640,6 @@ public class VirtualVessel {
       }
     }
     return any;
-  }
-
-  private void RecordScienceSatisfaction() {
-    foreach (var cmp in AllComponents())
-      if (cmp is Thermometer t)
-        t.RecordSatisfaction(simulationTime);
   }
 
   /// <summary>

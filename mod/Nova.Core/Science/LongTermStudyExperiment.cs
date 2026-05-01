@@ -2,29 +2,20 @@ using System;
 
 namespace Nova.Core.Science;
 
-// "Sit and observe over time." Applicable in any situation. Subject =
-// (body, situation, sliceIndex). The body's solar year is divided into
-// 12 equal slices; each slice is its own subject so partial-fidelity
-// files for slice 7 don't merge with slice 8's data.
-public class LongTermStudyExperiment : ExperimentDefinition {
-  public const string ExperimentId = "lts";
-  public const int    SlicesPerYear = 12;
+// "Sit and observe over time." Body-year is divided into 12 slices;
+// each slice is its own subject so partial-fidelity files for slice 7
+// don't merge with slice 8's data.
+public static class LongTermStudyExperiment {
+  public const string ExperimentId   = "lts";
+  public const long   FileSizeBytes  = 5_000;
+  public const int    SlicesPerYear  = 12;
 
-  public override string Id => ExperimentId;
-
-  public override long FileSizeBytes => 5_000;
-
-  public override bool IsApplicable(SubjectContext ctx) =>
-      ctx.Situation != Situation.None && ctx.BodyYearSeconds > 0;
-
-  public override SubjectKey? ResolveSubject(SubjectContext ctx) {
-    if (!IsApplicable(ctx)) return null;
-    int slice = SliceIndexAt(ctx.UT, ctx.BodyYearSeconds);
-    return new SubjectKey(ExperimentId, ctx.BodyName, ctx.Situation.ToString(), slice);
+  public static SubjectKey SubjectFor(
+      string bodyName, Situation situation, double ut, double bodyYearSeconds) {
+    int slice = SliceIndexAt(ut, bodyYearSeconds);
+    return new SubjectKey(ExperimentId, bodyName, situation.ToString(), slice);
   }
 
-  // 0..SlicesPerYear-1. Wraps every body-year. Negative UT is well-defined
-  // via the modulo: slice index for ut=−1 on a 12 Ms year is 11.
   public static int SliceIndexAt(double ut, double bodyYearSeconds) {
     double sliceDuration = bodyYearSeconds / SlicesPerYear;
     double phase = ut - Math.Floor(ut / bodyYearSeconds) * bodyYearSeconds;
@@ -34,8 +25,6 @@ public class LongTermStudyExperiment : ExperimentDefinition {
     return slice;
   }
 
-  // UT of the next slice boundary strictly greater than `now`. Used by the
-  // Thermometer (M3) to set its component ValidUntil.
   public static double NextSliceBoundary(double now, double bodyYearSeconds) {
     double sliceDuration = bodyYearSeconds / SlicesPerYear;
     double yearStart = Math.Floor(now / bodyYearSeconds) * bodyYearSeconds;
@@ -43,4 +32,7 @@ public class LongTermStudyExperiment : ExperimentDefinition {
     int slice = (int)Math.Floor(phase / sliceDuration);
     return yearStart + (slice + 1) * sliceDuration;
   }
+
+  public static double SliceDurationFor(double bodyYearSeconds) =>
+      bodyYearSeconds / SlicesPerYear;
 }

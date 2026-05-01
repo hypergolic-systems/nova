@@ -8,6 +8,12 @@ public class VirtualComponent {
 
   public string Name { get; private set; }
 
+  // Back-reference to the host vessel. Set by VirtualVessel.AddPart
+  // and refreshed during WalkPartTree (so Clone() ends up pointing at
+  // the clone). Components that need cross-vessel access (e.g. the
+  // Thermometer walking storages) read this directly.
+  public VirtualVessel Vessel { get; internal set; }
+
   // Wake-time for event-driven components (slice rollover, scheduled
   // emissions, etc). VirtualVessel.Tick advances simulationTime to the
   // earliest ValidUntil across all devices and components, then calls

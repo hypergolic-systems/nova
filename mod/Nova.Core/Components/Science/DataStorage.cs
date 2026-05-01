@@ -43,10 +43,7 @@ public class DataStorage : VirtualComponent {
     UsedBytes = 0;
     foreach (var f in state.DataStorage.Files) {
       Files.Add(f);
-      // Re-derive used bytes from saved files. Since per-file size lives
-      // on the caller, we'd lose it here — but for M2 every experiment
-      // emits a fixed-size file, so reconstruct via the registry.
-      UsedBytes += FileSizeFor(f);
+      UsedBytes += FileSizeFor(f.ExperimentId);
     }
   }
 
@@ -56,13 +53,17 @@ public class DataStorage : VirtualComponent {
     state.DataStorage = s;
   }
 
-  // Per-file byte cost. For M2 this is a constant resolved through the
-  // experiment registry; the registry-less Load path has to fall back
-  // to a default. When transmission lands and per-file size matters,
-  // this becomes a property on ScienceFile or stamped at emit time.
-  private static long FileSizeFor(ScienceFile f) {
-    var exp = Nova.Core.Science.ExperimentRegistry.Instance?.Get(f.ExperimentId);
-    return exp != null ? exp.FileSizeBytes : 1000;
+  // Hardcoded per-experiment byte cost. Mirrors the constants on each
+  // experiment class. Eight bytes lost in space, balance later if it
+  // matters.
+  private static long FileSizeFor(string experimentId) {
+    return experimentId switch {
+      Nova.Core.Science.AtmosphericProfileExperiment.ExperimentId
+        => Nova.Core.Science.AtmosphericProfileExperiment.FileSizeBytes,
+      Nova.Core.Science.LongTermStudyExperiment.ExperimentId
+        => Nova.Core.Science.LongTermStudyExperiment.FileSizeBytes,
+      _ => 1_000,
+    };
   }
 
   public override VirtualComponent Clone() {

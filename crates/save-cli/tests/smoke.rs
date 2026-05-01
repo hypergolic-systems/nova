@@ -77,7 +77,6 @@ fn dump_craft_roundtrip() {
         tank_volume: None,
         battery: Some(BatteryStructure { capacity: 50.0 }),
         data_storage: None,
-        thermometer: None,
     });
     vessel.structure = Some(structure);
     craft.vessel = Some(vessel);

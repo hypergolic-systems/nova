@@ -1,7 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Nova.Core.Components.Science;
 using Nova.Core.Persistence.Protos;
-using Nova.Core.Science;
 
 namespace Nova.Tests.Science;
 
@@ -22,7 +21,7 @@ public class DataStorageTests {
     var s = new DataStorage { CapacityBytes = 2500 };
     Assert.IsTrue(s.Deposit(MakeFile(), 1000));
     Assert.IsTrue(s.Deposit(MakeFile(), 1000));
-    Assert.IsFalse(s.Deposit(MakeFile(), 1000), "Third deposit should fail — only 500 bytes free");
+    Assert.IsFalse(s.Deposit(MakeFile(), 1000));
     Assert.AreEqual(2, s.Files.Count);
     Assert.AreEqual(2000, s.UsedBytes);
     Assert.AreEqual(500,  s.FreeBytes);
@@ -30,11 +29,6 @@ public class DataStorageTests {
 
   [TestMethod]
   public void RoundTrip_ThroughProto_RestoresFiles() {
-    // Registry needs the experiment to compute byte sizes on Load.
-    var reg = new ExperimentRegistry();
-    reg.Register(new AtmosphericProfileExperiment(new AtmosphereLayers()));
-    ExperimentRegistry.Instance = reg;
-
     var src = new DataStorage { CapacityBytes = 10_000 };
     src.Deposit(MakeFile("atm-profile@Kerbin:troposphere"),  1000);
     src.Deposit(MakeFile("atm-profile@Kerbin:stratosphere"), 1000);

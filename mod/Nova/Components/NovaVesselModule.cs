@@ -379,6 +379,27 @@ public class NovaVesselModule : VesselModule {
       ? vessel.orbit.period : double.PositiveInfinity;
     Virtual.BodyRadius = vessel.mainBody.Radius;
     Virtual.OrbitingSun = vessel.mainBody == FlightGlobals.Bodies[0];
+
+    // Environment context for science components — fresh on every
+    // FixedUpdate, including for unloaded vessels (VesselModules fire
+    // regardless of loaded state).
+    Virtual.BodyName        = vessel.mainBody.bodyName;
+    Virtual.BodyId          = (uint)vessel.mainBody.flightGlobalsIndex;
+    Virtual.Situation       = (Nova.Core.Science.Situation)(int)ScienceUtil.GetExperimentSituation(vessel);
+    Virtual.Altitude        = vessel.altitude;
+    Virtual.BodyYearSeconds = ResolveBodyYear(vessel.mainBody);
+  }
+
+  private static double ResolveBodyYear(CelestialBody body) {
+    var byName = FlightGlobals.Bodies.ToDictionary(b => b.bodyName, b => b);
+    return Nova.Core.Science.BodyYear.For(
+      body.bodyName,
+      bn => {
+        var b = byName[bn];
+        var rb = b.referenceBody;
+        return rb == null || rb == b ? null : rb.bodyName;
+      },
+      bn => byName[bn].orbit?.period ?? 0);
   }
 
   private List<NovaRcsModule> cachedRcsModules;

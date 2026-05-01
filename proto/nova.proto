@@ -105,7 +105,6 @@ message PartStructure {
   TankVolumeStructure tank_volume = 8;
   BatteryStructure    battery = 9;
   DataStorageStructure data_storage = 10;
-  ThermometerStructure thermometer = 11;
 }
 
 message Attachment {
@@ -140,10 +139,6 @@ message BatteryStructure {
 
 message DataStorageStructure {
   int64 capacity_bytes = 1;
-}
-
-message ThermometerStructure {
-  double ec_rate = 1;       // EC consumed per second when active
 }
 
 // --- State (dynamic, changes during flight or in editor) ---
@@ -220,19 +215,16 @@ message DataStorageState {
   repeated ScienceFile files = 1;
 }
 
-// Snapshot of the long-term-study accumulator. Sufficient state to keep
-// advancing on an unloaded vessel via VirtualVessel.Tick — no live
-// Vessel access required (last_known_* mirror what the PartModule last
-// saw on the loaded vessel).
+// Thermometer state. Body / situation / body-year are NOT here —
+// they're vessel-level (VirtualVessel.BodyName/Situation/...), so a
+// single source of truth for "where is this vessel" exists across all
+// components.
 message ThermometerState {
-  string active_subject_id           = 1;  // "" when no active LTS
-  double accumulated_active_seconds  = 2;
-  double last_update_ut              = 3;
-  double last_known_satisfaction     = 4;  // [0,1] EC fulfilment ratio
-  int32  last_known_situation        = 5;  // ExperimentSituations enum
-  uint32 last_known_body             = 6;  // CelestialBody flightGlobalsIndex
-  string last_known_body_name        = 7;  // mirror of body — used for SubjectKey
-  double last_known_body_year_seconds = 8; // resolved via BodyYear walk
+  bool   atm_active             = 1;
+  bool   lts_active             = 2;
+  string lts_subject_id         = 3;  // identifies the in-progress LTS file
+  double lts_accumulated_seconds = 4; // progress toward fidelity 1.0
+  double lts_last_update_ut     = 5;
 }
 
 // --- Flight state (only on in-flight vessels) ---
