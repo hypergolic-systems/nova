@@ -338,8 +338,7 @@ public class NovaVesselModule : VesselModule {
       NeedsSolverRebuild = false;
       Virtual.InitializeSolver(Planetarium.GetUniversalTime());
     }
-    UpdateShadowParams();
-    UpdateEnvironmentContext();
+    if (Virtual.Context == null) Virtual.Context = new KspVesselContext(vessel);
     SolveAttitude();
     Virtual.Tick(Planetarium.GetUniversalTime());
 
@@ -364,47 +363,6 @@ public class NovaVesselModule : VesselModule {
     OnVesselFullLoad(node);
   }
 
-  private void UpdateShadowParams() {
-    if (vessel?.orbit == null) return;
-    Virtual.GetVesselPosition = ut => {
-      var pos = vessel.orbit.getRelativePositionAtUT(ut).xzy;
-      return new Vec3d(pos.x, pos.y, pos.z);
-    };
-    Virtual.GetSunDirection = ut => {
-      var sunPos = FlightGlobals.Bodies[0].getTruePositionAtUT(ut);
-      var bodyPos = vessel.mainBody.getTruePositionAtUT(ut);
-      var rel = sunPos - bodyPos;
-      return new Vec3d(rel.x, rel.y, rel.z);
-    };
-    Virtual.OrbitPeriod = vessel.orbit.eccentricity < 1.0
-      ? vessel.orbit.period : double.PositiveInfinity;
-    Virtual.BodyRadius = vessel.mainBody.Radius;
-    Virtual.OrbitingSun = vessel.mainBody == FlightGlobals.Bodies[0];
-  }
-
-  // Body / situation / altitude / body-year — read by science
-  // components. Fresh on every FixedUpdate including for unloaded
-  // vessels (VesselModules fire regardless of loaded state).
-  private void UpdateEnvironmentContext() {
-    if (vessel?.mainBody == null) return;
-    Virtual.BodyName        = vessel.mainBody.bodyName;
-    Virtual.BodyId          = (uint)vessel.mainBody.flightGlobalsIndex;
-    Virtual.Situation       = (Nova.Core.Science.Situation)(int)ScienceUtil.GetExperimentSituation(vessel);
-    Virtual.Altitude        = vessel.altitude;
-    Virtual.BodyYearSeconds = ResolveBodyYear(vessel.mainBody);
-  }
-
-  private static double ResolveBodyYear(CelestialBody body) {
-    var byName = FlightGlobals.Bodies.ToDictionary(b => b.bodyName, b => b);
-    return Nova.Core.Science.BodyYear.For(
-      body.bodyName,
-      bn => {
-        var b = byName[bn];
-        var rb = b.referenceBody;
-        return rb == null || rb == b ? null : rb.bodyName;
-      },
-      bn => byName[bn].orbit?.period ?? 0);
-  }
 
   private List<NovaRcsModule> cachedRcsModules;
   private List<NovaReactionWheelModule> cachedWheelModules;

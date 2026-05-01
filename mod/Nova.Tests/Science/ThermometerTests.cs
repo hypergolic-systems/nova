@@ -7,6 +7,7 @@ using Nova.Core.Components.Science;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
 using Nova.Core.Science;
+using Nova.Tests.TestHelpers;
 using Buffer = Nova.Core.Resources.Buffer;
 
 namespace Nova.Tests.Science;
@@ -25,12 +26,7 @@ public class ThermometerTests {
     };
     var therm = new Thermometer { EcRate = ecRate };
     var storage = new DataStorage { CapacityBytes = 100_000 };
-    var vessel = new VirtualVessel {
-      BodyName = "Kerbin",
-      BodyId = 1,
-      Situation = Situation.SrfLanded,
-      BodyYearSeconds = 9_203_545,
-    };
+    var vessel = new VirtualVessel { Context = new StubVesselContext() };
     vessel.AddPart(1, "pod", 0, new List<VirtualComponent> { battery, therm, storage });
     vessel.UpdatePartTree(new Dictionary<uint, uint?> { { 1u, null } });
     vessel.InitializeSolver(0);
@@ -76,7 +72,7 @@ public class ThermometerTests {
       LtsLastUpdateUT = 9876,
     };
     var dst = new Thermometer { EcRate = 0.05 };
-    var v = new VirtualVessel { BodyName = "Kerbin", BodyYearSeconds = 9_203_545 };
+    var v = new VirtualVessel { Context = new StubVesselContext() };
     v.AddPart(1, "pod", 0, new List<VirtualComponent> { src });
     v.AddPart(2, "pod2", 0, new List<VirtualComponent> { dst });
 

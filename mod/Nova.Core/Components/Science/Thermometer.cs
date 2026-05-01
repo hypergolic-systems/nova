@@ -67,7 +67,7 @@ public class Thermometer : VirtualComponent {
       LtsAccumulatedSeconds = 0;
       LtsLastUpdateUT       = nowUT;
       ValidUntil            = LongTermStudyExperiment.NextSliceBoundary(
-                                  nowUT, Vessel.BodyYearSeconds);
+                                  nowUT, Vessel.Context.BodyYearSeconds);
     } else {
       LtsActive    = false;
       LtsSubjectId = null;
@@ -80,20 +80,21 @@ public class Thermometer : VirtualComponent {
     FinaliseAndEmitCurrentSlice(nowUT);
 
     // Begin the next slice on the same body+situation.
+    var c = Vessel.Context;
     var next = LongTermStudyExperiment.SubjectFor(
-        Vessel.BodyName, Vessel.Situation, nowUT, Vessel.BodyYearSeconds);
+        c.BodyName, c.Situation, nowUT, c.BodyYearSeconds);
     LtsSubjectId          = next.ToString();
     LtsAccumulatedSeconds = 0;
     LtsLastUpdateUT       = nowUT;
     ValidUntil            = LongTermStudyExperiment.NextSliceBoundary(
-                                nowUT, Vessel.BodyYearSeconds);
+                                nowUT, Vessel.Context.BodyYearSeconds);
   }
 
   private void FinaliseAndEmitCurrentSlice(double nowUT) {
     double dt = nowUT - LtsLastUpdateUT;
     LtsAccumulatedSeconds += dt * device.Satisfaction;
 
-    double sliceDuration = LongTermStudyExperiment.SliceDurationFor(Vessel.BodyYearSeconds);
+    double sliceDuration = LongTermStudyExperiment.SliceDurationFor(Vessel.Context.BodyYearSeconds);
     double fidelity = Math.Min(1.0, Math.Max(0.0, LtsAccumulatedSeconds / sliceDuration));
 
     Deposit(new ScienceFile {
@@ -124,7 +125,7 @@ public class Thermometer : VirtualComponent {
     LtsLastUpdateUT       = t.LtsLastUpdateUt;
     if (LtsActive)
       ValidUntil = LongTermStudyExperiment.NextSliceBoundary(
-          LtsLastUpdateUT, Vessel.BodyYearSeconds);
+          LtsLastUpdateUT, Vessel.Context.BodyYearSeconds);
   }
 
   public override void Save(PartState state) {

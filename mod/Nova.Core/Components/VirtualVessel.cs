@@ -37,21 +37,10 @@ public class VirtualVessel {
   private bool vesselSunlit = true;
   private double nextShadowTransitionUT = double.PositiveInfinity;
 
-  public Func<double, Vec3d> GetVesselPosition;
-  public Func<double, Vec3d> GetSunDirection;
-  public double OrbitPeriod;
-  public double BodyRadius;
-  public bool OrbitingSun;
-
-  // Current environment. Populated by the mod-side NovaVesselModule
-  // ahead of each Tick. For unloaded vessels these are stable (the
-  // body and situation don't change while parked). Read by science
-  // components for slice / subject computation.
-  public string BodyName;
-  public uint BodyId;
-  public Nova.Core.Science.Situation Situation;
-  public double BodyYearSeconds;
-  public double Altitude;
+  // Live adapter over the host KSP vessel. Mod-side wraps `vessel`;
+  // tests inject a stub. Single source of truth for body, situation,
+  // orbit, etc — no caching, no sync hazard.
+  public IVesselContext Context;
 
   public Action<string> Log;
 
@@ -596,8 +585,9 @@ public class VirtualVessel {
   }
 
   private void UpdateShadowState() {
-    var shadow = ShadowCalculator.Compute(GetVesselPosition, GetSunDirection,
-        OrbitPeriod, BodyRadius, OrbitingSun, simulationTime);
+    if (Context == null) return;
+    var shadow = ShadowCalculator.Compute(Context.VesselPositionAt, Context.SunDirectionAt,
+        Context.OrbitPeriod, Context.BodyRadius, Context.OrbitingSun, simulationTime);
     vesselSunlit = shadow.InSunlight;
     nextShadowTransitionUT = shadow.NextTransitionUT;
     // Stamp per-panel for telemetry — Power view's per-panel rows still

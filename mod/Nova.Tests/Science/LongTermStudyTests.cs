@@ -6,6 +6,7 @@ using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Science;
 using Nova.Core.Resources;
 using Nova.Core.Science;
+using Nova.Tests.TestHelpers;
 using Buffer = Nova.Core.Resources.Buffer;
 
 namespace Nova.Tests.Science;
@@ -28,10 +29,7 @@ public class LongTermStudyTests {
     var therm = new Thermometer { EcRate = 0.0075 };
     var storage = new DataStorage { CapacityBytes = 1_000_000 };
     var vessel = new VirtualVessel {
-      BodyName = "Kerbin",
-      BodyId = 1,
-      Situation = Situation.SrfLanded,
-      BodyYearSeconds = BodyYearSeconds,
+      Context = new StubVesselContext { BodyYearSeconds = BodyYearSeconds },
     };
     vessel.AddPart(1, "pod", 0, new List<VirtualComponent> { battery, therm, storage });
     vessel.UpdatePartTree(new Dictionary<uint, uint?> { { 1u, null } });
@@ -45,7 +43,8 @@ public class LongTermStudyTests {
   // rollover fires.
   private static void StartLts(Thermometer t, double nowUT) {
     var v = t.Vessel;
-    var subject = LongTermStudyExperiment.SubjectFor(v.BodyName, v.Situation, nowUT, v.BodyYearSeconds);
+    var c = v.Context;
+    var subject = LongTermStudyExperiment.SubjectFor(c.BodyName, c.Situation, nowUT, c.BodyYearSeconds);
     t.StartOrSwitchLts(subject, nowUT);
     v.Invalidate();
     v.Tick(nowUT);  // forces DoSolve with the new active state
@@ -116,7 +115,7 @@ public class LongTermStudyTests {
     vessel.Tick(SliceDuration / 2);                // half a slice elapses
 
     // Liftoff: situation flips to FlyingLow.
-    therm.Vessel.Situation = Situation.FlyingLow;
+    ((StubVesselContext)therm.Vessel.Context).Situation = Situation.FlyingLow;
     var newSubject = LongTermStudyExperiment.SubjectFor(
         "Kerbin", Situation.FlyingLow, SliceDuration / 2, BodyYearSeconds);
     therm.StartOrSwitchLts(newSubject, SliceDuration / 2);

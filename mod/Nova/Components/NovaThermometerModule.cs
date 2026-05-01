@@ -23,11 +23,11 @@ public class NovaThermometerModule : NovaPartModule {
     var thermometer = Components.OfType<Thermometer>().FirstOrDefault();
     if (thermometer == null) return;
 
-    var v = thermometer.Vessel;
+    var c = thermometer.Vessel.Context;
     double ut = Planetarium.GetUniversalTime();
 
     // --- Atmospheric Profile: edge-detected layer crossings.
-    var atmSubject = AtmosphericProfileExperiment.SubjectAt(v.BodyName, v.Altitude);
+    var atmSubject = AtmosphericProfileExperiment.SubjectAt(c.BodyName, c.Altitude);
     var currentLayer = atmSubject?.Variant;
     if (currentLayer != null && currentLayer != lastAtmLayer)
       thermometer.EmitAtmFile(atmSubject.Value, ut);
@@ -35,19 +35,19 @@ public class NovaThermometerModule : NovaPartModule {
     thermometer.AtmActive = currentLayer != null;
 
     // --- Long-Term Study: situation/body change → finalise + restart.
-    var ltsSubject = v.Situation != Situation.None && v.BodyYearSeconds > 0
-        ? (SubjectKey?)LongTermStudyExperiment.SubjectFor(v.BodyName, v.Situation, ut, v.BodyYearSeconds)
+    var ltsSubject = c.Situation != Situation.None && c.BodyYearSeconds > 0
+        ? (SubjectKey?)LongTermStudyExperiment.SubjectFor(c.BodyName, c.Situation, ut, c.BodyYearSeconds)
         : null;
     bool needSwitch = ltsSubject.HasValue
-        ? !LtsSubjectMatchesBodyAndSituation(thermometer.LtsSubjectId, v)
+        ? !LtsSubjectMatchesBodyAndSituation(thermometer.LtsSubjectId, c)
         : thermometer.LtsActive;
     if (needSwitch)
       thermometer.StartOrSwitchLts(ltsSubject, ut);
   }
 
-  private static bool LtsSubjectMatchesBodyAndSituation(string subjectId, Nova.Core.Components.VirtualVessel v) {
+  private static bool LtsSubjectMatchesBodyAndSituation(string subjectId, Nova.Core.Components.IVesselContext c) {
     if (string.IsNullOrEmpty(subjectId)) return false;
     if (!SubjectKey.TryParse(subjectId, out var key)) return false;
-    return key.BodyName == v.BodyName && key.Variant == v.Situation.ToString();
+    return key.BodyName == c.BodyName && key.Variant == c.Situation.ToString();
   }
 }
