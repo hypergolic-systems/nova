@@ -26,6 +26,15 @@ public class Thermometer : VirtualComponent {
   // hasn't initialised yet (tests).
   public string InstrumentName = "Thermometer";
 
+  // Experiments this instrument can run. Surfaced to the UI via the
+  // 'IN' telemetry frame so the SCI tab's Instruments section shows
+  // the player what each device is capable of producing. Order is
+  // stable for deterministic UI rendering.
+  public static readonly string[] SupportedExperiments = new[] {
+    AtmosphericProfileExperiment.ExperimentId,
+    LongTermStudyExperiment.ExperimentId,
+  };
+
   // State.
   public bool   AtmActive;
   public bool   LtsActive;

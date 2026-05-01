@@ -73,8 +73,9 @@ const FIXTURE_PARTS: PartFixture[] = [
     parentId: '5001',
     tags: ['power-consume', 'science-instrument'],
     components: [
-      // No 'T' frame yet — that lands with the Experiments panel.
-      // For the moment the part shows up only in the structure list.
+      // Capability frame: name + supported experiment ids. The UI
+      // section maps ids to display labels via science-labels.ts.
+      ['IN', '2HOT Thermometer', ['atm-profile', 'lts']],
     ],
   },
   {

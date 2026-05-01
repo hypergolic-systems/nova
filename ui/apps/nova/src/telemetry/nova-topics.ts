@@ -77,6 +77,15 @@ export type NovaDataStorageFrame = [
   files: NovaScienceFileFrame[],
 ];
 
+// Capability descriptor for a science instrument. Static metadata
+// (name + experiment id list) — live experiment progress lands later
+// as a separate frame when the Experiments panel arrives.
+export type NovaInstrumentFrame = [
+  'IN',
+  instrumentName: string,
+  experimentIds: string[],
+];
+
 export type NovaComponentFrame =
   | NovaSolarFrame
   | NovaBatteryFrame
@@ -86,7 +95,8 @@ export type NovaComponentFrame =
   | NovaTankFrame
   | NovaCommandFrame
   | NovaFuelCellFrame
-  | NovaDataStorageFrame;
+  | NovaDataStorageFrame
+  | NovaInstrumentFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -225,6 +235,14 @@ export interface ScienceFile {
   instrument: string;
 }
 
+export interface InstrumentState {
+  /** Player-facing instrument name ("2HOT Thermometer"). */
+  name: string;
+  /** Wire-format experiment ids the instrument can run. UI maps to
+   *  display labels via `science-labels`. */
+  experimentIds: string[];
+}
+
 export interface DataStorageState {
   /** Bytes occupied by the files currently in storage. Live counter
    *  — files come and go as experiments emit and (eventually) transmit. */
@@ -273,6 +291,7 @@ export interface NovaPart {
   command: CommandState[];
   fuelCell: FuelCellState[];
   dataStorage: DataStorageState[];
+  instrument: InstrumentState[];
 }
 
 export interface NovaPartStruct {
@@ -396,6 +415,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     command: [],
     fuelCell: [],
     dataStorage: [],
+    instrument: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -448,6 +468,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           lh2ManifoldFraction: c[5],
           loxManifoldFraction: c[6],
           refillActive: c[7] === 1,
+        });
+        break;
+      case 'IN':
+        out.instrument.push({
+          name: c[1],
+          experimentIds: c[2],
         });
         break;
       case 'DS':

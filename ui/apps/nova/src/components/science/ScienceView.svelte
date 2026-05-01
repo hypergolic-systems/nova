@@ -10,13 +10,15 @@
   import SegmentGauge from '../SegmentGauge.svelte';
   import FileListModal from './FileListModal.svelte';
   import { fmtBytes } from '../../util/units';
+  import { experimentLabel } from '../../util/science-labels';
 
   interface Props {
     vesselId: string;
   }
   const { vesselId }: Props = $props();
 
-  const storages = useNovaPartsByTag(() => vesselId, 'science-storage');
+  const instruments = useNovaPartsByTag(() => vesselId, 'science-instrument');
+  const storages    = useNovaPartsByTag(() => vesselId, 'science-storage');
 
   // Aggregate roll-up across every DataStorage on the vessel. The
   // header summary uses these as numerator/denominator and the
@@ -37,6 +39,11 @@
   });
 
   const aggregateFraction = $derived(totals.cap > 0 ? totals.used / totals.cap : 0);
+
+  let instrOpen = $state(true);
+  function toggleInstr(): void {
+    instrOpen = !instrOpen;
+  }
 
   let storeOpen = $state(true);
   function toggleStore(): void {
@@ -92,6 +99,57 @@
 </script>
 
 <section class="sci">
+  <!-- Instruments ---------------------------------------------- -->
+  <div class="sci__node">
+    <button
+      type="button"
+      class="sci__node-head"
+      aria-expanded={instrOpen}
+      onclick={toggleInstr}
+    >
+      <span class="sci__chev" aria-hidden="true">{instrOpen ? '▾' : '▸'}</span>
+      <span class="sci__node-title">INSTRUMENTS</span>
+      <span class="sci__node-summary">
+        {#if instruments.current.length > 0}
+          <span class="sci__node-files">{instruments.current.length}</span>
+        {:else}
+          <span class="sci__node-empty">—</span>
+        {/if}
+      </span>
+    </button>
+
+    {#if instrOpen}
+      {#if instruments.current.length === 0}
+        <p class="sci__empty">No science instruments on this vessel.</p>
+      {:else}
+        <ul class="sci__instr-rows">
+          {#each instruments.current as p (p.struct.id)}
+            {@const inst = p.state?.instrument[0]}
+            <li class="sci__instr">
+              <div class="sci__instr-head">
+                <span class="sci__row-icon">
+                  <ComponentIcon kind="thermometer" />
+                </span>
+                <span class="sci__instr-name">{p.struct.title}</span>
+              </div>
+              {#if inst && inst.experimentIds.length > 0}
+                <ul class="sci__exp-rows">
+                  {#each inst.experimentIds as expId (expId)}
+                    <li class="sci__exp">
+                      <span class="sci__exp-bullet" aria-hidden="true">·</span>
+                      <span class="sci__exp-label">{experimentLabel(expId)}</span>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
+  </div>
+
+  <!-- Storage -------------------------------------------------- -->
   <div class="sci__node">
     <button
       type="button"
@@ -379,6 +437,70 @@
     font-size: 11px;
     min-width: 24px;
     text-align: right;
+  }
+
+  /* ---- Instruments section ----------------------------------- */
+  .sci__instr-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .sci__instr {
+    padding: 6px 4px;
+    position: relative;
+    border-left: 2px solid transparent;
+    transition:
+      background 160ms ease,
+      border-left-color 160ms ease;
+  }
+  .sci__instr:hover {
+    background: rgba(126, 245, 184, 0.04);
+    border-left-color: var(--accent-dim);
+  }
+  .sci__instr-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .sci__instr:hover .sci__row-icon {
+    color: var(--accent);
+  }
+  .sci__instr-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sci__exp-rows {
+    list-style: none;
+    margin: 4px 0 2px 24px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .sci__exp {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--fg-dim);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+  }
+  .sci__exp-bullet {
+    color: var(--accent-dim);
+    font-family: var(--font-display);
+  }
+  .sci__exp-label {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
   }
 
   /* The VIEW button — small, monospaced, accent-bordered. Mirrors

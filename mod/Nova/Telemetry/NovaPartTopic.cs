@@ -377,6 +377,24 @@ public sealed class NovaPartTopic : Topic {
         JsonWriter.End(sb, ']');
         return true;
       }
+      case Thermometer thermometer: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "IN", ref f);
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.WriteString(sb, thermometer.InstrumentName ?? "");
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.Begin(sb, '[');
+        bool firstExp = true;
+        foreach (var expId in Thermometer.SupportedExperiments) {
+          JsonWriter.Sep(sb, ref firstExp);
+          JsonWriter.WriteString(sb, expId);
+        }
+        JsonWriter.End(sb, ']');
+        JsonWriter.End(sb, ']');
+        return true;
+      }
       case DataStorage storage: {
         JsonWriter.Sep(sb, ref first);
         JsonWriter.Begin(sb, '[');

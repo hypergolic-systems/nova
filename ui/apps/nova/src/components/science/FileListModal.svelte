@@ -7,6 +7,7 @@
 
   import type { ScienceFile } from '../../telemetry/nova-topics';
   import { fmtMag, fmtBytes, fmtDuration } from '../../util/units';
+  import { EXPERIMENT_LABELS } from '../../util/science-labels';
   import Modal from '../Modal.svelte';
 
   interface Props {
@@ -30,11 +31,6 @@
     experimentLabel: string;
     regime: string;
   }
-
-  const EXPERIMENT_LABELS: Record<string, string> = {
-    'atm-profile': 'Atmospheric Profile',
-    'lts':         'Long-Term Study',
-  };
 
   // Stock atm-profile layer names → display titles. The wire form is
   // lowercase; UI rendering capitalises and adds context where it
