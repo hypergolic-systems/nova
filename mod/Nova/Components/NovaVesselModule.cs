@@ -339,6 +339,7 @@ public class NovaVesselModule : VesselModule {
       Virtual.InitializeSolver(Planetarium.GetUniversalTime());
     }
     UpdateShadowParams();
+    UpdateEnvironmentContext();
     SolveAttitude();
     Virtual.Tick(Planetarium.GetUniversalTime());
 
@@ -379,10 +380,13 @@ public class NovaVesselModule : VesselModule {
       ? vessel.orbit.period : double.PositiveInfinity;
     Virtual.BodyRadius = vessel.mainBody.Radius;
     Virtual.OrbitingSun = vessel.mainBody == FlightGlobals.Bodies[0];
+  }
 
-    // Environment context for science components — fresh on every
-    // FixedUpdate, including for unloaded vessels (VesselModules fire
-    // regardless of loaded state).
+  // Body / situation / altitude / body-year — read by science
+  // components. Fresh on every FixedUpdate including for unloaded
+  // vessels (VesselModules fire regardless of loaded state).
+  private void UpdateEnvironmentContext() {
+    if (vessel?.mainBody == null) return;
     Virtual.BodyName        = vessel.mainBody.bodyName;
     Virtual.BodyId          = (uint)vessel.mainBody.flightGlobalsIndex;
     Virtual.Situation       = (Nova.Core.Science.Situation)(int)ScienceUtil.GetExperimentSituation(vessel);
