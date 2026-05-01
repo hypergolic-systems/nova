@@ -7,6 +7,8 @@ using Nova.Core.Components;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Science;
+using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
 using UnityEngine;
 // Disambiguate against UnityEngine.Light.
@@ -372,6 +374,36 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, fuelCell.Lh2Manifold.FillFraction, ref f);
         WriteNum(sb, fuelCell.LoxManifold.FillFraction, ref f);
         WriteBit(sb, fuelCell.RefillActive, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case DataStorage storage: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "DS", ref f);
+        WriteNum(sb, storage.UsedBytes, ref f);
+        WriteNum(sb, storage.CapacityBytes, ref f);
+        WriteNum(sb, storage.Files.Count, ref f);
+        // Inline file list — typical storages hold tens of files; the
+        // 10 Hz cadence keeps bandwidth modest. Each file emits a
+        // positional tuple [subjectId, experimentId, fidelity, producedAt].
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.Begin(sb, '[');
+        bool firstFile = true;
+        foreach (var file in storage.Files) {
+          JsonWriter.Sep(sb, ref firstFile);
+          JsonWriter.Begin(sb, '[');
+          bool ff = true;
+          JsonWriter.Sep(sb, ref ff);
+          JsonWriter.WriteString(sb, file.SubjectId ?? "");
+          JsonWriter.Sep(sb, ref ff);
+          JsonWriter.WriteString(sb, file.ExperimentId ?? "");
+          WriteNum(sb, file.Fidelity, ref ff);
+          WriteNum(sb, file.ProducedAt, ref ff);
+          JsonWriter.End(sb, ']');
+        }
+        JsonWriter.End(sb, ']');
         JsonWriter.End(sb, ']');
         return true;
       }

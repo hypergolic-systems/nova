@@ -14,6 +14,7 @@
   import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
   import PowerView from './power/PowerView.svelte';
   import ResourceView from './resource/ResourceView.svelte';
+  import ScienceView from './science/ScienceView.svelte';
 
   const MIN_W = 300;
   const MIN_H = 260;
@@ -28,7 +29,7 @@
   const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'power' | 'resource' | 'propulsion' | 'rcs' | 'attitude';
+  type TabId = 'power' | 'resource' | 'propulsion' | 'rcs' | 'attitude' | 'science';
 
   interface Tab {
     id: TabId;
@@ -43,6 +44,7 @@
     { id: 'propulsion', short: 'PRP', label: 'Propulsion', enabled: false },
     { id: 'rcs',        short: 'RCS', label: 'RCS',        enabled: false },
     { id: 'attitude',   short: 'ATT', label: 'Attitude',   enabled: false },
+    { id: 'science',    short: 'SCI', label: 'Science',    enabled: true  },
   ];
 
   const flight = useFlightData();
@@ -93,6 +95,8 @@
       <PowerView vesselId={flight.vesselId} />
     {:else if activeTab === 'resource' && flight.vesselId}
       <ResourceView vesselId={flight.vesselId} />
+    {:else if activeTab === 'science' && flight.vesselId}
+      <ScienceView vesselId={flight.vesselId} />
     {/if}
   </div>
 </FloatingWindow>

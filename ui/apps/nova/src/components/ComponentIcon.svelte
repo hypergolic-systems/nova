@@ -14,7 +14,9 @@
     | 'engine'
     | 'tank'
     | 'fuelCell'
-    | 'command';
+    | 'command'
+    | 'dataStorage'
+    | 'thermometer';
 
   let { kind }: { kind: ComponentKind } = $props();
 </script>
@@ -105,6 +107,27 @@
           stroke="currentColor" stroke-width="0.7" stroke-linecap="round" />
     <line x1="3.4" y1="9" x2="8.6" y2="9"
           stroke="currentColor" stroke-width="0.7" stroke-linecap="round" />
+  {:else if kind === 'dataStorage'}
+    <!-- Stack of three thin platters — recalls a storage drum / data
+         drive without committing to a specific era. Each platter is
+         a flat ellipse with a hairline mid-line for parallax. -->
+    <g stroke="currentColor" fill="none" stroke-width="0.85" stroke-linecap="round">
+      <ellipse cx="6" cy="3"   rx="3.6" ry="0.95" />
+      <ellipse cx="6" cy="6"   rx="3.6" ry="0.95" />
+      <ellipse cx="6" cy="9"   rx="3.6" ry="0.95" />
+      <line x1="2.4" y1="3" x2="2.4" y2="9" />
+      <line x1="9.6" y1="3" x2="9.6" y2="9" />
+    </g>
+  {:else if kind === 'thermometer'}
+    <!-- Bulb + stem with a narrow column. The bulb sits at the bottom
+         and the stem rises through the icon center; a single tick
+         mark at mid-stem keeps it readable at 12 px. -->
+    <g stroke="currentColor" fill="none" stroke-width="0.95" stroke-linecap="round">
+      <circle cx="6" cy="9.4" r="1.7" fill="currentColor" stroke="none" />
+      <line x1="6" y1="1.4" x2="6" y2="8" stroke-width="1.3" />
+      <line x1="7.5" y1="4.2" x2="8.6" y2="4.2" />
+      <line x1="7.5" y1="6.4" x2="8.6" y2="6.4" />
+    </g>
   {/if}
 </svg>
 

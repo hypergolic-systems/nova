@@ -19,7 +19,9 @@ export type SystemTag =
   | 'propulsion'
   | 'rcs'
   | 'attitude'
-  | 'storage';
+  | 'storage'
+  | 'science-instrument'
+  | 'science-storage';
 
 // ---------- Wire (frame) types ---------------------------------
 
@@ -56,6 +58,24 @@ export type NovaFuelCellFrame = [
   refillActive: 0 | 1,
 ];
 
+// One observation result on disk. Subject id encodes (experiment, body,
+// variant, optional slice index); the UI synthesises display values
+// from it deterministically.
+export type NovaScienceFileFrame = [
+  subjectId: string,
+  experimentId: string,
+  fidelity: number,
+  producedAt: number,
+];
+
+export type NovaDataStorageFrame = [
+  'DS',
+  usedBytes: number,
+  capacityBytes: number,
+  fileCount: number,
+  files: NovaScienceFileFrame[],
+];
+
 export type NovaComponentFrame =
   | NovaSolarFrame
   | NovaBatteryFrame
@@ -64,7 +84,8 @@ export type NovaComponentFrame =
   | NovaEngineFrame
   | NovaTankFrame
   | NovaCommandFrame
-  | NovaFuelCellFrame;
+  | NovaFuelCellFrame
+  | NovaDataStorageFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -186,6 +207,31 @@ export interface CommandState {
   testLoadActive: boolean;
 }
 
+export interface ScienceFile {
+  /** Stable, value-equal identifier for "what this file is about".
+   *  Encodes experiment + body + variant + optional slice index. The
+   *  UI synthesises display values from this string deterministically. */
+  subjectId: string;
+  /** "atm-profile" / "lts" / etc. — drives palette and label. */
+  experimentId: string;
+  /** Quality, 0..1. atm-profile always 1.0; lts grows over a slice. */
+  fidelity: number;
+  /** UT (seconds) when the file was sealed. */
+  producedAt: number;
+}
+
+export interface DataStorageState {
+  /** Bytes occupied by the files currently in storage. Live counter
+   *  — files come and go as experiments emit and (eventually) transmit. */
+  usedBytes: number;
+  /** Capacity ceiling in bytes. New files are dropped when used == capacity. */
+  capacityBytes: number;
+  /** Same as `files.length` — duplicated on the wire to support a future
+   *  paged-fetch UI that doesn't always materialise the file list. */
+  fileCount: number;
+  files: ScienceFile[];
+}
+
 export interface FuelCellState {
   /** Live W output, post-LP-throttle. Drops to 0 when `isActive` is
    *  false or batteries are full and consumers don't want the power. */
@@ -221,6 +267,7 @@ export interface NovaPart {
   tank: TankState[];
   command: CommandState[];
   fuelCell: FuelCellState[];
+  dataStorage: DataStorageState[];
 }
 
 export interface NovaPartStruct {
@@ -343,6 +390,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     tank: [],
     command: [],
     fuelCell: [],
+    dataStorage: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -395,6 +443,19 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           lh2ManifoldFraction: c[5],
           loxManifoldFraction: c[6],
           refillActive: c[7] === 1,
+        });
+        break;
+      case 'DS':
+        out.dataStorage.push({
+          usedBytes: c[1],
+          capacityBytes: c[2],
+          fileCount: c[3],
+          files: c[4].map(([subjectId, experimentId, fidelity, producedAt]) => ({
+            subjectId,
+            experimentId,
+            fidelity,
+            producedAt,
+          })),
         });
         break;
     }

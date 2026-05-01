@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Science;
 
 namespace Nova.Core.Components;
 
@@ -22,6 +23,10 @@ public static class SystemTags {
   // monoprop pods. Drives the Resource view, where every storage-bearing
   // part shows up regardless of which subsystem it serves.
   public const string Storage      = "storage";
+  // Science. Instrument = thermometer-class part; Storage = data drive
+  // (separate from the resource Storage tag — different subsystem).
+  public const string ScienceInstrument = "science-instrument";
+  public const string ScienceStorage    = "science-storage";
 
   /// <summary>
   /// Compute the deterministic, deduplicated tag list for the given
@@ -62,6 +67,13 @@ public static class SystemTags {
         case TankVolume _:
           set.Add(Storage);
           break;
+        case Thermometer _:
+          set.Add(ScienceInstrument);
+          set.Add(PowerConsume);
+          break;
+        case DataStorage _:
+          set.Add(ScienceStorage);
+          break;
       }
     }
     var result = new List<string>(set.Count);
@@ -74,5 +86,6 @@ public static class SystemTags {
   // Canonical ordering used by `For` so list equality is meaningful.
   private static readonly string[] Order = new[] {
     PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude, Storage,
+    ScienceInstrument, ScienceStorage,
   };
 }

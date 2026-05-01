@@ -34,3 +34,36 @@ export function fmtMag(value: number): string {
   if (abs >= 10) return value.toFixed(1);
   return value.toFixed(2);
 }
+
+// Bytes → "1.40 MB" / "120 KB" / "512 B" — binary KiB, but labelled with
+// the colloquial K/M/G letters that everyone reads as "size on disk".
+export function fmtBytes(bytes: number): string {
+  const abs = Math.abs(bytes);
+  if (abs >= 1024 * 1024 * 1024) return `${fmtMag(bytes / (1024 * 1024 * 1024))} GB`;
+  if (abs >= 1024 * 1024)        return `${fmtMag(bytes / (1024 * 1024))} MB`;
+  if (abs >= 1024)               return `${fmtMag(bytes / 1024)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
+// Seconds → "1d 4h" / "3h 22m" / "12m 04s" / "42s". Whichever two
+// adjacent units render the magnitude legibly. Used for "produced …
+// ago" and "ETA …" strings.
+export function fmtDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s >= 86400) {
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    return `${d}d ${h}h`;
+  }
+  if (s >= 3600) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return `${h}h ${m.toString().padStart(2, '0')}m`;
+  }
+  if (s >= 60) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}m ${sec.toString().padStart(2, '0')}s`;
+  }
+  return `${s}s`;
+}
