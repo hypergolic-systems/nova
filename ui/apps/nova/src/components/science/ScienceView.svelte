@@ -12,11 +12,13 @@
 
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import { NovaPartTopic } from '../../telemetry/nova-topics';
   import type {
     ScienceFile,
     AtmExperimentState,
     LtsExperimentState,
   } from '../../telemetry/nova-topics';
+  import { getKsp } from '@dragonglass/telemetry/svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import FileListModal from './FileListModal.svelte';
@@ -32,6 +34,12 @@
 
   const instruments = useNovaPartsByTag(() => vesselId, 'science-instrument');
   const storages    = useNovaPartsByTag(() => vesselId, 'science-storage');
+
+  const ksp = getKsp();
+
+  function toggleExperiment(partId: string, expId: string, enabled: boolean): void {
+    ksp.send(NovaPartTopic(partId), 'setExperimentEnabled', expId, !enabled);
+  }
 
   // Aggregate roll-up across every DataStorage on the vessel.
   const totals = $derived.by(() => {
@@ -157,6 +165,52 @@
     return `ETA ${fmtDuration(timeLeft)} · ${sealed}/${state.slicesPerYear}`;
   }
 
+  // Pretty-printers for the live status block in the experiment body.
+  // Display unit conventions: altitude in km (with one decimal), static
+  // pressure in atm (3 sig figs), phase as percent of body-year. Returns
+  // "—" when the relevant data isn't present yet.
+  function fmtKm(meters: number): string {
+    return `${(meters / 1000).toFixed(1)} km`;
+  }
+  function fmtAtm(atm: number): string {
+    if (atm >= 1)     return `${atm.toFixed(2)} atm`;
+    if (atm >= 0.01)  return `${atm.toFixed(3)} atm`;
+    if (atm > 0)     return `${atm.toExponential(1)} atm`;
+    return '0 atm';
+  }
+  function fmtPct(frac: number, digits = 1): string {
+    return `${(frac * 100).toFixed(digits)}%`;
+  }
+
+  function atmNow(s: AtmExperimentState): string {
+    if (!s.currentLayerName) return 'above atmosphere';
+    return `${prettyLayer(s.currentLayerName)} · ${fmtKm(s.altitude)} · ${fmtAtm(s.currentPressureAtm)}`;
+  }
+  function atmSeen(s: AtmExperimentState): string {
+    if (s.transitMaxAlt <= s.transitMinAlt) return '—';
+    const layer = s.layers.find((l) => l.name === s.currentLayerName);
+    const span = layer ? Math.abs(layer.bottomPressureAtm - layer.topPressureAtm) : 0;
+    const got  = Math.max(0, s.transitMaxPressureAtm - s.transitMinPressureAtm);
+    const pct  = span > 0 ? Math.min(1, got / span) : 0;
+    return `${fmtKm(s.transitMinAlt)} – ${fmtKm(s.transitMaxAlt)} · ${fmtPct(pct, 0)} captured`;
+  }
+  function prettyLayer(name: string): string {
+    return name ? name.charAt(0).toUpperCase() + name.slice(1) : '';
+  }
+
+  function ltsNow(s: LtsExperimentState): string {
+    return `slice ${s.currentSliceIndex + 1} of ${s.slicesPerYear} · ${fmtPct(s.phase, 1)} of year`;
+  }
+  function ltsSeen(s: LtsExperimentState): string {
+    if (s.recordedMaxPhase <= s.recordedMinPhase) return '—';
+    const sliceStart = s.currentSliceIndex / s.slicesPerYear;
+    const sliceEnd   = (s.currentSliceIndex + 1) / s.slicesPerYear;
+    const sliceSpan  = sliceEnd - sliceStart;
+    const got        = s.recordedMaxPhase - s.recordedMinPhase;
+    const pct        = sliceSpan > 0 ? Math.min(1, got / sliceSpan) : 0;
+    return `${fmtPct(s.recordedMinPhase, 1)} – ${fmtPct(s.recordedMaxPhase, 1)} · ${fmtPct(pct, 0)} captured`;
+  }
+
   function ltsCompletion(state: LtsExperimentState): number {
     let total = 0;
     for (const f of state.savedLocal.values()) total += Math.min(1, f);
@@ -218,26 +272,46 @@
                     {@const lts     = p.state?.ltsExperiment.find((s) => s.experimentId === expId)}
                     {@const expOpen = isExpOpen(p.struct.id, expId)}
                     {@const active  = atm?.active || lts?.active}
+                    {@const enabled = atm?.enabled ?? lts?.enabled ?? false}
                     {@const summary = atm ? atmSummary(atm) : lts ? ltsSummary(lts) : ''}
                     {@const pct     = atm ? atmCompletion(atm) : lts ? ltsCompletion(lts) : 0}
+                    {@const dest    = atm?.destinationStorage ?? lts?.destinationStorage ?? ''}
+                    {@const stateLabel =
+                      !enabled ? 'OFF' : active ? 'ON' : 'IDLE'}
                     <li class="sci__exp">
-                      <button
-                        type="button"
+                      <div
                         class="sci__exp-head"
+                        role="button"
+                        tabindex="0"
                         aria-expanded={expOpen}
                         onclick={() => toggleExp(p.struct.id, expId)}
+                        onkeydown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleExp(p.struct.id, expId);
+                          }
+                        }}
                       >
                         <span class="sci__exp-line">
                           <span class="sci__chev sci__chev--leaf" aria-hidden="true">{expOpen ? '▾' : '▸'}</span>
                           <span class="sci__exp-label">{experimentLabel(expId)}</span>
                           <span class="sci__exp-pct">{pct}%</span>
-                          <span
+                          <button
+                            type="button"
                             class="sci__exp-status"
-                            class:sci__exp-status--on={active}
-                          >{active ? 'ON' : 'OFF'}</span>
+                            class:sci__exp-status--on={enabled && active}
+                            class:sci__exp-status--idle={enabled && !active}
+                            class:sci__exp-status--off={!enabled}
+                            aria-pressed={enabled}
+                            aria-label={`${enabled ? 'Disable' : 'Enable'} ${experimentLabel(expId)}`}
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              toggleExperiment(p.struct.id, expId, enabled);
+                            }}
+                          >{stateLabel}</button>
                         </span>
                         <span class="sci__exp-eta">{summary}</span>
-                      </button>
+                      </div>
 
                       {#if expOpen}
                         <div class="sci__exp-body">
@@ -245,6 +319,36 @@
                             <AtmProfileIndicator state={atm} />
                           {:else if lts}
                             <LtsOrbitIndicator state={lts} />
+                          {/if}
+                          {#if enabled && atm}
+                            <div class="sci__exp-detail">
+                              <div class="sci__exp-detail-line">
+                                <span class="sci__exp-detail-key">NOW</span>
+                                <span class="sci__exp-detail-val">{atmNow(atm)}</span>
+                              </div>
+                              <div class="sci__exp-detail-line">
+                                <span class="sci__exp-detail-key">SEEN</span>
+                                <span class="sci__exp-detail-val">{atmSeen(atm)}</span>
+                              </div>
+                            </div>
+                          {/if}
+                          {#if enabled && lts}
+                            <div class="sci__exp-detail">
+                              <div class="sci__exp-detail-line">
+                                <span class="sci__exp-detail-key">NOW</span>
+                                <span class="sci__exp-detail-val">{ltsNow(lts)}</span>
+                              </div>
+                              <div class="sci__exp-detail-line">
+                                <span class="sci__exp-detail-key">SEEN</span>
+                                <span class="sci__exp-detail-val">{ltsSeen(lts)}</span>
+                              </div>
+                            </div>
+                          {/if}
+                          {#if enabled}
+                            <span
+                              class="sci__exp-dest"
+                              class:sci__exp-dest--missing={dest === ''}
+                            >{dest === '' ? '→ NO STORAGE' : `→ ${dest}`}</span>
                           {/if}
                         </div>
                       {/if}
@@ -670,24 +774,48 @@
     letter-spacing: 0.02em;
   }
 
-  /* Status pill — OFF dim, ON in warn-orange (mirrors the orange
-     overlay on the regime indicator's currently-observing band). */
+  /* Status pill — also a click target. Three states: ON (currently
+     observing), IDLE (enabled but waiting for the right regime), OFF
+     (user-disabled). Clicking flips between OFF ↔ ON|IDLE; the active
+     state itself is environment-derived. */
   .sci__exp-status {
     flex: 0 0 auto;
+    appearance: none;
+    cursor: pointer;
     font-family: var(--font-display);
     font-size: 8.5px;
     letter-spacing: 0.20em;
     padding: 1px 5px;
     border: 1px solid var(--line);
+    background: transparent;
     color: var(--fg-mute);
     border-radius: 1px;
-    transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+    transition: color 140ms ease, border-color 140ms ease,
+                background 140ms ease, text-shadow 140ms ease;
+  }
+  .sci__exp-status:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
   }
   .sci__exp-status--on {
     color: var(--warn);
     border-color: var(--warn);
     background: rgba(240, 180, 41, 0.10);
     text-shadow: 0 0 6px var(--warn-glow);
+  }
+  .sci__exp-status--idle {
+    color: var(--accent-dim);
+    border-color: var(--accent-dim);
+    background: transparent;
+  }
+  .sci__exp-status--idle:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(126, 245, 184, 0.06);
+  }
+  .sci__exp-status--off:hover {
+    color: var(--fg-dim);
+    border-color: var(--fg-dim);
   }
   .sci__exp-eta {
     margin-left: 17px;       /* align under chevron+label, not chevron */
@@ -700,6 +828,52 @@
   .sci__exp-body {
     margin: 6px 0 10px 18px;
     display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  /* Live status detail under the indicator — two compact rows showing
+     "what is the experiment doing right now" without growing the panel
+     significantly. Only rendered when enabled, so a disabled experiment
+     stays a single visualization tile. */
+  .sci__exp-detail {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 8px;
+    row-gap: 1px;
+    padding-left: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sci__exp-detail-line {
+    display: contents;
+  }
+  .sci__exp-detail-key {
+    color: var(--fg-mute);
+    font-family: var(--font-display);
+    font-size: 8.5px;
+    letter-spacing: 0.20em;
+  }
+  .sci__exp-detail-val {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.02em;
+  }
+
+  /* "→ X" destination strip — only rendered while the experiment is
+     enabled, so it disappears (no height impact) when off. The arrow +
+     short title fits comfortably under the indicator. Mute by default;
+     red when no storage is reachable so the player notices data loss. */
+  .sci__exp-dest {
+    font-family: var(--font-display);
+    font-size: 8.5px;
+    letter-spacing: 0.18em;
+    color: var(--fg-mute);
+    padding-left: 2px;
+  }
+  .sci__exp-dest--missing {
+    color: var(--alert);
+    text-shadow: 0 0 4px rgba(255, 82, 82, 0.4);
   }
 
   /* The VIEW button — small, monospaced, accent-bordered. */

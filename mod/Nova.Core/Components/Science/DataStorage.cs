@@ -20,8 +20,31 @@ public class DataStorage : VirtualComponent {
 
   public bool CanDeposit(long sizeBytes) => sizeBytes >= 0 && sizeBytes <= FreeBytes;
 
-  // Returns true on success. If false, file was not added (no capacity).
-  public bool Deposit(ScienceFile file, long sizeBytes) {
+  // Lookup an existing file by its subject key. Returns null when no
+  // file for that subject lives here yet.
+  public ScienceFile FindBySubject(string subjectId) {
+    if (string.IsNullOrEmpty(subjectId)) return null;
+    foreach (var f in Files)
+      if (f.SubjectId == subjectId) return f;
+    return null;
+  }
+
+  public bool HasSubject(string subjectId) => FindBySubject(subjectId) != null;
+
+  // Upsert by subject id. If a file already exists for this subject,
+  // updates it in-place (no extra bytes consumed, the slot was reserved
+  // when the file was first created). Otherwise capacity-checks and
+  // appends.
+  //
+  // Returns true on success. False = no existing file AND not enough
+  // capacity for a new one.
+  public bool Upsert(ScienceFile file, long sizeBytes) {
+    for (int i = 0; i < Files.Count; i++) {
+      if (Files[i].SubjectId == file.SubjectId) {
+        Files[i] = file;
+        return true;
+      }
+    }
     if (!CanDeposit(sizeBytes)) return false;
     Files.Add(file);
     UsedBytes += sizeBytes;

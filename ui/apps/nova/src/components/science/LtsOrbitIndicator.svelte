@@ -113,6 +113,29 @@
   const markerAngle = $derived(-Math.PI / 2 + state.phase * Math.PI * 2);
   const markerXY    = $derived(polar(CX, CY, R_RING, markerAngle));
 
+  // Recorded-phase coverage. The bracket [recordedMinPhase,
+  // recordedMaxPhase] maps to absolute year-angles; we draw an outer
+  // arc segment along that span so the player sees "I observed from
+  // here to here". Sentinel: max <= min ⇒ no observation (hide).
+  const hasRecorded = $derived(state.recordedMaxPhase > state.recordedMinPhase);
+  const recordedArcPath = $derived.by(() => {
+    if (!hasRecorded) return '';
+    const a0 = -Math.PI / 2 + state.recordedMinPhase * Math.PI * 2;
+    const a1 = -Math.PI / 2 + state.recordedMaxPhase * Math.PI * 2;
+    const [x0, y0] = polar(CX, CY, R_OUTER + 2, a0);
+    const [x1, y1] = polar(CX, CY, R_OUTER + 2, a1);
+    const sweep = a1 - a0;
+    const largeArc = sweep > Math.PI ? 1 : 0;
+    return `M ${x0} ${y0} A ${R_OUTER + 2} ${R_OUTER + 2} 0 ${largeArc} 1 ${x1} ${y1}`;
+  });
+
+  // Slice number label position — outside the body marker, offset
+  // along the same radial.
+  const sliceLabelXY = $derived.by(() => {
+    const r = R_OUTER + 8;
+    return polar(CX, CY, r, markerAngle);
+  });
+
   // KSC dots strip: one per slice, left→right by index.
   const kscDots = $derived.by(() =>
     Array.from({ length: state.slicesPerYear }, (_, i) => ({
@@ -159,11 +182,26 @@
     <!-- orbit guide ring at midline; subtle, sits behind the marker -->
     <circle cx={CX} cy={CY} r={R_RING} class="lts__ring" />
 
+    <!-- recorded-phase coverage: outer arc spanning the year-angles
+         where the instrument has actively observed during the current
+         slice. Sits outside the wedge ring so the in-progress fill
+         stays uncluttered. -->
+    {#if hasRecorded}
+      <path d={recordedArcPath} class="lts__recorded" fill="none" />
+    {/if}
+
     <!-- body marker -->
     <circle
       cx={markerXY[0]} cy={markerXY[1]} r="2.4"
       class="lts__body"
     />
+
+    <!-- slice number label outside the body marker -->
+    <text
+      x={sliceLabelXY[0]} y={sliceLabelXY[1] + 2}
+      class="lts__slice-label"
+      text-anchor="middle"
+    >{state.currentSliceIndex + 1}/{state.slicesPerYear}</text>
   </svg>
 
   <ul class="lts__ksc" aria-label="KSC archive fidelity per slice">
@@ -239,6 +277,24 @@
   .lts__body {
     fill: var(--accent);
     filter: drop-shadow(0 0 3px var(--accent-glow));
+  }
+  /* Recorded-phase coverage arc — sits outside the orbit ring,
+     spanning the year-angles where the instrument has been actively
+     observing in the current slice. Dim accent so it reads as
+     "covered" without competing with the live wedge fill. */
+  .lts__recorded {
+    stroke: var(--accent-dim);
+    stroke-width: 2;
+    opacity: 0.85;
+    stroke-linecap: round;
+  }
+  /* Slice number label — small, dim, sits outside the orbit ring near
+     the body marker. */
+  .lts__slice-label {
+    fill: var(--fg-dim);
+    font-family: var(--font-display);
+    font-size: 6.5px;
+    letter-spacing: 0.06em;
   }
 
   /* 12 dots in a horizontal strip below the orbit. Mirrors atm

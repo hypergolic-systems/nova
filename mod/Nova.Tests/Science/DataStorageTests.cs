@@ -17,21 +17,41 @@ public class DataStorageTests {
       };
 
   [TestMethod]
-  public void Deposit_RespectsCapacity() {
+  public void Upsert_RespectsCapacity() {
     var s = new DataStorage { CapacityBytes = 2500 };
-    Assert.IsTrue(s.Deposit(MakeFile(), 1000));
-    Assert.IsTrue(s.Deposit(MakeFile(), 1000));
-    Assert.IsFalse(s.Deposit(MakeFile(), 1000));
+    // Distinct subjects → all three would normally deposit; capacity
+    // check rejects the third.
+    Assert.IsTrue (s.Upsert(MakeFile("atm-profile@Kerbin:troposphere"),  1000));
+    Assert.IsTrue (s.Upsert(MakeFile("atm-profile@Kerbin:stratosphere"), 1000));
+    Assert.IsFalse(s.Upsert(MakeFile("atm-profile@Kerbin:mesosphere"),   1000));
     Assert.AreEqual(2, s.Files.Count);
     Assert.AreEqual(2000, s.UsedBytes);
     Assert.AreEqual(500,  s.FreeBytes);
   }
 
   [TestMethod]
+  public void Upsert_UpdatesExistingFileInPlace() {
+    var s = new DataStorage { CapacityBytes = 2500 };
+    s.Upsert(new ScienceFile {
+      SubjectId    = "atm-profile@Kerbin:troposphere",
+      ExperimentId = "atm-profile",
+      Fidelity     = 0.3,
+    }, 1000);
+    s.Upsert(new ScienceFile {
+      SubjectId    = "atm-profile@Kerbin:troposphere",
+      ExperimentId = "atm-profile",
+      Fidelity     = 0.7,
+    }, 1000);
+    Assert.AreEqual(1, s.Files.Count, "second upsert with same subject must not add a new file");
+    Assert.AreEqual(0.7, s.Files[0].Fidelity, 1e-9);
+    Assert.AreEqual(1000, s.UsedBytes, "byte count is reserved on first deposit, not re-charged on update");
+  }
+
+  [TestMethod]
   public void RoundTrip_ThroughProto_RestoresFiles() {
     var src = new DataStorage { CapacityBytes = 10_000 };
-    src.Deposit(MakeFile("atm-profile@Kerbin:troposphere"),  1000);
-    src.Deposit(MakeFile("atm-profile@Kerbin:stratosphere"), 1000);
+    src.Upsert(MakeFile("atm-profile@Kerbin:troposphere"),  1000);
+    src.Upsert(MakeFile("atm-profile@Kerbin:stratosphere"), 1000);
 
     var partState = new PartState();
     src.Save(partState);
@@ -59,10 +79,10 @@ public class DataStorageTests {
   [TestMethod]
   public void Clone_DeepCopiesFiles() {
     var src = new DataStorage { CapacityBytes = 5000 };
-    src.Deposit(MakeFile(), 1000);
+    src.Upsert(MakeFile("atm-profile@Kerbin:troposphere"), 1000);
     var clone = (DataStorage)src.Clone();
 
-    src.Deposit(MakeFile("atm-profile@Eve:troposphere"), 1000);
+    src.Upsert(MakeFile("atm-profile@Eve:troposphere"), 1000);
     Assert.AreEqual(1, clone.Files.Count, "Clone must not share Files list");
     Assert.AreEqual(2, src.Files.Count);
   }

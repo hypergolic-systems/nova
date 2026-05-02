@@ -142,6 +142,31 @@ public sealed class NovaPartTopic : Topic {
         else module.Retract();
         return;
       }
+      case "setExperimentEnabled": {
+        // args = [experimentId: string, enabled: bool]
+        if (args == null || args.Count < 2
+            || !(args[0] is string experimentId)
+            || !(args[1] is bool enabled)) {
+          Debug.LogWarning(LogPrefix + Name + " setExperimentEnabled: expected [string, bool]");
+          return;
+        }
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        var thermometer = vesselModule?.Virtual?.GetComponents(_part.persistentId)
+            .OfType<Thermometer>()
+            .FirstOrDefault();
+        if (thermometer == null) return;
+        if (experimentId == AtmosphericProfileExperiment.ExperimentId) {
+          thermometer.AtmEnabled = enabled;
+        } else if (experimentId == LongTermStudyExperiment.ExperimentId) {
+          thermometer.LtsEnabled = enabled;
+        } else {
+          Debug.LogWarning(LogPrefix + Name + " setExperimentEnabled: unknown experiment '" + experimentId + "'");
+          return;
+        }
+        vesselModule.Virtual.Invalidate();
+        MarkDirty();
+        return;
+      }
       case "setCommandTestLoad": {
         if (args == null || args.Count < 1 || !(args[0] is bool active)) {
           Debug.LogWarning(LogPrefix + Name + " setCommandTestLoad: expected [bool]");
@@ -266,8 +291,9 @@ public sealed class NovaPartTopic : Topic {
   private void WriteComponents(StringBuilder sb, IEnumerable<VirtualComponent> components) {
     JsonWriter.Begin(sb, '[');
     bool first = true;
+    var kspVessel = _part?.vessel;
     foreach (var c in components) {
-      if (!TryWriteComponent(sb, c, ref first)) {
+      if (!TryWriteComponent(sb, c, kspVessel, ref first)) {
         // Unhandled kind — silently skip rather than emit an
         // un-decodable frame. New kinds get a case here + a TS
         // tuple in nova-topics.ts.
@@ -276,7 +302,7 @@ public sealed class NovaPartTopic : Topic {
     JsonWriter.End(sb, ']');
   }
 
-  private static bool TryWriteComponent(StringBuilder sb, VirtualComponent c, ref bool first) {
+  private static bool TryWriteComponent(StringBuilder sb, VirtualComponent c, Vessel kspVessel, ref bool first) {
     switch (c) {
       case SolarPanel solar: {
         JsonWriter.Sep(sb, ref first);
@@ -400,8 +426,8 @@ public sealed class NovaPartTopic : Topic {
         // DataStorage on the vessel; reused by both EXA and EXL.
         var savedLocal = BuildLocalFidelityIndex(thermometer);
 
-        WriteAtmExperimentFrame(sb, thermometer, savedLocal, ref first);
-        WriteLtsExperimentFrame(sb, thermometer, savedLocal, ref first);
+        WriteAtmExperimentFrame(sb, thermometer, kspVessel, savedLocal, ref first);
+        WriteLtsExperimentFrame(sb, thermometer, kspVessel, savedLocal, ref first);
         return true;
       }
       case DataStorage storage: {
@@ -413,8 +439,12 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, storage.CapacityBytes, ref f);
         WriteNum(sb, storage.Files.Count, ref f);
         // Inline file list — typical storages hold tens of files; the
-        // 10 Hz cadence keeps bandwidth modest. Each file emits a
-        // positional tuple [subjectId, experimentId, fidelity, producedAt].
+        // 10 Hz cadence keeps bandwidth modest. Wire shape mirrors
+        // NovaScienceFileFrame: leading common fields, then direct-
+        // measurement fields, then interpolated-measurement fields.
+        // Interpolated files recompute fidelity from `now` against
+        // start/end UT so the UI sees a live-climbing value.
+        double simNow = Planetarium.GetUniversalTime();
         JsonWriter.Sep(sb, ref f);
         JsonWriter.Begin(sb, '[');
         bool firstFile = true;
@@ -426,10 +456,20 @@ public sealed class NovaPartTopic : Topic {
           JsonWriter.WriteString(sb, file.SubjectId ?? "");
           JsonWriter.Sep(sb, ref ff);
           JsonWriter.WriteString(sb, file.ExperimentId ?? "");
-          WriteNum(sb, file.Fidelity, ref ff);
+          double liveFidelity = ComputeLiveFidelity(file, simNow);
+          WriteNum(sb, liveFidelity, ref ff);
           WriteNum(sb, file.ProducedAt, ref ff);
           JsonWriter.Sep(sb, ref ff);
           JsonWriter.WriteString(sb, file.Instrument ?? "");
+          WriteNum(sb, file.RecordedMinPressureAtm, ref ff);
+          WriteNum(sb, file.RecordedMaxPressureAtm, ref ff);
+          WriteNum(sb, file.LayerBottomPressureAtm, ref ff);
+          WriteNum(sb, file.LayerTopPressureAtm, ref ff);
+          WriteNum(sb, file.RecordedMinAltM, ref ff);
+          WriteNum(sb, file.RecordedMaxAltM, ref ff);
+          WriteNum(sb, file.StartUt, ref ff);
+          WriteNum(sb, file.EndUt, ref ff);
+          WriteNum(sb, file.SliceDurationSeconds, ref ff);
           JsonWriter.End(sb, ']');
         }
         JsonWriter.End(sb, ']');
@@ -441,6 +481,48 @@ public sealed class NovaPartTopic : Topic {
   }
 
   // --- Science experiment frames -----------------------------------
+
+  // Walks the vessel for the first DataStorage with capacity for `fileSizeBytes`
+  // and returns the host part's player-facing title. Empty string when none.
+  // Mirrors `Thermometer.Deposit`'s `FirstOrDefault` selection so the UI's
+  // "→ X" hint matches where files actually land.
+  private static string ResolveDestinationStorage(Thermometer t, Vessel kspVessel, long fileSizeBytes) {
+    if (t.Vessel == null || kspVessel == null) return "";
+    foreach (var partId in t.Vessel.AllPartIds()) {
+      foreach (var c in t.Vessel.GetComponents(partId)) {
+        if (c is DataStorage storage && storage.CanDeposit(fileSizeBytes)) {
+          var hostPart = kspVessel.parts.FirstOrDefault(p => p.persistentId == partId);
+          return hostPart?.partInfo?.title ?? hostPart?.partName ?? "";
+        }
+      }
+    }
+    return "";
+  }
+
+  // Compute the live fidelity for a file. Direct-measurement files
+  // store their fidelity directly (updated every tick by the experiment).
+  // Interpolated files derive fidelity from start/end UT against now,
+  // so save-cli / unloaded vessels / closed-tab UIs see the same value.
+  private static double ComputeLiveFidelity(ScienceFile file, double nowUT) {
+    if (file.SliceDurationSeconds > 0) {
+      double covered = System.Math.Min(nowUT, file.EndUt) - file.StartUt;
+      return System.Math.Min(1.0, System.Math.Max(0.0, covered / file.SliceDurationSeconds));
+    }
+    return file.Fidelity;
+  }
+
+  // Walks the vessel's storages for a file with the given subject id.
+  // Returns the first match, or null. Used by the EXA / EXL emit
+  // paths to read live recorded bounds (atm) or interpolation
+  // endpoints (lts) directly from the canonical file record.
+  private static ScienceFile FindFileForSubject(Thermometer t, string subjectId) {
+    if (t.Vessel == null) return null;
+    foreach (var s in t.Vessel.AllComponents().OfType<DataStorage>()) {
+      var f = s.FindBySubject(subjectId);
+      if (f != null) return f;
+    }
+    return null;
+  }
 
   private static Dictionary<string, double> BuildLocalFidelityIndex(Thermometer t) {
     var idx = new Dictionary<string, double>();
@@ -457,11 +539,27 @@ public sealed class NovaPartTopic : Topic {
   }
 
   private static void WriteAtmExperimentFrame(
-      StringBuilder sb, Thermometer t,
+      StringBuilder sb, Thermometer t, Vessel kspVessel,
       Dictionary<string, double> savedLocal, ref bool first) {
     string body = t.Vessel?.Context?.BodyName ?? "";
     double altitude = t.Vessel?.Context?.Altitude ?? 0;
+    double currentPressure = t.Vessel?.Context?.StaticPressureAtm ?? 0;
     var layers = AtmosphericProfileExperiment.LayersFor(body);
+    string currentLayer = AtmosphericProfileExperiment.LayerAt(body, altitude) ?? "";
+    string destination = ResolveDestinationStorage(t, kspVessel, AtmosphericProfileExperiment.FileSizeBytes);
+
+    // Recorded bounds come from the live file in storage for the
+    // current layer. No file ⇒ no observation captured yet ⇒ zero
+    // sentinels. Files persist across disable so the bounds remain
+    // visible even when the experiment is currently OFF.
+    var activeFile = !string.IsNullOrEmpty(currentLayer)
+        ? FindFileForSubject(t, AtmosphericProfileExperiment.ExperimentId + "@" + body + ":" + currentLayer)
+        : null;
+    bool hasBracket = activeFile != null;
+    double transitMinAlt      = hasBracket ? activeFile.RecordedMinAltM : 0;
+    double transitMaxAlt      = hasBracket ? activeFile.RecordedMaxAltM : 0;
+    double transitMinPressure = hasBracket ? activeFile.RecordedMinPressureAtm : 0;
+    double transitMaxPressure = hasBracket ? activeFile.RecordedMaxPressureAtm : 0;
 
     JsonWriter.Sep(sb, ref first);
     JsonWriter.Begin(sb, '[');
@@ -474,22 +572,34 @@ public sealed class NovaPartTopic : Topic {
     // seal on layer exit); always 1. Slot reserved for future
     // satisfaction-gated atm sealing.
     WriteBit(sb, true, ref f);
+    WriteBit(sb, t.AtmEnabled, ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, currentLayer);
+    WriteNum(sb, transitMinAlt, ref f);
+    WriteNum(sb, transitMaxAlt, ref f);
+    WriteNum(sb, transitMinPressure, ref f);
+    WriteNum(sb, transitMaxPressure, ref f);
+    WriteNum(sb, currentPressure, ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, destination);
     JsonWriter.Sep(sb, ref f);
     JsonWriter.WriteString(sb, body);
     WriteNum(sb, altitude, ref f);
 
-    // layers: [[name, top]…]
+    // layers: [[name, topAlt, bottomPressureAtm, topPressureAtm]…]
     JsonWriter.Sep(sb, ref f);
     JsonWriter.Begin(sb, '[');
     bool firstLayer = true;
     if (layers != null) {
-      foreach (var (name, top) in layers) {
+      foreach (var l in layers) {
         JsonWriter.Sep(sb, ref firstLayer);
         JsonWriter.Begin(sb, '[');
         bool lf = true;
         JsonWriter.Sep(sb, ref lf);
-        JsonWriter.WriteString(sb, name);
-        WriteNum(sb, top, ref lf);
+        JsonWriter.WriteString(sb, l.name);
+        WriteNum(sb, l.topAltMeters, ref lf);
+        WriteNum(sb, l.bottomPressureAtm, ref lf);
+        WriteNum(sb, l.topPressureAtm, ref lf);
         JsonWriter.End(sb, ']');
       }
     }
@@ -500,7 +610,8 @@ public sealed class NovaPartTopic : Topic {
     JsonWriter.Begin(sb, '[');
     bool firstSaved = true;
     if (layers != null) {
-      foreach (var (name, _) in layers) {
+      foreach (var l in layers) {
+        var name = l.name;
         var subjectId = AtmosphericProfileExperiment.ExperimentId + "@" + body + ":" + name;
         if (!savedLocal.TryGetValue(subjectId, out var fid)) continue;
         JsonWriter.Sep(sb, ref firstSaved);
@@ -523,7 +634,7 @@ public sealed class NovaPartTopic : Topic {
   }
 
   private static void WriteLtsExperimentFrame(
-      StringBuilder sb, Thermometer t,
+      StringBuilder sb, Thermometer t, Vessel kspVessel,
       Dictionary<string, double> savedLocal, ref bool first) {
     var ctx       = t.Vessel?.Context;
     string body   = ctx?.BodyName ?? "";
@@ -543,20 +654,41 @@ public sealed class NovaPartTopic : Topic {
     double sliceDuration = bodyYearSeconds > 0
         ? LongTermStudyExperiment.SliceDurationFor(bodyYearSeconds)
         : 1;
-    double activeFidelity = t.LtsActive
-        ? System.Math.Min(1.0, System.Math.Max(0.0, t.LtsAccumulatedSeconds / sliceDuration))
-        : 0;
 
-    // willComplete: even at full satisfaction going forward, can the
-    // accumulator reach 1.0 by slice end? Ratio of accumulated time
-    // to elapsed-in-slice gives the answer — a sub-1 ratio means
-    // we entered the slice late (or were starved earlier) and the
-    // slice will seal at partial fidelity. 1% slop tolerates rounding.
-    double phaseInSlice = bodyYearSeconds > 0
-        ? phase * slicesPerYear - currentSliceIndex
-        : 0;
-    bool willComplete = !t.LtsActive
-        || activeFidelity + (1.0 - phaseInSlice) >= 0.99;
+    // Read fidelity + recorded phase bounds from the live LTS file
+    // for the current slice subject. Interpolate fidelity from the
+    // file's (start_ut, end_ut) against simNow.
+    string ltsSubjectId = bodyYearSeconds > 0 && situation != Situation.None
+        ? LongTermStudyExperiment.SubjectFor(body, situation, simNow, bodyYearSeconds).ToString()
+        : "";
+    var ltsFile = !string.IsNullOrEmpty(ltsSubjectId)
+        ? FindFileForSubject(t, ltsSubjectId)
+        : null;
+
+    double activeFidelity = 0;
+    double recordedMin    = 0;
+    double recordedMax    = 0;
+    bool   willComplete   = true;
+    if (ltsFile != null && ltsFile.SliceDurationSeconds > 0) {
+      double span = ltsFile.EndUt - ltsFile.StartUt;
+      double covered = System.Math.Min(simNow, ltsFile.EndUt) - ltsFile.StartUt;
+      activeFidelity = System.Math.Min(1.0, System.Math.Max(0.0, covered / ltsFile.SliceDurationSeconds));
+      // Recorded phase bounds: start_ut and current cap as fractions
+      // of the body-year. UI uses these to overlay the recorded arc
+      // on the orbit indicator's slice wedge.
+      recordedMin = (ltsFile.StartUt
+                    - System.Math.Floor(ltsFile.StartUt / bodyYearSeconds) * bodyYearSeconds)
+                    / bodyYearSeconds;
+      double cappedNow = System.Math.Min(simNow, ltsFile.EndUt);
+      recordedMax = (cappedNow
+                    - System.Math.Floor(cappedNow / bodyYearSeconds) * bodyYearSeconds)
+                    / bodyYearSeconds;
+      // willComplete: file's reachable max fidelity = span / sliceDuration.
+      // Sub-1 means we started mid-slice; the file will never reach 1.0.
+      willComplete = (span / ltsFile.SliceDurationSeconds) >= 0.99;
+    }
+
+    string destination = ResolveDestinationStorage(t, kspVessel, LongTermStudyExperiment.FileSizeBytes);
 
     JsonWriter.Sep(sb, ref first);
     JsonWriter.Begin(sb, '[');
@@ -566,6 +698,11 @@ public sealed class NovaPartTopic : Topic {
     JsonWriter.WriteString(sb, LongTermStudyExperiment.ExperimentId);
     WriteBit(sb, t.LtsActive, ref f);
     WriteBit(sb, willComplete, ref f);
+    WriteBit(sb, t.LtsEnabled, ref f);
+    WriteNum(sb, recordedMin, ref f);
+    WriteNum(sb, recordedMax, ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, destination);
     JsonWriter.Sep(sb, ref f);
     JsonWriter.WriteString(sb, body);
     JsonWriter.Sep(sb, ref f);

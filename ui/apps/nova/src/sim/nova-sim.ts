@@ -79,25 +79,113 @@ interface PartFixture {
   build: () => NovaComponentFrame[];
 }
 
-const KERBIN_LAYERS: [string, number][] = [
-  ['troposphere',  18_000],
-  ['stratosphere', 45_000],
-  ['mesosphere',   70_000],
+// Each tuple: [name, topAlt, bottomPressureAtm, topPressureAtm].
+// Mirrors `AtmosphericProfileExperiment.Layers["Kerbin"]` C#-side so
+// the sim and live wire frames produce identical shapes.
+const KERBIN_LAYERS: [string, number, number, number][] = [
+  ['troposphere',  18_000, 1.000, 0.092],
+  ['stratosphere', 45_000, 0.092, 0.005],
+  ['mesosphere',   70_000, 0.005, 0.000],
 ];
 
-// Storage seed. Atm files mirror the saved-local layers in the EXA
-// frame; LTS files mirror the saved-local slice list. Keeping these
-// in sync means the file modal and the indicator agree on what data
-// "exists locally". producedAt offsets are visual filler.
-const SEED_FILES: NovaScienceFileFrame[] = [
-  ['atm-profile@Kerbin:troposphere',   'atm-profile', 1.00,    120, '2HOT Thermometer'],
-  ['atm-profile@Kerbin:stratosphere',  'atm-profile', 1.00,    480, '2HOT Thermometer'],
-  ['atm-profile@Kerbin:mesosphere',    'atm-profile', 1.00,    920, '2HOT Thermometer'],
-  ['lts@Kerbin:SrfLanded:0',           'lts',         1.00,    767_000, '2HOT Thermometer'],
-  ['lts@Kerbin:SrfLanded:1',           'lts',         1.00,  1_534_000, '2HOT Thermometer'],
-  ['lts@Kerbin:SrfLanded:2',           'lts',         0.74,  2_301_000, '2HOT Thermometer'],
-  ['lts@Kerbin:SrfLanded:3',           'lts',         0.31,  3_068_000, '2HOT Thermometer'],
+// Approximate pressure at altitude — log-decay from sea-level 1 atm
+// to ~0 at the top of mesosphere (70 km), tuned so each layer's
+// boundary roughly hits the table values. Real KSP uses an
+// atmosphere curve; this is good enough for the indicator demo.
+function pressureForAltitude(alt: number): number {
+  if (alt <= 0)      return 1.0;
+  if (alt >= 70_000) return 0;
+  return Math.exp(-alt / 6_000);
+}
+
+const INSTRUMENT = '2HOT Thermometer';
+
+// Build a complete (full-fidelity) atm-profile file frame — the layer
+// has been fully covered. recorded bounds match the layer span.
+function makeAtmFile(
+  layer: 'troposphere' | 'stratosphere' | 'mesosphere',
+  recMinP: number, recMaxP: number,
+  recMinAlt: number, recMaxAlt: number,
+  producedAt: number,
+): NovaScienceFileFrame {
+  const layerEntry = KERBIN_LAYERS.find(([n]) => n === layer)!;
+  const [, , bottomP, topP] = layerEntry;
+  const span = Math.abs(bottomP - topP);
+  const captured = Math.max(0, recMaxP - recMinP);
+  const fidelity = span > 0 ? Math.min(1, captured / span) : 0;
+  return [
+    `atm-profile@Kerbin:${layer}`,
+    'atm-profile',
+    fidelity,
+    producedAt,
+    INSTRUMENT,
+    recMinP, recMaxP, bottomP, topP,
+    recMinAlt, recMaxAlt,
+    0, 0, 0,             // start_ut / end_ut / slice_duration unused
+  ];
+}
+
+// Build an interpolated lts file. start_ut = startUT, end_ut = endUT,
+// slice_duration = SLICE_DURATION_S. Fidelity is recomputed at read
+// time, so the cached snapshot is just informational.
+function makeLtsFile(sliceIdx: number, startUT: number, endUT: number): NovaScienceFileFrame {
+  const span = endUT - startUT;
+  const cached = Math.max(0, Math.min(1, span / SLICE_DURATION_S));
+  return [
+    `lts@Kerbin:SrfLanded:${sliceIdx}`,
+    'lts',
+    cached,
+    startUT,
+    INSTRUMENT,
+    0, 0, 0, 0, 0, 0,    // direct fields unused
+    startUT, endUT, SLICE_DURATION_S,
+  ];
+}
+
+// Storage seed. Mk1 holds atm-profile records from a prior mission;
+// OKTO2 holds lts records. Slices 0-2 are fully sealed (full slice
+// duration covered). Slice 3 started ~26% into the slice → max
+// fidelity ~0.74. Slice 4 started ~69% in → max fidelity ~0.31.
+const MK1_FILES: NovaScienceFileFrame[] = [
+  // Each prior atm-profile run covered the layer's full pressure span.
+  makeAtmFile('troposphere',  0.092, 1.000, 0,      18_000, 120),
+  makeAtmFile('stratosphere', 0.005, 0.092, 18_000, 45_000, 480),
+  makeAtmFile('mesosphere',   0.000, 0.005, 45_000, 70_000, 920),
 ];
+const OKTO2_FILES: NovaScienceFileFrame[] = [
+  makeLtsFile(0, 0,                                                SLICE_DURATION_S),
+  makeLtsFile(1, SLICE_DURATION_S,                                 SLICE_DURATION_S * 2),
+  makeLtsFile(2, SLICE_DURATION_S * 2,                             SLICE_DURATION_S * 3),
+  makeLtsFile(3, SLICE_DURATION_S * 3 + SLICE_DURATION_S * 0.26,   SLICE_DURATION_S * 4),
+  makeLtsFile(4, SLICE_DURATION_S * 4 + SLICE_DURATION_S * 0.69,   SLICE_DURATION_S * 5),
+];
+
+// User-toggle state for the two experiments. Mutated by `send()` when
+// the SCI tab fires `setExperimentEnabled`. The next emit reads it.
+// Defaults OFF — matches the C# defaults so the player has to opt
+// each experiment in explicitly.
+const simEnabled: Record<string, boolean> = {
+  'atm-profile': false,
+  'lts':         false,
+};
+
+// Atm transit bracket — tracked per real-time tick from `simAltitude`.
+// Resets when the vessel crosses a layer boundary.
+let simAtmLastLayer: string = '';
+let simAtmTransitMin = Infinity;
+let simAtmTransitMax = -Infinity;
+let simAtmTransitMinP = Infinity;
+let simAtmTransitMaxP = -Infinity;
+
+// LTS recorded-phase bracket — same idea; resets on slice rollover.
+let simLtsLastSlice = -1;
+let simLtsRecordedMin = Infinity;
+let simLtsRecordedMax = -Infinity;
+
+function currentLayerName(altitude: number): string {
+  for (const [name, top] of KERBIN_LAYERS) if (altitude < top) return name;
+  return '';
+}
 
 function currentAltitude(): number {
   const phase = (realTimeSec() / ALT_PERIOD_S) * Math.PI * 2;
@@ -133,12 +221,20 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'mk1pod_v2',
     title: 'Mk1 Command Pod',
     parentId: null,
-    tags: ['power-store', 'power-consume'],
+    tags: ['power-store', 'power-consume', 'science-storage'],
     build: () => [
       // Battery: 50% SoC, slow drain.
       ['B', 0.5, 200, -0.4],
       // Command idle draw.
       ['C', 0.05, 0, 0, 0],
+      // Small science drive — holds the atm-profile files.
+      [
+        'DS',
+        MK1_FILES.reduce((s, [, exp]) => s + (exp === 'lts' ? 5_000 : 1_000), 0),
+        51_200,
+        MK1_FILES.length,
+        MK1_FILES,
+      ],
     ],
   },
   {
@@ -149,17 +245,59 @@ const FIXTURE_PARTS: PartFixture[] = [
     tags: ['power-consume', 'science-instrument'],
     build: () => {
       const altitude = currentAltitude();
+      const pressure = pressureForAltitude(altitude);
       const lts = ltsState();
+      const layerName = currentLayerName(altitude);
+
+      // Track atm transit bracket. Reset on layer change.
+      const atmEnabled = simEnabled['atm-profile'];
+      if (atmEnabled && layerName !== simAtmLastLayer) {
+        simAtmTransitMin = layerName === '' ? Infinity  : altitude;
+        simAtmTransitMax = layerName === '' ? -Infinity : altitude;
+        simAtmTransitMinP = layerName === '' ? Infinity  : pressure;
+        simAtmTransitMaxP = layerName === '' ? -Infinity : pressure;
+      } else if (atmEnabled && layerName !== '') {
+        simAtmTransitMin = Math.min(simAtmTransitMin, altitude);
+        simAtmTransitMax = Math.max(simAtmTransitMax, altitude);
+        simAtmTransitMinP = Math.min(simAtmTransitMinP, pressure);
+        simAtmTransitMaxP = Math.max(simAtmTransitMaxP, pressure);
+      }
+      simAtmLastLayer = layerName;
+      const atmHasBracket = simAtmTransitMax >= simAtmTransitMin;
+
+      // Track lts recorded-phase bracket. Reset on slice rollover.
+      const ltsEnabled = simEnabled['lts'];
+      if (ltsEnabled && lts.sliceIdx !== simLtsLastSlice) {
+        simLtsRecordedMin = lts.phase;
+        simLtsRecordedMax = lts.phase;
+      } else if (ltsEnabled) {
+        simLtsRecordedMin = Math.min(simLtsRecordedMin, lts.phase);
+        simLtsRecordedMax = Math.max(simLtsRecordedMax, lts.phase);
+      }
+      simLtsLastSlice = lts.sliceIdx;
+      const ltsHasBracket = ltsEnabled && simLtsRecordedMax >= simLtsRecordedMin;
+
+      // active = enabled && in regime. Mirrors the C# state computation.
+      const atmActive = atmEnabled && layerName !== '';
+      const ltsActive = ltsEnabled;  // sim is always in an applicable situation
+
       return [
         ['IN', '2HOT Thermometer', ['atm-profile', 'lts']],
-        // EXA — current Kerbin atmosphere state. Active flag is on,
-        // so whichever layer the altitude pointer is in gets an
-        // orange overlay. Saved-local mirrors the SEED_FILES.
+        // EXA — current Kerbin atmosphere state.
         [
           'EXA',
           'atm-profile',
-          1,            // active
-          1,            // willComplete (atm always 1 today)
+          atmActive ? 1 : 0,
+          1,                                     // willComplete (atm always 1 today)
+          atmEnabled ? 1 : 0,
+          layerName,                              // currentLayerName
+          atmHasBracket ? simAtmTransitMin  : 0,  // transitMinAlt
+          atmHasBracket ? simAtmTransitMax  : 0,  // transitMaxAlt
+          atmHasBracket ? simAtmTransitMinP : 0,  // transitMinPressureAtm
+          atmHasBracket ? simAtmTransitMaxP : 0,  // transitMaxPressureAtm
+          pressure,                               // currentPressureAtm
+          atmEnabled ? 'Mk1 Command Pod' : '',    // destinationStorage when enabled
+
           'Kerbin',
           altitude,
           KERBIN_LAYERS,
@@ -170,14 +308,16 @@ const FIXTURE_PARTS: PartFixture[] = [
           ],
           [],
         ],
-        // EXL — Kerbin LTS state. solarParentName=Kerbin (Kerbin is
-        // already a solar child). currentSliceIndex/phase advance
-        // with the timer; saved-local matches SEED_FILES.
+        // EXL — Kerbin LTS state.
         [
           'EXL',
           'lts',
-          1,                              // active
-          lts.willComplete ? 1 : 0,        // willComplete (varies by slice)
+          ltsActive ? 1 : 0,
+          lts.willComplete ? 1 : 0,
+          ltsEnabled ? 1 : 0,
+          ltsHasBracket ? simLtsRecordedMin : 0,
+          ltsHasBracket ? simLtsRecordedMax : 0,
+          ltsEnabled ? 'OKTO2 Probe Core' : '',
           'Kerbin',
           'SrfLanded',
           'Kerbin',
@@ -185,7 +325,7 @@ const FIXTURE_PARTS: PartFixture[] = [
           KERBIN_YEAR_S,
           lts.sliceIdx,
           lts.phase,
-          lts.activeFid,
+          ltsActive ? lts.activeFid : 0,
           SAVED_LOCAL_LTS,
           [],
         ],
@@ -201,14 +341,13 @@ const FIXTURE_PARTS: PartFixture[] = [
     build: () => [
       // Command idle draw.
       ['C', 0.02, 0, 0, 0],
-      // Data storage. usedBytes derived from the file mix; capacity
-      // matches the cfg-side default so the gauge isn't full.
+      // Larger drive on the probe core — holds the LTS files.
       [
         'DS',
-        SEED_FILES.reduce((s, [, exp]) => s + (exp === 'lts' ? 5_000 : 1_000), 0),
+        OKTO2_FILES.reduce((s, [, exp]) => s + (exp === 'lts' ? 5_000 : 1_000), 0),
         102_400,
-        SEED_FILES.length,
-        SEED_FILES,
+        OKTO2_FILES.length,
+        OKTO2_FILES,
       ],
     ],
   },
@@ -254,7 +393,30 @@ export class NovaSimulatedKsp implements Ksp {
   }
 
   send: Ksp['send'] = (topic, op, ...args) => {
-    // No Nova ops handled in dev. Forward to the inner sim.
+    // Intercept Nova ops we recognise — currently just the experiment
+    // toggle. Mutating `simEnabled` makes the next emit reflect the
+    // change; we also force-emit immediately so the UI doesn't have to
+    // wait for the next 100 ms tick to see the result.
+    if (topic.name.startsWith(PART_PREFIX) && op === 'setExperimentEnabled') {
+      const [experimentId, enabled] = args as unknown as [string, boolean];
+      simEnabled[experimentId] = enabled;
+      // Reset transit/recorded brackets on disable so re-enable starts fresh.
+      if (!enabled) {
+        if (experimentId === 'atm-profile') {
+          simAtmTransitMin = Infinity;
+          simAtmTransitMax = -Infinity;
+          simAtmTransitMinP = Infinity;
+          simAtmTransitMaxP = -Infinity;
+          simAtmLastLayer = '';
+        } else if (experimentId === 'lts') {
+          simLtsRecordedMin = Infinity;
+          simLtsRecordedMax = -Infinity;
+          simLtsLastSlice = -1;
+        }
+      }
+      this.tickEmit();
+      return;
+    }
     this.inner.send(topic, op, ...args);
   };
 

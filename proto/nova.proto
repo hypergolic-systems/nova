@@ -201,15 +201,52 @@ message ReactionWheelState {
 
 // --- Science state ---
 
-// One observation result. Lives in a DataStorage. No payload — at view
-// time the UI synthesizes display values deterministically from
-// (subject_id, fidelity).
+// One progressive observation record. Lives in a DataStorage. Two
+// kinds, distinguished by which set of fields is populated:
+//
+//  Direct:      `recorded_*_pressure_atm` + `layer_*_pressure_atm`.
+//               The PartModule updates the recorded bounds each tick
+//               while loaded + active; fidelity is derived from
+//               (recorded span / layer span) and cached in `fidelity`.
+//
+//  Interpolated: `start_ut` + `end_ut`. No per-tick update needed —
+//                fidelity at any time is
+//                `clamp((min(now,end_ut) - start_ut) / (end_ut-start_ut), 0, 1)`.
+//                Telemetry recomputes on emit; the cached `fidelity`
+//                field is for save-file readers.
+//
+// Both kinds share the common fields. There is no "sealed" state — a
+// file is created when observation starts and continues to update or
+// interpolate until the player retrieves / transmits / discards it.
 message ScienceFile {
   string subject_id    = 1;   // SubjectKey.ToString(), e.g. "lts@Kerbin:SrfLanded:7"
   string experiment_id = 2;   // "atm-profile", "lts", etc.
-  double fidelity      = 3;   // [0,1]
-  double produced_at   = 4;   // UT when emitted
+  double fidelity      = 3;   // [0,1] — cached snapshot, not the source of truth
+  double produced_at   = 4;   // UT when this file was first created
   string instrument    = 5;   // Player-facing name of the instrument that produced it
+
+  // Direct (atm-profile): pressure bounds the vessel has covered, plus
+  // the layer's full pressure span. Empty for interpolated files.
+  double recorded_min_pressure_atm = 6;
+  double recorded_max_pressure_atm = 7;
+  double layer_bottom_pressure_atm = 8;
+  double layer_top_pressure_atm    = 9;
+  // Altitude bounds the vessel covered while recording — for UI
+  // display (km read better than pressure on the SCI tab).
+  double recorded_min_alt_m        = 10;
+  double recorded_max_alt_m        = 11;
+
+  // Interpolated (lts): start UT (when file was created — may be
+  // mid-slice if the player enabled the experiment late) and the UT
+  // at which the slice ends (interpolation cap). `slice_duration`
+  // gates the denominator: fidelity =
+  // clamp((min(now, end_ut) - start_ut) / slice_duration, 0, 1).
+  // Storing `slice_duration` on the file (rather than re-deriving
+  // from body year at read time) makes the file self-contained for
+  // offline tooling.
+  double start_ut                  = 12;
+  double end_ut                    = 13;
+  double slice_duration_seconds    = 14;
 }
 
 message DataStorageState {
@@ -221,11 +258,13 @@ message DataStorageState {
 // single source of truth for "where is this vessel" exists across all
 // components.
 message ThermometerState {
-  bool   atm_active             = 1;
-  bool   lts_active             = 2;
-  string lts_subject_id         = 3;  // identifies the in-progress LTS file
-  double lts_accumulated_seconds = 4; // progress toward fidelity 1.0
-  double lts_last_update_ut     = 5;
+  // User-controlled enable flags. Default false — players opt each
+  // experiment in via the SCI tab toggle. All other Thermometer state
+  // is now stored on the ScienceFile records in DataStorage (live for
+  // direct measurements, interpolated for LTS), so the component
+  // itself is essentially stateless beyond the toggles.
+  bool   atm_enabled            = 1;
+  bool   lts_enabled            = 2;
 }
 
 // --- Flight state (only on in-flight vessels) ---

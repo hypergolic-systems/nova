@@ -4,6 +4,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Nova.Core.Components;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Science;
+using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
 using Nova.Core.Science;
 using Nova.Tests.TestHelpers;
@@ -37,17 +38,29 @@ public class LongTermStudyTests {
     return (vessel, therm, storage);
   }
 
-  // Mimic NovaThermometerModule starting an LTS run. After flipping
-  // LtsActive, prime the LP at this UT so the device.Demand /
-  // .Satisfaction reflect the new active state before any slice
-  // rollover fires.
+  // Mimic NovaThermometerModule starting an LTS run. Enable the
+  // experiment, drop a file for the current slice, prime ValidUntil
+  // so the M1 scheduler advances to the next slice boundary on Tick.
   private static void StartLts(Thermometer t, double nowUT) {
-    var v = t.Vessel;
-    var c = v.Context;
+    t.LtsEnabled = true;
+    var c = t.Vessel.Context;
     var subject = LongTermStudyExperiment.SubjectFor(c.BodyName, c.Situation, nowUT, c.BodyYearSeconds);
-    t.StartOrSwitchLts(subject, nowUT);
-    v.Invalidate();
-    v.Tick(nowUT);  // forces DoSolve with the new active state
+    var sliceEnd = LongTermStudyExperiment.NextSliceBoundary(nowUT, c.BodyYearSeconds);
+    var sliceDur = LongTermStudyExperiment.SliceDurationFor(c.BodyYearSeconds);
+    t.EnsureLtsFile(subject, nowUT, sliceEnd, sliceDur);
+    t.LtsCurrentSubjectId = subject.ToString();
+    t.LtsActive = true;
+    t.ValidUntil = sliceEnd;
+  }
+
+  // Recompute fidelity for an interpolated file at a given UT (the
+  // canonical formula, mirrored from the wire emit path). The file's
+  // slice_duration drives the denominator so a mid-slice start tops
+  // out at less than 1.0 even when the observation window completes.
+  private static double InterpolateFidelity(ScienceFile f, double nowUT) {
+    if (f.SliceDurationSeconds <= 0) return 0;
+    double covered = System.Math.Min(nowUT, f.EndUt) - f.StartUt;
+    return System.Math.Min(1.0, System.Math.Max(0.0, covered / f.SliceDurationSeconds));
   }
 
   [TestMethod]
@@ -55,19 +68,15 @@ public class LongTermStudyTests {
     var (vessel, therm, storage) = Build();
     StartLts(therm, 0);
 
-    // Sanity: after StartLts the thermometer should be drawing EC at
-    // full satisfaction. If this is 0 then everything downstream
-    // accrues at 0 and we'd diagnose endlessly.
-    Assert.AreEqual(1.0, therm.Satisfaction, 1e-6,
-        "Thermometer should be at full sat after StartLts primes the solve");
-
     vessel.Tick(BodyYearSeconds);
 
     var ltsFiles = storage.Files.Where(f => f.ExperimentId == "lts").ToList();
     Assert.AreEqual(12, ltsFiles.Count);
-    foreach (var f in ltsFiles)
-      Assert.AreEqual(1.0, f.Fidelity, 1e-3,
-          $"Slice {f.SubjectId} expected full fidelity, got {f.Fidelity}");
+    foreach (var f in ltsFiles) {
+      double fid = InterpolateFidelity(f, BodyYearSeconds);
+      Assert.AreEqual(1.0, fid, 1e-3,
+          $"Slice {f.SubjectId} expected full fidelity at year-end, got {fid}");
+    }
   }
 
   [TestMethod]
@@ -85,45 +94,21 @@ public class LongTermStudyTests {
   }
 
   [TestMethod]
-  public void StarvedInstrument_PartialThenZero() {
-    // 27 EC at 0.0075/s = 3600 s of active draw before depletion.
-    // Without satisfaction tracking we sample sat at slice end:
-    // - slices 0..2 (ending at 1000, 2000, 3000): battery still has
-    //   plenty, sat=1.0, fidelity=1.0
-    // - slice 3 (ending at 4000): by then battery's empty (depleted
-    //   at ~3600), sat=0, fidelity=0
-    // - slices 4..11: sat=0, fidelity=0
-    var (vessel, therm, storage) = Build(batteryContents: 27);
-    StartLts(therm, 0);
-    vessel.Tick(BodyYearSeconds);
-
-    var ltsFiles = storage.Files.Where(f => f.ExperimentId == "lts").ToList();
-    Assert.AreEqual(12, ltsFiles.Count);
-
-    int fullCount = ltsFiles.Count(f => f.Fidelity > 0.99);
-    int zeroCount = ltsFiles.Count(f => f.Fidelity < 0.01);
-    Assert.IsTrue(fullCount >= 2 && fullCount <= 4,
-        $"Expected ~3 full-fidelity slices before starvation, got {fullCount}");
-    Assert.IsTrue(zeroCount >= 8,
-        $"Expected ≥ 8 zero-fidelity slices after starvation, got {zeroCount}");
-  }
-
-  [TestMethod]
-  public void MidSliceSubjectChange_FinalisesPartialFile() {
+  public void MidSliceStart_PartialFidelityAtSliceEnd() {
+    // Start at the half-way point of slice 0. The file's start_ut =
+    // SliceDuration/2; end_ut = SliceDuration. Max reachable fidelity
+    // = (end - start) / sliceDuration = 0.5.
     var (vessel, therm, storage) = Build();
-    StartLts(therm, 0);                            // slice 0, Kerbin/SrfLanded
-    vessel.Tick(SliceDuration / 2);                // half a slice elapses
+    double startAt = SliceDuration / 2;
+    StartLts(therm, startAt);
+    vessel.Tick(SliceDuration);    // slice 0 boundary
 
-    // Liftoff: situation flips to FlyingLow.
-    ((StubVesselContext)therm.Vessel.Context).Situation = Situation.FlyingLow;
-    var newSubject = LongTermStudyExperiment.SubjectFor(
-        "Kerbin", Situation.FlyingLow, SliceDuration / 2, BodyYearSeconds);
-    therm.StartOrSwitchLts(newSubject, SliceDuration / 2);
-
-    var oldFile = storage.Files.FirstOrDefault(f => f.SubjectId == "lts@Kerbin:SrfLanded:0");
-    Assert.IsNotNull(oldFile);
-    Assert.AreEqual(0.5, oldFile.Fidelity, 0.05,
-        "Half a slice elapsed → fidelity ≈ 0.5");
+    var slice0 = storage.Files.FirstOrDefault(f => f.SubjectId == "lts@Kerbin:SrfLanded:0");
+    Assert.IsNotNull(slice0);
+    double sliceEnd = SliceDuration;
+    double fid = InterpolateFidelity(slice0, sliceEnd);
+    Assert.AreEqual(0.5, fid, 1e-3,
+        "Mid-slice start: fidelity at slice end should be 0.5");
   }
 
   [TestMethod]

@@ -21,6 +21,10 @@ internal sealed class KspVesselContext : IVesselContext {
   public uint      BodyId   => (uint)vessel.mainBody.flightGlobalsIndex;
   public Situation Situation => (Situation)(int)ScienceUtil.GetExperimentSituation(vessel);
   public double    Altitude  => vessel.altitude;
+  // KSP exposes static pressure in kPa; convert to standard atmospheres
+  // (1 atm = 101.325 kPa) so the science layer computes coverage in
+  // physically meaningful units.
+  public double    StaticPressureAtm => vessel.staticPressurekPa / 101.325;
 
   public double BodyYearSeconds => ResolveBodyYear(vessel.mainBody);
 

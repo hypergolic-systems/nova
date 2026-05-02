@@ -12,6 +12,11 @@ public interface IVesselContext {
   uint                         BodyId          { get; }
   Nova.Core.Science.Situation  Situation       { get; }
   double                       Altitude        { get; }
+  // Static atmospheric pressure at the vessel's current position, in
+  // standard atmospheres (1 atm ≈ 101.325 kPa). 0 outside any
+  // atmosphere. Used by AtmosphericProfile to compute layer-coverage
+  // fidelity from the captured pressure range.
+  double                       StaticPressureAtm { get; }
   double                       BodyYearSeconds { get; }
   double                       OrbitPeriod     { get; }
   double                       BodyRadius      { get; }

@@ -110,6 +110,20 @@
   const markerY = $derived(CY - markerR);
 
   const hasAtmosphere = $derived(state.layers.length > 0);
+
+  // Recorded-bounds bracket: tick marks + connecting line on the +Y
+  // radial at the radii corresponding to `transitMinAlt` / `transitMaxAlt`.
+  // Sentinel: max <= min ⇒ no observation, hide the bracket entirely.
+  const hasBracket = $derived(state.transitMaxAlt > state.transitMinAlt);
+  const bracketTopY    = $derived(CY - altToR(state.transitMaxAlt));
+  const bracketBottomY = $derived(CY - altToR(state.transitMinAlt));
+
+  // Pretty-print the current layer name for the small label inside the
+  // SVG. Title-case, to read as a label rather than a wire id.
+  function prettyLayer(name: string): string {
+    if (!name) return '';
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
 </script>
 
 <div class="atm" title={hasAtmosphere ? `${state.bodyName} atmosphere` : `${state.bodyName} — no atmosphere`}>
@@ -166,6 +180,40 @@
         points="{CX},{markerY - 3} {CX - 3},{markerY + 2} {CX + 3},{markerY + 2}"
         class="atm__marker"
       />
+
+      {#if hasBracket}
+        <!-- Recorded altitude bracket — the range the vessel has covered
+             during the current layer transit. Two short horizontal ticks
+             on either side of the radial, with a vertical line connecting
+             them. Renders to the right of the radial so the live marker
+             still reads cleanly. -->
+        <line
+          x1={CX + 4} y1={bracketTopY}
+          x2={CX + 4} y2={bracketBottomY}
+          class="atm__bracket"
+        />
+        <line
+          x1={CX + 2} y1={bracketTopY}
+          x2={CX + 7} y2={bracketTopY}
+          class="atm__bracket-tick"
+        />
+        <line
+          x1={CX + 2} y1={bracketBottomY}
+          x2={CX + 7} y2={bracketBottomY}
+          class="atm__bracket-tick"
+        />
+      {/if}
+
+      {#if state.currentLayerName}
+        <!-- Currently-observed layer name. Top-left of the bounding box;
+             the topmost arc is symmetric so this corner is empty even
+             when the largest ring is fully filled. -->
+        <text
+          x={2} y={9}
+          class="atm__layer-label"
+          text-anchor="start"
+        >{prettyLayer(state.currentLayerName)}</text>
+      {/if}
     {/if}
   </svg>
 
@@ -250,6 +298,28 @@
   .atm__marker {
     fill: var(--accent-soft);
     filter: drop-shadow(0 0 4px var(--accent-glow));
+  }
+  /* Recorded-altitude bracket — alt-min/alt-max ticks during the
+     current transit. Dim accent so it reads as "previously seen" and
+     doesn't fight the live vessel marker. */
+  .atm__bracket {
+    stroke: var(--accent-dim);
+    stroke-width: 0.7;
+    opacity: 0.7;
+  }
+  .atm__bracket-tick {
+    stroke: var(--accent);
+    stroke-width: 0.9;
+    opacity: 0.85;
+  }
+  /* Current-layer label inside the SVG. Tiny, dim — intentional weak
+     contrast so it doesn't compete with the rings or markers. */
+  .atm__layer-label {
+    fill: var(--fg-dim);
+    font-family: var(--font-display);
+    font-size: 6.5px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
   }
 
   .atm__none {

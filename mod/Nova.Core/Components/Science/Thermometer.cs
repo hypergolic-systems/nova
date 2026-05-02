@@ -9,38 +9,51 @@ namespace Nova.Core.Components.Science;
 // Stock-thermometer instrument. Runs the AtmosphericProfile and
 // LongTermStudy experiments.
 //
-// Atmospheric profile is loaded-vessel-only: the mod-side PartModule
-// edge-detects layer crossings and calls EmitAtmFile.
+// Files are progressive records living on a DataStorage. Two kinds:
 //
-// Long-term study is event-driven via the M1 component scheduler:
-// ValidUntil = next slice boundary; Update fires there on both loaded
-// and unloaded vessels.
+//  * Atmospheric Profile (DIRECT): the mod-side PartModule, while the
+//    vessel is loaded + active in an applicable layer, calls
+//    `WriteAtmReading(pressure, altitude, ut)` each tick. The file
+//    gets created on first reading and is upserted in place; its
+//    fidelity is recomputed from the captured pressure span.
+//
+//  * Long-Term Study (INTERPOLATED): the file records `(start_ut,
+//    end_ut)` once on creation and the fidelity is computed at read
+//    time from current UT. No per-tick update needed — works on
+//    unloaded vessels for free. `Update(nowUT)` fires at slice
+//    boundaries (via the M1 ValidUntil scheduler) to roll over to
+//    the next slice's file.
+//
+// User toggles `AtmEnabled` / `LtsEnabled` gate file creation +
+// updates. Disabling stops updates; the file persists as-is.
 public class Thermometer : VirtualComponent {
   // Prefab — set by ComponentFactory from cfg. Not persisted.
   public double EcRate;
 
-  // Player-facing name stamped onto every emitted file. Set by the
-  // mod-side PartModule from `part.partInfo.title` so the UI can show
-  // "2HOT Thermometer" without needing to round-trip through the
-  // structure topic. Falls back to the class name when the mod side
-  // hasn't initialised yet (tests).
+  // Player-facing name stamped onto every produced file. Set by the
+  // mod-side PartModule from `part.partInfo.title`. Falls back to the
+  // class name when the mod side hasn't initialised yet (tests).
   public string InstrumentName = "Thermometer";
 
   // Experiments this instrument can run. Surfaced to the UI via the
-  // 'IN' telemetry frame so the SCI tab's Instruments section shows
-  // the player what each device is capable of producing. Order is
-  // stable for deterministic UI rendering.
+  // 'IN' telemetry frame.
   public static readonly string[] SupportedExperiments = new[] {
     AtmosphericProfileExperiment.ExperimentId,
     LongTermStudyExperiment.ExperimentId,
   };
 
-  // State.
+  // User-controlled enables. Default OFF — players opt each experiment
+  // in via the SCI tab toggle.
+  public bool AtmEnabled = false;
+  public bool LtsEnabled = false;
+
+  // Derived per tick by NovaThermometerModule. Not persisted; the
+  // device demand uses these to gate EC consumption to "actually
+  // observing right now".
   public bool   AtmActive;
   public bool   LtsActive;
-  public string LtsSubjectId;
-  public double LtsAccumulatedSeconds;
-  public double LtsLastUpdateUT;
+  public string AtmCurrentLayer;     // for find-file-for-current-layer
+  public string LtsCurrentSubjectId; // for slice-boundary scheduling
 
   internal ResourceSolver.Device device;
 
@@ -58,101 +71,136 @@ public class Thermometer : VirtualComponent {
     device.Demand = (AtmActive || LtsActive) ? 1.0 : 0.0;
   }
 
-  // Mod-side hook: a layer crossing was detected. Write a fidelity-1.0
-  // file to the first DataStorage on the vessel that has capacity.
-  public void EmitAtmFile(SubjectKey subject, double nowUT) {
-    Deposit(new ScienceFile {
-      SubjectId    = subject.ToString(),
-      ExperimentId = subject.ExperimentId,
-      Fidelity     = 1.0,
-      ProducedAt   = nowUT,
-      Instrument   = InstrumentName,
-    }, AtmosphericProfileExperiment.FileSizeBytes);
-  }
+  // Direct-measurement update for atm-profile. Called each tick by
+  // NovaThermometerModule.FixedUpdate when active in an applicable
+  // layer. Creates the file on first call (reserving its byte cost),
+  // upserts on subsequent calls. Extends the file's pressure /
+  // altitude bounds to include the current sample, and recomputes
+  // the cached fidelity snapshot.
+  public void WriteAtmReading(string bodyName, string layerName,
+                              double pressureAtm, double altitudeM,
+                              double nowUT) {
+    var layer = AtmosphericProfileExperiment.LayerByName(bodyName, layerName);
+    if (!layer.HasValue) return;
 
-  // Mod-side hook: long-term study became applicable in this body+
-  // situation, OR the situation/body just changed mid-study. Finalises
-  // the outgoing slice (partial-fidelity emit) and starts a fresh
-  // accumulator on the new subject. Pass null to exit LTS entirely.
-  public void StartOrSwitchLts(SubjectKey? newSubject, double nowUT) {
-    if (LtsActive)
-      FinaliseAndEmitCurrentSlice(nowUT);
+    var subject = new SubjectKey(
+        AtmosphericProfileExperiment.ExperimentId, bodyName, layerName);
+    string subjectId = subject.ToString();
 
-    if (newSubject.HasValue) {
-      LtsActive             = true;
-      LtsSubjectId          = newSubject.Value.ToString();
-      LtsAccumulatedSeconds = 0;
-      LtsLastUpdateUT       = nowUT;
-      ValidUntil            = LongTermStudyExperiment.NextSliceBoundary(
-                                  nowUT, Vessel.Context.BodyYearSeconds);
-    } else {
-      LtsActive    = false;
-      LtsSubjectId = null;
-      ValidUntil   = double.PositiveInfinity;
+    var storage = FindOrAcquireStorageFor(subjectId, AtmosphericProfileExperiment.FileSizeBytes);
+    if (storage == null) return;
+
+    var existing = storage.FindBySubject(subjectId);
+    var file = existing ?? new ScienceFile {
+      SubjectId             = subjectId,
+      ExperimentId          = subject.ExperimentId,
+      ProducedAt            = nowUT,
+      Instrument            = InstrumentName,
+      LayerBottomPressureAtm = layer.Value.bottomPressureAtm,
+      LayerTopPressureAtm    = layer.Value.topPressureAtm,
+      RecordedMinPressureAtm = pressureAtm,
+      RecordedMaxPressureAtm = pressureAtm,
+      RecordedMinAltM        = altitudeM,
+      RecordedMaxAltM        = altitudeM,
+    };
+
+    if (existing != null) {
+      file.RecordedMinPressureAtm = Math.Min(file.RecordedMinPressureAtm, pressureAtm);
+      file.RecordedMaxPressureAtm = Math.Max(file.RecordedMaxPressureAtm, pressureAtm);
+      file.RecordedMinAltM        = Math.Min(file.RecordedMinAltM, altitudeM);
+      file.RecordedMaxAltM        = Math.Max(file.RecordedMaxAltM, altitudeM);
     }
+
+    file.Fidelity = AtmosphericProfileExperiment.FidelityFromPressureCoverage(
+        file.RecordedMinPressureAtm, file.RecordedMaxPressureAtm,
+        file.LayerBottomPressureAtm, file.LayerTopPressureAtm);
+
+    storage.Upsert(file, AtmosphericProfileExperiment.FileSizeBytes);
   }
 
-  // Slice rollover. Fired by VirtualVessel.Tick when ValidUntil expires.
-  public override void Update(double nowUT) {
-    FinaliseAndEmitCurrentSlice(nowUT);
+  // Interpolated-measurement creation for lts. Idempotent: if a file
+  // for the subject already lives in storage, leaves it alone (the
+  // existing start_ut is canonical — re-creating would erase any
+  // earlier-than-now start). Called by NovaThermometerModule on
+  // enable / situation change, and by the M1 scheduler at slice
+  // boundaries.
+  public void EnsureLtsFile(SubjectKey subject, double startUT, double endUT, double sliceDuration) {
+    var subjectId = subject.ToString();
+    var storage = FindOrAcquireStorageFor(subjectId, LongTermStudyExperiment.FileSizeBytes);
+    if (storage == null) return;
 
-    // Begin the next slice on the same body+situation.
-    var c = Vessel.Context;
-    var next = LongTermStudyExperiment.SubjectFor(
-        c.BodyName, c.Situation, nowUT, c.BodyYearSeconds);
-    LtsSubjectId          = next.ToString();
-    LtsAccumulatedSeconds = 0;
-    LtsLastUpdateUT       = nowUT;
-    ValidUntil            = LongTermStudyExperiment.NextSliceBoundary(
-                                nowUT, Vessel.Context.BodyYearSeconds);
-  }
+    if (storage.HasSubject(subjectId)) return;
 
-  private void FinaliseAndEmitCurrentSlice(double nowUT) {
-    double dt = nowUT - LtsLastUpdateUT;
-    LtsAccumulatedSeconds += dt * device.Satisfaction;
-
-    double sliceDuration = LongTermStudyExperiment.SliceDurationFor(Vessel.Context.BodyYearSeconds);
-    double fidelity = Math.Min(1.0, Math.Max(0.0, LtsAccumulatedSeconds / sliceDuration));
-
-    Deposit(new ScienceFile {
-      SubjectId    = LtsSubjectId,
-      ExperimentId = LongTermStudyExperiment.ExperimentId,
-      Fidelity     = fidelity,
-      ProducedAt   = nowUT,
-      Instrument   = InstrumentName,
+    storage.Upsert(new ScienceFile {
+      SubjectId             = subjectId,
+      ExperimentId          = subject.ExperimentId,
+      ProducedAt            = startUT,
+      Instrument            = InstrumentName,
+      StartUt               = startUT,
+      EndUt                 = endUT,
+      SliceDurationSeconds  = sliceDuration,
+      // Cached snapshot — telemetry recomputes on emit, but save-cli
+      // and offline readers see a useful value too.
+      Fidelity              = 0,
     }, LongTermStudyExperiment.FileSizeBytes);
   }
 
-  private void Deposit(ScienceFile file, long sizeBytes) {
-    var storage = Vessel.AllComponents().OfType<DataStorage>()
-        .FirstOrDefault(s => s.CanDeposit(sizeBytes));
-    if (storage == null) {
-      Vessel.Log?.Invoke($"[Science] No storage with capacity for {file.SubjectId}; dropped");
+  // Slice-boundary rollover. Fired by the M1 scheduler when ValidUntil
+  // expires — both for loaded and unloaded vessels. Creates the next
+  // slice's file (if enabled+applicable) and re-arms ValidUntil.
+  public override void Update(double nowUT) {
+    if (!LtsEnabled) {
+      ValidUntil = double.PositiveInfinity;
       return;
     }
-    storage.Deposit(file, sizeBytes);
+
+    var ctx = Vessel?.Context;
+    if (ctx == null || ctx.Situation == Situation.None || ctx.BodyYearSeconds <= 0) {
+      ValidUntil = double.PositiveInfinity;
+      return;
+    }
+
+    var subject = LongTermStudyExperiment.SubjectFor(
+        ctx.BodyName, ctx.Situation, nowUT, ctx.BodyYearSeconds);
+    var sliceEnd = LongTermStudyExperiment.NextSliceBoundary(nowUT, ctx.BodyYearSeconds);
+    var sliceDur = LongTermStudyExperiment.SliceDurationFor(ctx.BodyYearSeconds);
+    var sliceStart = sliceEnd - sliceDur;
+
+    EnsureLtsFile(subject, sliceStart, sliceEnd, sliceDur);
+    LtsCurrentSubjectId = subject.ToString();
+    LtsActive = true;
+    ValidUntil = sliceEnd;
+  }
+
+  // Walks the vessel for the storage that holds an existing file for
+  // this subject (so updates always land in the same place), or the
+  // first one with capacity if there's no existing file. Returns null
+  // when neither exists — the caller logs and drops.
+  private DataStorage FindOrAcquireStorageFor(string subjectId, long sizeBytes) {
+    if (Vessel == null) return null;
+    DataStorage withCapacity = null;
+    foreach (var s in Vessel.AllComponents().OfType<DataStorage>()) {
+      if (s.HasSubject(subjectId)) return s;
+      if (withCapacity == null && s.CanDeposit(sizeBytes)) withCapacity = s;
+    }
+    if (withCapacity == null)
+      Vessel.Log?.Invoke($"[Science] No storage with capacity for {subjectId}; dropped");
+    return withCapacity;
   }
 
   public override void Load(PartState state) {
     if (state.Thermometer == null) return;
     var t = state.Thermometer;
-    AtmActive             = t.AtmActive;
-    LtsActive             = t.LtsActive;
-    LtsSubjectId          = t.LtsSubjectId;
-    LtsAccumulatedSeconds = t.LtsAccumulatedSeconds;
-    LtsLastUpdateUT       = t.LtsLastUpdateUt;
-    if (LtsActive)
-      ValidUntil = LongTermStudyExperiment.NextSliceBoundary(
-          LtsLastUpdateUT, Vessel.Context.BodyYearSeconds);
+    AtmEnabled = t.AtmEnabled;
+    LtsEnabled = t.LtsEnabled;
+    // Don't pre-arm ValidUntil here — the next Tick will figure it
+    // out via Update(nowUT).
   }
 
   public override void Save(PartState state) {
     state.Thermometer = new ThermometerState {
-      AtmActive             = AtmActive,
-      LtsActive             = LtsActive,
-      LtsSubjectId          = LtsSubjectId ?? "",
-      LtsAccumulatedSeconds = LtsAccumulatedSeconds,
-      LtsLastUpdateUt       = LtsLastUpdateUT,
+      AtmEnabled = AtmEnabled,
+      LtsEnabled = LtsEnabled,
     };
   }
 }

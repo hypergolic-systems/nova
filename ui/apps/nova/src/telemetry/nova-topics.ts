@@ -58,15 +58,30 @@ export type NovaFuelCellFrame = [
   refillActive: 0 | 1,
 ];
 
-// One observation result on disk. Subject id encodes (experiment, body,
-// variant, optional slice index); the UI synthesises display values
-// from it deterministically.
+// One progressive observation record on disk. The wire shape mirrors
+// the proto fields. Direct vs interpolated is determined by which set
+// of trailing fields is populated:
+//
+//  Direct (atm-profile)   → recordedMin/MaxPressureAtm + layerBottom/TopPressureAtm + recordedMin/MaxAltM
+//  Interpolated (lts)     → startUt + endUt + sliceDurationSeconds
+//
+// Both kinds share the leading prefix (subject id, experiment id, etc.)
+// so the UI's file modal renders all files with one schema.
 export type NovaScienceFileFrame = [
   subjectId: string,
   experimentId: string,
   fidelity: number,
   producedAt: number,
   instrument: string,
+  recordedMinPressureAtm: number,
+  recordedMaxPressureAtm: number,
+  layerBottomPressureAtm: number,
+  layerTopPressureAtm:    number,
+  recordedMinAltM: number,
+  recordedMaxAltM: number,
+  startUt:              number,
+  endUt:                number,
+  sliceDurationSeconds: number,
 ];
 
 export type NovaDataStorageFrame = [
@@ -102,9 +117,20 @@ export type NovaAtmExperimentFrame = [
   experimentId: string,
   active: 0 | 1,
   willComplete: 0 | 1,
+  enabled: 0 | 1,
+  currentLayerName: string,                       // "" when not in a layer
+  transitMinAlt: number,                          // m; 0 when no observation
+  transitMaxAlt: number,                          // m; 0 when no observation
+  transitMinPressureAtm: number,                  // 0 when no observation
+  transitMaxPressureAtm: number,                  // 0 when no observation
+  currentPressureAtm: number,                     // live; 0 outside atm
+  destinationStorage: string,                     // "" when no storage on vessel
   bodyName: string,
   altitude: number,
-  layers: [name: string, top: number][],         // bottom→top, top in m
+  // Each layer entry: [name, topAltMeters, bottomPressureAtm, topPressureAtm].
+  // bottom-to-top order; bottom altitude/pressure is the previous
+  // layer's top (or 0/surface for index 0).
+  layers: [name: string, topAlt: number, bottomP: number, topP: number][],
   savedLocal: [layerName: string, fidelity: number][],
   savedKsc:   [layerName: string, fidelity: number][],
 ];
@@ -119,6 +145,10 @@ export type NovaLtsExperimentFrame = [
   experimentId: string,
   active: 0 | 1,
   willComplete: 0 | 1,
+  enabled: 0 | 1,
+  recordedMinPhase: number,                       // 0..1; 0 when no observation
+  recordedMaxPhase: number,                       // 0..1; 0 when no observation
+  destinationStorage: string,                     // "" when no storage on vessel
   bodyName: string,
   situation: string,
   solarParentName: string,
@@ -267,19 +297,34 @@ export interface CommandState {
 
 export interface ScienceFile {
   /** Stable, value-equal identifier for "what this file is about".
-   *  Encodes experiment + body + variant + optional slice index. The
-   *  UI synthesises display values from this string deterministically. */
+   *  Encodes experiment + body + variant + optional slice index. */
   subjectId: string;
   /** "atm-profile" / "lts" / etc. — drives palette and label. */
   experimentId: string;
-  /** Quality, 0..1. atm-profile always 1.0; lts grows over a slice. */
+  /** Quality, 0..1. Cached snapshot — telemetry recomputes on emit
+   *  (interpolated files climb live as UT advances). */
   fidelity: number;
-  /** UT (seconds) when the file was sealed. */
+  /** UT (seconds) when the file was first created (observation began). */
   producedAt: number;
   /** Player-facing name of the instrument that produced this file
-   *  ("2HOT Thermometer", etc.). Stamped at emit-time so files in
-   *  storage carry attribution after the producing part is gone. */
+   *  ("2HOT Thermometer", etc.). */
   instrument: string;
+
+  // Direct (atm-profile): pressure bounds the vessel has covered, plus
+  // the layer's full pressure span. Zeros for interpolated files.
+  recordedMinPressureAtm: number;
+  recordedMaxPressureAtm: number;
+  layerBottomPressureAtm: number;
+  layerTopPressureAtm:    number;
+  recordedMinAltM: number;
+  recordedMaxAltM: number;
+
+  // Interpolated (lts): file's start_ut, slice end_ut, and slice
+  // duration. UI derives fidelity at render time as
+  // `clamp((min(now, end) - start) / slice_duration, 0, 1)`.
+  startUt:              number;
+  endUt:                number;
+  sliceDurationSeconds: number;
 }
 
 export interface InstrumentState {
@@ -302,6 +347,30 @@ export interface AtmExperimentState {
    *  the dull-orange variant). Always true for atm-profile today;
    *  reserved slot for future EC-gated transit sealing. */
   willComplete: boolean;
+  /** User-controlled enable flag. Independent from `active` — a vessel
+   *  out of any atmospheric layer reports `enabled=true, active=false`. */
+  enabled: boolean;
+  /** Layer the vessel is currently transiting (matches the wire-format
+   *  layer name, e.g. "stratosphere"). Empty when not in any layer. */
+  currentLayerName: string;
+  /** Min altitude (m) recorded during the current layer transit.
+   *  0 = no observation captured yet. */
+  transitMinAlt: number;
+  /** Max altitude (m) recorded during the current layer transit.
+   *  0 = no observation captured yet. */
+  transitMaxAlt: number;
+  /** Min static pressure (atm) observed during the current layer
+   *  transit. Drives the fidelity-progress display since the C# side
+   *  scores file fidelity from pressure-span coverage. */
+  transitMinPressureAtm: number;
+  /** Max static pressure (atm) observed during the current layer
+   *  transit. */
+  transitMaxPressureAtm: number;
+  /** Live static pressure (atm) at the vessel's current position. */
+  currentPressureAtm: number;
+  /** Player-facing title of the part where the next sealed file will
+   *  land. Empty string = no `DataStorage` with capacity on the vessel. */
+  destinationStorage: string;
   /** Current vessel body — drives label and the layer table. */
   bodyName: string;
   /** Live vessel altitude in meters. UI clamps to layer bounds. */
@@ -309,7 +378,15 @@ export interface AtmExperimentState {
   /** Bottom→top layer table for `bodyName`. Empty when the body has
    *  no atmosphere. Each layer's bottom = previous layer's top (or 0
    *  for index 0). */
-  layers: { name: string; top: number }[];
+  /** Bottom→top ordered. Each entry's `bottom` is the previous
+   *  entry's `top` (or surface = 0 for index 0). Pressure bounds in
+   *  atm; the higher pressure is the bottom. */
+  layers: {
+    name: string;
+    top: number;             // m
+    bottomPressureAtm: number;
+    topPressureAtm: number;
+  }[];
   /** Per-layer best fidelity stored on this vessel (0..1). Layers
    *  with no saved file are omitted from the wire and absent here. */
   savedLocal: Map<string, number>;
@@ -329,6 +406,17 @@ export interface LtsExperimentState {
    *  seal at partial fidelity even if active stays on. Drives the
    *  dull-orange variant on the current sector. */
   willComplete: boolean;
+  /** User-controlled enable flag. */
+  enabled: boolean;
+  /** Min phase (0..1, fraction of body-year) observed during the
+   *  current slice while the accumulator was active. 0 = no
+   *  observation captured yet. */
+  recordedMinPhase: number;
+  /** Max phase (0..1) observed during the current slice. 0 = none. */
+  recordedMaxPhase: number;
+  /** Player-facing title of the part where the next sealed file will
+   *  land. Empty string = no `DataStorage` with capacity on the vessel. */
+  destinationStorage: string;
   bodyName: string;
   /** Stock ExperimentSituations enum name (e.g. "SrfLanded"). */
   situation: string;
@@ -468,6 +556,16 @@ export interface NovaPartOps {
    * resets it to false.
    */
   setCommandTestLoad(active: boolean): void;
+
+  /**
+   * Toggle a specific experiment on or off on this part's
+   * Thermometer. `experimentId` matches the wire ids
+   * ("atm-profile" / "lts"). No-op when the part has no Thermometer
+   * or the id is unknown. Disabling LTS mid-slice triggers a partial-
+   * fidelity emit of the in-progress slice; disabling atm clears the
+   * transit memory so re-enabling starts fresh.
+   */
+  setExperimentEnabled(experimentId: string, enabled: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -597,42 +695,67 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           usedBytes: c[1],
           capacityBytes: c[2],
           fileCount: c[3],
-          files: c[4].map(([subjectId, experimentId, fidelity, producedAt, instrument]) => ({
-            subjectId,
-            experimentId,
-            fidelity,
-            producedAt,
-            instrument,
+          files: c[4].map((f) => ({
+            subjectId:               f[0],
+            experimentId:            f[1],
+            fidelity:                f[2],
+            producedAt:              f[3],
+            instrument:              f[4],
+            recordedMinPressureAtm:  f[5],
+            recordedMaxPressureAtm:  f[6],
+            layerBottomPressureAtm:  f[7],
+            layerTopPressureAtm:     f[8],
+            recordedMinAltM:         f[9],
+            recordedMaxAltM:         f[10],
+            startUt:                 f[11],
+            endUt:                   f[12],
+            sliceDurationSeconds:    f[13],
           })),
         });
         break;
       case 'EXA':
         out.atmExperiment.push({
-          experimentId:    c[1],
-          active:          c[2] === 1,
-          willComplete:    c[3] === 1,
-          bodyName:        c[4],
-          altitude:        c[5],
-          layers:          c[6].map(([name, top]) => ({ name, top })),
-          savedLocal:      new Map(c[7]),
-          savedKsc:        new Map(c[8]),
+          experimentId:          c[1],
+          active:                c[2] === 1,
+          willComplete:          c[3] === 1,
+          enabled:               c[4] === 1,
+          currentLayerName:      c[5],
+          transitMinAlt:         c[6],
+          transitMaxAlt:         c[7],
+          transitMinPressureAtm: c[8],
+          transitMaxPressureAtm: c[9],
+          currentPressureAtm:    c[10],
+          destinationStorage:    c[11],
+          bodyName:              c[12],
+          altitude:              c[13],
+          layers:                c[14].map(([name, top, bottomP, topP]) => ({
+            name, top,
+            bottomPressureAtm: bottomP,
+            topPressureAtm:    topP,
+          })),
+          savedLocal:            new Map(c[15]),
+          savedKsc:              new Map(c[16]),
         });
         break;
       case 'EXL':
         out.ltsExperiment.push({
-          experimentId:      c[1],
-          active:            c[2] === 1,
-          willComplete:      c[3] === 1,
-          bodyName:          c[4],
-          situation:         c[5],
-          solarParentName:   c[6],
-          slicesPerYear:     c[7],
-          bodyYearSeconds:   c[8],
-          currentSliceIndex: c[9],
-          phase:             c[10],
-          activeFidelity:    c[11],
-          savedLocal:        new Map(c[12]),
-          savedKsc:          new Map(c[13]),
+          experimentId:       c[1],
+          active:             c[2] === 1,
+          willComplete:       c[3] === 1,
+          enabled:            c[4] === 1,
+          recordedMinPhase:   c[5],
+          recordedMaxPhase:   c[6],
+          destinationStorage: c[7],
+          bodyName:           c[8],
+          situation:          c[9],
+          solarParentName:    c[10],
+          slicesPerYear:      c[11],
+          bodyYearSeconds:    c[12],
+          currentSliceIndex:  c[13],
+          phase:              c[14],
+          activeFidelity:     c[15],
+          savedLocal:         new Map(c[16]),
+          savedKsc:           new Map(c[17]),
         });
         break;
     }
