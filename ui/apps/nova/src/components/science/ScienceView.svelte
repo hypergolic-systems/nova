@@ -184,7 +184,14 @@
 
   function atmNow(s: AtmExperimentState): string {
     if (!s.currentLayerName) return 'above atmosphere';
-    return `${prettyLayer(s.currentLayerName)} · ${fmtKm(s.altitude)} · ${fmtAtm(s.currentPressureAtm)}`;
+    // The "now" line names the current regime AND the limits the
+    // experiment must capture. Vessel position lives on the indicator;
+    // the data line is the *target span*, not where the vessel is.
+    const idx   = s.layers.findIndex((l) => l.name === s.currentLayerName);
+    if (idx < 0) return prettyLayer(s.currentLayerName);
+    const layer = s.layers[idx];
+    const bottomAlt = idx === 0 ? 0 : s.layers[idx - 1].top;
+    return `${prettyLayer(s.currentLayerName)} · ${fmtKm(bottomAlt)}–${fmtKm(layer.top)} · ${fmtAtm(layer.bottomPressureAtm)}–${fmtAtm(layer.topPressureAtm)}`;
   }
   function atmSeen(s: AtmExperimentState): string {
     if (s.transitMaxAlt <= s.transitMinAlt) return '—';
@@ -192,14 +199,17 @@
     const span = layer ? Math.abs(layer.bottomPressureAtm - layer.topPressureAtm) : 0;
     const got  = Math.max(0, s.transitMaxPressureAtm - s.transitMinPressureAtm);
     const pct  = span > 0 ? Math.min(1, got / span) : 0;
-    return `${fmtKm(s.transitMinAlt)} – ${fmtKm(s.transitMaxAlt)} · ${fmtPct(pct, 0)} captured`;
+    return `${fmtKm(s.transitMinAlt)}–${fmtKm(s.transitMaxAlt)} · ${fmtAtm(s.transitMinPressureAtm)}–${fmtAtm(s.transitMaxPressureAtm)} · ${fmtPct(pct, 0)}`;
   }
   function prettyLayer(name: string): string {
     return name ? name.charAt(0).toUpperCase() + name.slice(1) : '';
   }
 
   function ltsNow(s: LtsExperimentState): string {
-    return `slice ${s.currentSliceIndex + 1} of ${s.slicesPerYear} · ${fmtPct(s.phase, 1)} of year`;
+    // Limits, not current — the slice range as a fraction of body-year.
+    const sliceStart = s.currentSliceIndex / s.slicesPerYear;
+    const sliceEnd   = (s.currentSliceIndex + 1) / s.slicesPerYear;
+    return `slice ${s.currentSliceIndex + 1}/${s.slicesPerYear} · ${fmtPct(sliceStart, 1)}–${fmtPct(sliceEnd, 1)}`;
   }
   function ltsSeen(s: LtsExperimentState): string {
     if (s.recordedMaxPhase <= s.recordedMinPhase) return '—';
@@ -208,7 +218,7 @@
     const sliceSpan  = sliceEnd - sliceStart;
     const got        = s.recordedMaxPhase - s.recordedMinPhase;
     const pct        = sliceSpan > 0 ? Math.min(1, got / sliceSpan) : 0;
-    return `${fmtPct(s.recordedMinPhase, 1)} – ${fmtPct(s.recordedMaxPhase, 1)} · ${fmtPct(pct, 0)} captured`;
+    return `${fmtPct(s.recordedMinPhase, 1)}–${fmtPct(s.recordedMaxPhase, 1)} · ${fmtPct(pct, 0)}`;
   }
 
   function ltsCompletion(state: LtsExperimentState): number {
@@ -320,35 +330,31 @@
                           {:else if lts}
                             <LtsOrbitIndicator state={lts} />
                           {/if}
-                          {#if enabled && atm}
-                            <div class="sci__exp-detail">
-                              <div class="sci__exp-detail-line">
-                                <span class="sci__exp-detail-key">NOW</span>
-                                <span class="sci__exp-detail-val">{atmNow(atm)}</span>
-                              </div>
-                              <div class="sci__exp-detail-line">
-                                <span class="sci__exp-detail-key">SEEN</span>
-                                <span class="sci__exp-detail-val">{atmSeen(atm)}</span>
-                              </div>
-                            </div>
-                          {/if}
-                          {#if enabled && lts}
-                            <div class="sci__exp-detail">
-                              <div class="sci__exp-detail-line">
-                                <span class="sci__exp-detail-key">NOW</span>
-                                <span class="sci__exp-detail-val">{ltsNow(lts)}</span>
-                              </div>
-                              <div class="sci__exp-detail-line">
-                                <span class="sci__exp-detail-key">SEEN</span>
-                                <span class="sci__exp-detail-val">{ltsSeen(lts)}</span>
-                              </div>
-                            </div>
-                          {/if}
                           {#if enabled}
-                            <span
-                              class="sci__exp-dest"
-                              class:sci__exp-dest--missing={dest === ''}
-                            >{dest === '' ? '→ NO STORAGE' : `→ ${dest}`}</span>
+                            <div class="sci__exp-detail">
+                              {#if atm}
+                                <div class="sci__exp-detail-line">
+                                  <span class="sci__exp-detail-key">LIMITS</span>
+                                  <span class="sci__exp-detail-val">{atmNow(atm)}</span>
+                                </div>
+                                <div class="sci__exp-detail-line">
+                                  <span class="sci__exp-detail-key">SEEN</span>
+                                  <span class="sci__exp-detail-val">{atmSeen(atm)}</span>
+                                </div>
+                              {:else if lts}
+                                <div class="sci__exp-detail-line">
+                                  <span class="sci__exp-detail-key">LIMITS</span>
+                                  <span class="sci__exp-detail-val">{ltsNow(lts)}</span>
+                                </div>
+                                <div class="sci__exp-detail-line">
+                                  <span class="sci__exp-detail-key">SEEN</span>
+                                  <span class="sci__exp-detail-val">{ltsSeen(lts)}</span>
+                                </div>
+                              {/if}
+                              <div class="sci__exp-detail-dest"
+                                class:sci__exp-detail-dest--missing={dest === ''}
+                              >{dest === '' ? '→ NO STORAGE' : `→ ${dest}`}</div>
+                            </div>
                           {/if}
                         </div>
                       {/if}
@@ -825,23 +831,28 @@
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
   }
+  /* Indicator on the left, live status block on the right. Side-by-
+     side keeps the row compact (no vertical growth from text) and
+     reads as "visualization + caption" rather than "two things
+     stacked". */
   .sci__exp-body {
     margin: 6px 0 10px 18px;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: flex-start;
-    gap: 4px;
+    gap: 12px;
   }
-  /* Live status detail under the indicator — two compact rows showing
-     "what is the experiment doing right now" without growing the panel
-     significantly. Only rendered when enabled, so a disabled experiment
-     stays a single visualization tile. */
+  /* Live status block beside the indicator — two compact rows of
+     LIMITS / SEEN data plus a destination strip. Only rendered when
+     the experiment is enabled. */
   .sci__exp-detail {
+    flex: 1 1 auto;
+    min-width: 0;
     display: grid;
     grid-template-columns: auto 1fr;
     column-gap: 8px;
-    row-gap: 1px;
-    padding-left: 2px;
+    row-gap: 2px;
+    padding-top: 4px;
     font-variant-numeric: tabular-nums;
   }
   .sci__exp-detail-line {
@@ -858,20 +869,22 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.02em;
+    min-width: 0;
+    line-height: 1.35;
+    word-spacing: -0.05em;
   }
-
-  /* "→ X" destination strip — only rendered while the experiment is
-     enabled, so it disappears (no height impact) when off. The arrow +
-     short title fits comfortably under the indicator. Mute by default;
-     red when no storage is reachable so the player notices data loss. */
-  .sci__exp-dest {
+  /* Destination strip — spans both grid columns under the data rows.
+     Dim text by default; red when no storage is reachable so the
+     player notices data loss. */
+  .sci__exp-detail-dest {
+    grid-column: 1 / -1;
+    margin-top: 4px;
     font-family: var(--font-display);
     font-size: 8.5px;
     letter-spacing: 0.18em;
     color: var(--fg-mute);
-    padding-left: 2px;
   }
-  .sci__exp-dest--missing {
+  .sci__exp-detail-dest--missing {
     color: var(--alert);
     text-shadow: 0 0 4px rgba(255, 82, 82, 0.4);
   }

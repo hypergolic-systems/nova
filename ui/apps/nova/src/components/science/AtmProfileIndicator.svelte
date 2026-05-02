@@ -61,7 +61,12 @@
     name: string;
     rInner: number;
     rOuter: number;
-    saved: number;
+    /** Fidelity in [0,1] — drives how much of the band fills with the
+     *  status color. 0 ⇒ the band reads as the empty/dark well. */
+    fidelity: number;
+    /** Outer radius of the FILLED sub-annulus, computed from fidelity.
+     *  rInner ≤ rFill ≤ rOuter. */
+    rFill: number;
     ksc: number;
     color: 'saved' | 'active' | 'active-dull' | 'empty';
   }
@@ -81,16 +86,22 @@
       const saved = state.savedLocal.get(l.name) ?? 0;
       const isHere = state.active && currentLayer === l.name;
       let color: RingArc['color'] = 'empty';
+      let fidelity = 0;
       if (isHere) {
-        color = state.willComplete ? 'active' : 'active-dull';
+        color    = state.willComplete ? 'active' : 'active-dull';
+        fidelity = saved;          // active observation IS the saved file
       } else if (saved > 0) {
-        color = 'saved';
+        color    = 'saved';
+        fidelity = saved;
       }
+      const rInner = altToR(prevTop);
+      const rOuter = altToR(l.top);
       out.push({
         name:    l.name,
-        rInner:  altToR(prevTop),
-        rOuter:  altToR(l.top),
-        saved,
+        rInner,
+        rOuter,
+        fidelity,
+        rFill:   rInner + Math.max(0, Math.min(1, fidelity)) * (rOuter - rInner),
         ksc:     state.savedKsc.get(l.name) ?? 0,
         color,
       });
@@ -129,12 +140,24 @@
 <div class="atm" title={hasAtmosphere ? `${state.bodyName} atmosphere` : `${state.bodyName} — no atmosphere`}>
   <svg class="atm__svg" viewBox="0 0 {W} {H}" aria-hidden="true">
     {#if hasAtmosphere}
-      <!-- atmospheric layer rings, innermost → outermost -->
+      <!-- empty wells, one per layer — the dark "unobserved" floor. -->
       {#each rings as r (r.name)}
         <path
           d={halfRingPath(r.rInner, r.rOuter)}
-          class="atm__ring atm__ring--{r.color}"
+          class="atm__ring atm__ring--empty"
         />
+      {/each}
+
+      <!-- partial fill: an inner sub-annulus that grows outward as
+           fidelity climbs. fidelity=0 ⇒ no fill (well only);
+           fidelity=1 ⇒ fills the whole layer band. -->
+      {#each rings as r (r.name)}
+        {#if r.fidelity > 0 && r.color !== 'empty'}
+          <path
+            d={halfRingPath(r.rInner, r.rFill)}
+            class="atm__ring atm__ring--{r.color}"
+          />
+        {/if}
       {/each}
 
       <!-- thin layer-boundary arcs so neighbouring rings still read

@@ -143,14 +143,16 @@ function makeLtsFile(sliceIdx: number, startUT: number, endUT: number): NovaScie
 }
 
 // Storage seed. Mk1 holds atm-profile records from a prior mission;
-// OKTO2 holds lts records. Slices 0-2 are fully sealed (full slice
-// duration covered). Slice 3 started ~26% into the slice → max
-// fidelity ~0.74. Slice 4 started ~69% in → max fidelity ~0.31.
+// OKTO2 holds lts records. The atm files show varied coverage: tropo
+// only got the lower ~half of its pressure range (visible as a
+// partial-fill blue band in the indicator); strato fully covered;
+// meso untracked.
 const MK1_FILES: NovaScienceFileFrame[] = [
-  // Each prior atm-profile run covered the layer's full pressure span.
-  makeAtmFile('troposphere',  0.092, 1.000, 0,      18_000, 120),
+  // Troposphere — only covered 0–8 km / 1.0 atm down to ~0.5 atm.
+  // Recorded span = 0.5 of layer's 0.908 atm range ≈ 55% fidelity.
+  makeAtmFile('troposphere',  0.500, 1.000, 0,      8_000,  120),
+  // Stratosphere — fully covered.
   makeAtmFile('stratosphere', 0.005, 0.092, 18_000, 45_000, 480),
-  makeAtmFile('mesosphere',   0.000, 0.005, 45_000, 70_000, 920),
 ];
 const OKTO2_FILES: NovaScienceFileFrame[] = [
   makeLtsFile(0, 0,                                                SLICE_DURATION_S),
@@ -301,11 +303,13 @@ const FIXTURE_PARTS: PartFixture[] = [
           'Kerbin',
           altitude,
           KERBIN_LAYERS,
-          [
-            ['troposphere',  1.0],
-            ['stratosphere', 1.0],
-            ['mesosphere',   1.0],
-          ],
+          // Derive savedLocal from MK1_FILES so the indicator's filled
+          // bands match what's actually in storage. Each tuple is
+          // (layerName, cached fidelity from the file's own snapshot).
+          MK1_FILES.map((f) => [
+            f[0].split(':')[1],   // "atm-profile@Kerbin:troposphere" → "troposphere"
+            f[2],                  // cached fidelity
+          ]),
           [],
         ],
         // EXL — Kerbin LTS state.

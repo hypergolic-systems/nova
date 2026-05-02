@@ -36,10 +36,15 @@ public static class AtmosphericProfileExperiment {
     }
   }
 
-  // Per-body layer table, bottom→top. Pressure bounds are stock-KSP
-  // approximations from the body's atmosphere curve at the layer's
-  // boundary altitudes; not exact, good enough for fidelity scoring.
-  private static readonly Dictionary<string, Layer[]> Layers = new() {
+  // Per-body layer table, bottom→top. Pressure bounds shipped here
+  // are coarse stock-KSP approximations — the live mod overrides them
+  // at game start via `RefreshLayerPressures` using the actual
+  // CelestialBody pressure curves so fidelity scoring matches the
+  // pressure the player sees in flight (a layer reads "100%
+  // captured" exactly when the vessel has covered the body's true
+  // atmospheric span at those altitudes, not when it has covered our
+  // pre-baked guess).
+  private static Dictionary<string, Layer[]> Layers = new() {
     ["Kerbin"] = new[] {
       new Layer("troposphere",  18_000,  1.000, 0.092),
       new Layer("stratosphere", 45_000,  0.092, 0.005),
@@ -80,6 +85,31 @@ public static class AtmosphericProfileExperiment {
   // has no atmosphere.
   public static Layer[] LayersFor(string bodyName) =>
       Layers.TryGetValue(bodyName, out var table) ? table : null;
+
+  // Body names with a known layer table. Used by the mod-side startup
+  // hook to iterate which CelestialBodies it should query for live
+  // pressure values.
+  public static IEnumerable<string> KnownBodies => Layers.Keys;
+
+  // Replace the cached pressure bounds on a body's layer table with
+  // values pulled live from a `getPressureAtm(altitude_m)` source —
+  // the mod side wires this to `CelestialBody.GetPressure(alt) /
+  // 101.325`. The altitude bounds (layer boundaries) are unchanged;
+  // only `bottomPressureAtm` / `topPressureAtm` get refreshed. A
+  // layer's bottom pressure is derived from the previous layer's top
+  // (or the surface pressure for index 0).
+  public static void RefreshLayerPressures(string bodyName, Func<double, double> getPressureAtm) {
+    if (!Layers.TryGetValue(bodyName, out var existing)) return;
+    var updated = new Layer[existing.Length];
+    double prevTop = getPressureAtm(0);   // surface pressure
+    for (int i = 0; i < existing.Length; i++) {
+      double topAlt = existing[i].topAltMeters;
+      double top    = getPressureAtm(topAlt);
+      updated[i]    = new Layer(existing[i].name, topAlt, prevTop, top);
+      prevTop       = top;
+    }
+    Layers[bodyName] = updated;
+  }
 
   // Returns the layer record for the given body+layer name, or null
   // when the layer isn't known.
