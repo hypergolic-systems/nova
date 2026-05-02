@@ -168,6 +168,30 @@ public class ResourceSolver {
   private LinearExpr drainCostExpr;
   private int maxDrainPriority;
 
+  // Fair-distribution apparatus (Phase C). One zVar per resource that
+  // has multiple pools. Each tick the fair constraint for pool p in
+  // resource r enforces:
+  //
+  //   pool.SupplyVar - z_r * max(amount / maxAmount_r, FairnessFloor) ≤ 0
+  //
+  // where maxAmount_r is the largest TotalAmount across r's pools.
+  // Per-resource normalization keeps the coefficient bounded above by
+  // 1; FairnessFloor (0.1) bounds it below so the LP coefficient lives
+  // in [0.1, 1] regardless of how skewed pool amounts are. Without the
+  // floor a tiny pool against a full battery would yield coefficients
+  // around 1e-8 — well below GLOP's tolerance (see docs/lp_hygiene.md).
+  // The cost: pools below 10% of the resource's max participate in
+  // fairness with a slightly looser bound than their literal share,
+  // but the imbalance is small and bounded.
+  // costPinConstraint freezes the drain cost at its minimum so the
+  // fairness pass can only shuffle among equally-cheap solutions.
+  private const double FairnessFloor = 0.1;
+
+  private Dictionary<Resource, Variable> zVars;
+  private Dictionary<Resource, List<Pool>> poolsByResource;
+  private Constraint costPinConstraint;
+  private Dictionary<Pool, Constraint> fairConstraints;
+
   // Cost weights for the post-pinning drain-min phase. Uniform `Epsilon`
   // is the tie-breaking minimum; `DrainPriorityStep` makes lower-priority
   // pools more expensive (so high-priority pools drain first). Caller-set
@@ -286,11 +310,12 @@ public class ResourceSolver {
         devicePin[(int)devPri].SetBounds(aStar - 1e-9, double.PositiveInfinity);
     }
 
-    // Drain minimization: with all device activities pinned, minimize total
-    // buffer drain. Pool weights: high-DrainPriority pools are cheap (drain
-    // first); same-DP pools at same cost (LP picks based on basis). FillVar
-    // is uncosted, so degenerate (supply=X, fill=X) collapses to (0, 0) —
-    // the asymmetry is what eliminates same-pool and cross-pool sloshing.
+    // Phase B: drain minimization. With all device activities pinned,
+    // minimize total buffer drain. Pool weights: high-DrainPriority pools
+    // are cheap (drain first); same-DP pools at same cost (LP picks based
+    // on basis). FillVar is uncosted, so degenerate (supply=X, fill=X)
+    // collapses to (0, 0) — the asymmetry is what eliminates same-pool
+    // and cross-pool sloshing.
     //
     // If drain-min returns ABNORMAL — typical when the drain gradient is
     // below GLOP's tolerance, e.g. fuel cells with µL/s reactant flow
@@ -298,6 +323,56 @@ public class ResourceSolver {
     // values already captured above. The drain-min only refines tie-breaks
     // and produces no useful information when the gradient is degenerate.
     lpSolver.Minimize(drainCostExpr ?? new LinearExpr());
+    if (lpSolver.Solve() != Solver.ResultStatus.OPTIMAL) return;
+    var costStar = lpSolver.Objective().Value();
+    ExtractResults();
+
+    // Phase C: fair distribution. Among solutions with the minimum drain
+    // cost, pick the one that distributes drain proportionally to the
+    // remaining contents in each pool — so symmetric same-priority pools
+    // (asparagus side tanks, etc.) drain in lockstep instead of the LP
+    // arbitrarily picking one to drain first based on the simplex basis.
+    //
+    // Per resource: minimize z_r subject to drain_p ≤ z_r * (amount_p /
+    // maxAmount_r) for each pool p in resource r. At the optimum the
+    // binding pools all have equal drain/amount ratios — equal time-to-
+    // empty. Normalizing by maxAmount_r keeps the z coefficient inside
+    // GLOP's working envelope even for MJ-scale battery pools.
+    //
+    // costPinConstraint locks the drain cost at costStar (1e-9 slack so
+    // GLOP can move off the existing vertex). The objective is the sum
+    // of all active z's — each minimizes independently within its
+    // resource since cross-resource drain isn't coupled by demand.
+    if (zVars.Count == 0) return;
+
+    costPinConstraint.SetBounds(0, costStar + 1e-9);
+
+    var fairObj = new LinearExpr();
+    bool anyActive = false;
+    foreach (var kvp in poolsByResource) {
+      if (!zVars.TryGetValue(kvp.Key, out var z)) continue;
+      double maxAmount = 0;
+      foreach (var pool in kvp.Value) {
+        var a = pool.TotalAmount;
+        if (a > maxAmount) maxAmount = a;
+      }
+      if (maxAmount < 1e-9) continue;
+
+      foreach (var pool in kvp.Value) {
+        var amount = pool.TotalAmount;
+        if (amount > 1e-9) {
+          var normalized = Math.Max(amount / maxAmount, FairnessFloor);
+          fairConstraints[pool].SetCoefficient(z, -normalized);
+          fairConstraints[pool].SetBounds(double.NegativeInfinity, 0);
+        }
+      }
+      fairObj += z;
+      anyActive = true;
+    }
+
+    if (!anyActive) return;
+
+    lpSolver.Minimize(fairObj);
     if (lpSolver.Solve() == Solver.ResultStatus.OPTIMAL) {
       ExtractResults();
     }
@@ -496,14 +571,46 @@ public class ResourceSolver {
     // + drainCosts[res] (caller override). FillVar is intentionally NOT
     // costed — that asymmetry is what prevents simultaneous drain+fill at
     // the same pool and cross-pool sloshing.
+    //
+    // costPinConstraint mirrors drainCostExpr's coefficients so Phase C
+    // can pin the drain cost at its minimum (set per-tick after Phase B).
     if (pools.Count > 0) {
       drainCostExpr = new LinearExpr();
+      costPinConstraint = lpSolver.MakeConstraint(0, double.PositiveInfinity, "CostPin");
       foreach (var pool in pools) {
         var dc = drainCosts.TryGetValue(pool.Resource, out var c) ? c : 0;
         var weight = DefaultDrainEpsilon
                      + (maxDrainPriority - pool.DrainPriority) * DrainPriorityStep
                      + dc;
         drainCostExpr += pool.SupplyVar * weight;
+        costPinConstraint.SetCoefficient(pool.SupplyVar, weight);
+      }
+    }
+
+    // Pre-allocate fair-distribution apparatus, one zVar per multi-pool
+    // resource. Single-pool resources need no fairness (their drain is
+    // already determined by demand + conservation). The SupplyVar
+    // coefficient on each fair constraint is fixed at 1; the z
+    // coefficient is set per-tick during Phase C, normalized by the
+    // resource's max amount so the LP coefficient stays in [-1, 0].
+    poolsByResource = new Dictionary<Resource, List<Pool>>();
+    foreach (var pool in pools) {
+      if (!poolsByResource.TryGetValue(pool.Resource, out var list))
+        poolsByResource[pool.Resource] = list = new List<Pool>();
+      list.Add(pool);
+    }
+
+    zVars = new Dictionary<Resource, Variable>();
+    fairConstraints = new Dictionary<Pool, Constraint>();
+    foreach (var kvp in poolsByResource) {
+      if (kvp.Value.Count <= 1) continue;
+      zVars[kvp.Key] = lpSolver.MakeNumVar(0, double.PositiveInfinity,
+        $"z_{kvp.Key.Abbreviation}");
+      foreach (var pool in kvp.Value) {
+        var c = lpSolver.MakeConstraint(double.NegativeInfinity, double.PositiveInfinity,
+          $"Fair_{pool.Node.id}_{pool.Resource.Abbreviation}");
+        c.SetCoefficient(pool.SupplyVar, 1);
+        fairConstraints[pool] = c;
       }
     }
   }
@@ -537,6 +644,13 @@ public class ResourceSolver {
     // All sum-pin constraints inactive — populated as priority loop runs.
     foreach (var pin in devicePin)
       pin.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
+
+    // Fair-distribution apparatus inactive until Phase C.
+    if (costPinConstraint != null)
+      costPinConstraint.SetBounds(0, double.PositiveInfinity);
+    if (fairConstraints != null)
+      foreach (var c in fairConstraints.Values)
+        c.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
   }
 
   // ── Objective helpers ────────────────────────────────────────────────

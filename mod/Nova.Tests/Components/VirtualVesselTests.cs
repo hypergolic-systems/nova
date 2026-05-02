@@ -242,6 +242,13 @@ public class VirtualVesselTests {
     Assert.IsTrue(totalSideDrain < -1, $"Side tanks should supply the engine, total drain={totalSideDrain}");
 
     Assert.AreEqual(0, coreTank.Tanks[0].Rate, 0.01, "Core tank should not drain while side tanks have fuel");
+
+    // Symmetric side tanks (equal capacity, equal contents) must drain at
+    // equal rates. A pure cost-min LP picks an arbitrary one of the
+    // equally-cheap solutions; the fairness phase forces proportional
+    // drain so neither side gets stranded with full tanks.
+    Assert.AreEqual(sideTankL.Tanks[0].Rate, sideTankR.Tanks[0].Rate, 0.01,
+      $"Symmetric side tanks must drain at equal rates: L={sideTankL.Tanks[0].Rate}, R={sideTankR.Tanks[0].Rate}");
   }
 
   [TestMethod]
