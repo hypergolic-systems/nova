@@ -51,6 +51,24 @@ public class DataStorage : VirtualComponent {
     return true;
   }
 
+  // Remove the file for `subjectId`, freeing its reserved bytes.
+  // Used when an experiment toggle is re-enabled mid-regime — the
+  // prior partial observation is discarded so the fresh observation
+  // starts with no inherited bounds. Returns true if a file was
+  // removed.
+  public bool RemoveBySubject(string subjectId) {
+    if (string.IsNullOrEmpty(subjectId)) return false;
+    for (int i = 0; i < Files.Count; i++) {
+      if (Files[i].SubjectId == subjectId) {
+        UsedBytes -= FileSizeFor(Files[i].ExperimentId);
+        if (UsedBytes < 0) UsedBytes = 0;
+        Files.RemoveAt(i);
+        return true;
+      }
+    }
+    return false;
+  }
+
   public override void LoadStructure(PartStructure ps) {
     if (ps.DataStorage == null) return;
     CapacityBytes = ps.DataStorage.CapacityBytes;

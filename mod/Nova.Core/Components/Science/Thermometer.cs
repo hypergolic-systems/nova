@@ -172,6 +172,16 @@ public class Thermometer : VirtualComponent {
     ValidUntil = sliceEnd;
   }
 
+  // Drop any existing file for the given subject from every storage
+  // on the vessel. Called when re-enabling an experiment in a regime
+  // where a prior in-progress file lives — fidelity tracks an
+  // unbroken observation, so the partial prior data is discarded.
+  public void DiscardFile(string subjectId) {
+    if (Vessel == null || string.IsNullOrEmpty(subjectId)) return;
+    foreach (var s in Vessel.AllComponents().OfType<DataStorage>())
+      s.RemoveBySubject(subjectId);
+  }
+
   // Walks the vessel for the storage that holds an existing file for
   // this subject (so updates always land in the same place), or the
   // first one with capacity if there's no existing file. Returns null

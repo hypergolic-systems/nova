@@ -156,8 +156,31 @@ public sealed class NovaPartTopic : Topic {
             .FirstOrDefault();
         if (thermometer == null) return;
         if (experimentId == AtmosphericProfileExperiment.ExperimentId) {
+          // Rising edge: discard any prior in-progress file for the
+          // current layer so the fresh observation starts from a clean
+          // slate. Files represent unbroken periods.
+          if (enabled && !thermometer.AtmEnabled) {
+            var ctx = thermometer.Vessel?.Context;
+            if (ctx != null) {
+              var layer = AtmosphericProfileExperiment.LayerAt(ctx.BodyName, ctx.Altitude);
+              if (layer != null) {
+                var subject = new SubjectKey(
+                    AtmosphericProfileExperiment.ExperimentId, ctx.BodyName, layer);
+                thermometer.DiscardFile(subject.ToString());
+              }
+            }
+          }
           thermometer.AtmEnabled = enabled;
         } else if (experimentId == LongTermStudyExperiment.ExperimentId) {
+          if (enabled && !thermometer.LtsEnabled) {
+            var ctx = thermometer.Vessel?.Context;
+            if (ctx != null && ctx.Situation != Situation.None && ctx.BodyYearSeconds > 0) {
+              double ut = Planetarium.GetUniversalTime();
+              var subject = LongTermStudyExperiment.SubjectFor(
+                  ctx.BodyName, ctx.Situation, ut, ctx.BodyYearSeconds);
+              thermometer.DiscardFile(subject.ToString());
+            }
+          }
           thermometer.LtsEnabled = enabled;
         } else {
           Debug.LogWarning(LogPrefix + Name + " setExperimentEnabled: unknown experiment '" + experimentId + "'");
