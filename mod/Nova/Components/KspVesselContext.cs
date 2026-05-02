@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using Nova.Core.Components;
 using Nova.Core.Science;
@@ -30,6 +31,8 @@ internal sealed class KspVesselContext : IVesselContext {
   public double BodyRadius  => vessel.mainBody.Radius;
   public bool   OrbitingSun => vessel.mainBody == FlightGlobals.Bodies[0];
 
+  public string SolarParentName => ResolveSolarParent(vessel.mainBody);
+
   public Vec3d VesselPositionAt(double ut) {
     var pos = vessel.orbit.getRelativePositionAtUT(ut).xzy;
     return new Vec3d(pos.x, pos.y, pos.z);
@@ -42,15 +45,23 @@ internal sealed class KspVesselContext : IVesselContext {
     return new Vec3d(rel.x, rel.y, rel.z);
   }
 
-  private static double ResolveBodyYear(CelestialBody body) {
+  private static double ResolveBodyYear(CelestialBody body) =>
+      BodyYear.For(body.bodyName, ParentLookup(), PeriodLookup());
+
+  private static string ResolveSolarParent(CelestialBody body) =>
+      BodyYear.SolarParentOf(body.bodyName, ParentLookup());
+
+  private static Func<string, string> ParentLookup() {
     var byName = FlightGlobals.Bodies.ToDictionary(b => b.bodyName, b => b);
-    return BodyYear.For(
-      body.bodyName,
-      bn => {
-        var b = byName[bn];
-        var rb = b.referenceBody;
-        return rb == null || rb == b ? null : rb.bodyName;
-      },
-      bn => byName[bn].orbit?.period ?? 0);
+    return bn => {
+      var b = byName[bn];
+      var rb = b.referenceBody;
+      return rb == null || rb == b ? null : rb.bodyName;
+    };
+  }
+
+  private static Func<string, double> PeriodLookup() {
+    var byName = FlightGlobals.Bodies.ToDictionary(b => b.bodyName, b => b);
+    return bn => byName[bn].orbit?.period ?? 0;
   }
 }

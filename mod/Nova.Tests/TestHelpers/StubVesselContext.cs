@@ -15,6 +15,7 @@ public class StubVesselContext : IVesselContext {
   public double    OrbitPeriod     { get; set; } = double.PositiveInfinity;
   public double    BodyRadius      { get; set; } = 600_000;
   public bool      OrbitingSun     { get; set; }
+  public string    SolarParentName { get; set; } = "Kerbin";
 
   public Vec3d VesselPositionAt(double ut) => new Vec3d(0, 0, 0);
   public Vec3d SunDirectionAt(double ut)   => new Vec3d(1, 0, 0);

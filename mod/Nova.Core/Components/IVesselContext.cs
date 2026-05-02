@@ -16,6 +16,11 @@ public interface IVesselContext {
   double                       OrbitPeriod     { get; }
   double                       BodyRadius      { get; }
   bool                         OrbitingSun     { get; }
+  // Body whose own parent is the Sun: walks `referenceBody` to root.
+  // For Mun/Minmus → Kerbin; Gilly → Eve; Kerbin → Kerbin; Sun → Sun.
+  // Used by the LTS orbit indicator to render the Sun-orbit ring whose
+  // period gates the body-year (and hence the LTS slice cadence).
+  string                       SolarParentName { get; }
 
   // Time-dependent projections — used by ShadowCalculator. Take a
   // UT in seconds and return the vessel's / sun's relative position

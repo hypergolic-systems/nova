@@ -1,15 +1,28 @@
 <script lang="ts">
-  // Science tab body. M4-1 ships only the Storage section; the
-  // Experiments panel lands in a follow-up. Visual language matches
-  // PowerView (.pwr__) — same chrome, different prefix (.sci__).
+  // Science tab body. Hierarchical tree:
+  //   INSTRUMENTS
+  //     ▾ <Instrument>          (collapsible per part)
+  //         ▾ <Experiment>      (collapsible per experiment id)
+  //             [status / completion in header; indicator in body]
+  //   STORAGE
+  //     <DataStorage rows>      (flat list, modal for files)
+  //
+  // Visual language matches PowerView (.pwr__) — same chrome, different
+  // prefix (.sci__).
 
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { ScienceFile } from '../../telemetry/nova-topics';
+  import type {
+    ScienceFile,
+    AtmExperimentState,
+    LtsExperimentState,
+  } from '../../telemetry/nova-topics';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import FileListModal from './FileListModal.svelte';
-  import { fmtBytes } from '../../util/units';
+  import AtmProfileIndicator from './AtmProfileIndicator.svelte';
+  import LtsOrbitIndicator from './LtsOrbitIndicator.svelte';
+  import { fmtBytes, fmtDuration } from '../../util/units';
   import { experimentLabel } from '../../util/science-labels';
 
   interface Props {
@@ -20,9 +33,7 @@
   const instruments = useNovaPartsByTag(() => vesselId, 'science-instrument');
   const storages    = useNovaPartsByTag(() => vesselId, 'science-storage');
 
-  // Aggregate roll-up across every DataStorage on the vessel. The
-  // header summary uses these as numerator/denominator and the
-  // SegmentGauge under the header reads the same fraction.
+  // Aggregate roll-up across every DataStorage on the vessel.
   const totals = $derived.by(() => {
     let used = 0;
     let cap = 0;
@@ -40,20 +51,41 @@
 
   const aggregateFraction = $derived(totals.cap > 0 ? totals.used / totals.cap : 0);
 
+  // ---- Section open state (top-level INSTRUMENTS / STORAGE) -----
   let instrOpen = $state(true);
-  function toggleInstr(): void {
-    instrOpen = !instrOpen;
-  }
-
   let storeOpen = $state(true);
-  function toggleStore(): void {
-    storeOpen = !storeOpen;
+
+  // ---- Tree open state (per instrument-part / per experiment) ---
+  // Closed-by-default sets — entries added on toggle. Default-open
+  // logic: a key NOT in the set is treated as open. Toggling a key
+  // collapses (adds to set); re-toggling expands (removes). Persisting
+  // open-state in a Set this way means new instruments/experiments
+  // appear expanded automatically, which matches the user's "show me
+  // everything" expectation when a vessel comes online.
+  let collapsedInstr = $state<Set<string>>(new Set());
+  let collapsedExp   = $state<Set<string>>(new Set());
+
+  function toggleInstrPart(partId: string): void {
+    const next = new Set(collapsedInstr);
+    if (next.has(partId)) next.delete(partId);
+    else next.add(partId);
+    collapsedInstr = next;
+  }
+  function toggleExp(partId: string, expId: string): void {
+    const key = `${partId}::${expId}`;
+    const next = new Set(collapsedExp);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    collapsedExp = next;
+  }
+  function isInstrOpen(partId: string): boolean {
+    return !collapsedInstr.has(partId);
+  }
+  function isExpOpen(partId: string, expId: string): boolean {
+    return !collapsedExp.has(`${partId}::${expId}`);
   }
 
-  // The currently-open file list modal — null when no modal is open.
-  // The state holds a part id rather than a part reference so reactive
-  // updates to the part's state object flow through into the modal
-  // body without us re-binding.
+  // ---- File list modal ------------------------------------------
   let openModalPartId = $state<string | null>(null);
 
   function openFiles(p: NovaTaggedPart): void {
@@ -63,8 +95,6 @@
     openModalPartId = null;
   }
 
-  // Live lookup for the currently-open modal: re-derived each frame
-  // so the file list, count, and ages refresh while the modal is up.
   const openPart = $derived(
     openModalPartId
       ? storages.current.find((p) => p.struct.id === openModalPartId) ?? null
@@ -77,10 +107,7 @@
     return all;
   });
 
-  // Per-row helpers: a part might host multiple DataStorage
-  // components in principle (a stack stage with two drives). Fold
-  // them into one synthetic row so the player sees one device per
-  // part — the modal still lists every file across both drives.
+  // ---- Per-storage helpers --------------------------------------
   function partTotals(p: NovaTaggedPart): { used: number; cap: number; files: number } {
     let used = 0, cap = 0, files = 0;
     if (!p.state) return { used, cap, files };
@@ -96,6 +123,50 @@
     const t = partTotals(p);
     return t.cap > 0 ? t.used / t.cap : 0;
   }
+
+  // ---- Experiment summary ---------------------------------------
+  // Used in the experiment-row header so the player can read state
+  // without expanding. Atm: completed-layer counter. Lts: ETA to next
+  // slice + sealed-slice counter.
+
+  function atmSummary(state: AtmExperimentState): string {
+    if (state.layers.length === 0) return 'NO ATMOSPHERE';
+    const sealed = [...state.savedLocal.values()].filter((f) => f >= 0.999).length;
+    return `${sealed}/${state.layers.length} SEALED`;
+  }
+
+  // Overall completion across all of this body's regimes for this
+  // experiment. Counts saved fidelity directly + the in-progress
+  // accumulator on the current segment (so the % creeps up live).
+  // Returns 0..100 (integer).
+  function atmCompletion(state: AtmExperimentState): number {
+    if (state.layers.length === 0) return 0;
+    let total = 0;
+    for (const f of state.savedLocal.values()) total += Math.min(1, f);
+    return Math.round((total / state.layers.length) * 100);
+  }
+
+  function ltsSummary(state: LtsExperimentState): string {
+    const sealed = [...state.savedLocal.values()].filter((f) => f >= 0.999).length;
+    if (!state.active || state.bodyYearSeconds <= 0) {
+      return `${sealed}/${state.slicesPerYear} SEALED`;
+    }
+    const sliceDur = state.bodyYearSeconds / state.slicesPerYear;
+    const phaseInSlice = state.phase * state.slicesPerYear - state.currentSliceIndex;
+    const timeLeft = (1 - phaseInSlice) * sliceDur;
+    return `ETA ${fmtDuration(timeLeft)} · ${sealed}/${state.slicesPerYear}`;
+  }
+
+  function ltsCompletion(state: LtsExperimentState): number {
+    let total = 0;
+    for (const f of state.savedLocal.values()) total += Math.min(1, f);
+    // Include the in-progress slice when it isn't already in saved
+    // (otherwise we'd double-count when re-running into a prior slice).
+    if (state.active && !state.savedLocal.has(state.currentSliceIndex)) {
+      total += Math.min(1, state.activeFidelity);
+    }
+    return Math.round((total / state.slicesPerYear) * 100);
+  }
 </script>
 
 <section class="sci">
@@ -105,7 +176,7 @@
       type="button"
       class="sci__node-head"
       aria-expanded={instrOpen}
-      onclick={toggleInstr}
+      onclick={() => (instrOpen = !instrOpen)}
     >
       <span class="sci__chev" aria-hidden="true">{instrOpen ? '▾' : '▸'}</span>
       <span class="sci__node-title">INSTRUMENTS</span>
@@ -124,20 +195,59 @@
       {:else}
         <ul class="sci__instr-rows">
           {#each instruments.current as p (p.struct.id)}
-            {@const inst = p.state?.instrument[0]}
+            {@const inst       = p.state?.instrument[0]}
+            {@const partOpen   = isInstrOpen(p.struct.id)}
             <li class="sci__instr">
-              <div class="sci__instr-head">
+              <button
+                type="button"
+                class="sci__instr-head"
+                aria-expanded={partOpen}
+                onclick={() => toggleInstrPart(p.struct.id)}
+              >
+                <span class="sci__chev sci__chev--sub" aria-hidden="true">{partOpen ? '▾' : '▸'}</span>
                 <span class="sci__row-icon">
                   <ComponentIcon kind="thermometer" />
                 </span>
                 <span class="sci__instr-name">{p.struct.title}</span>
-              </div>
-              {#if inst && inst.experimentIds.length > 0}
+              </button>
+
+              {#if partOpen && inst && inst.experimentIds.length > 0}
                 <ul class="sci__exp-rows">
                   {#each inst.experimentIds as expId (expId)}
+                    {@const atm     = p.state?.atmExperiment.find((s) => s.experimentId === expId)}
+                    {@const lts     = p.state?.ltsExperiment.find((s) => s.experimentId === expId)}
+                    {@const expOpen = isExpOpen(p.struct.id, expId)}
+                    {@const active  = atm?.active || lts?.active}
+                    {@const summary = atm ? atmSummary(atm) : lts ? ltsSummary(lts) : ''}
+                    {@const pct     = atm ? atmCompletion(atm) : lts ? ltsCompletion(lts) : 0}
                     <li class="sci__exp">
-                      <span class="sci__exp-bullet" aria-hidden="true">·</span>
-                      <span class="sci__exp-label">{experimentLabel(expId)}</span>
+                      <button
+                        type="button"
+                        class="sci__exp-head"
+                        aria-expanded={expOpen}
+                        onclick={() => toggleExp(p.struct.id, expId)}
+                      >
+                        <span class="sci__exp-line">
+                          <span class="sci__chev sci__chev--leaf" aria-hidden="true">{expOpen ? '▾' : '▸'}</span>
+                          <span class="sci__exp-label">{experimentLabel(expId)}</span>
+                          <span class="sci__exp-pct">{pct}%</span>
+                          <span
+                            class="sci__exp-status"
+                            class:sci__exp-status--on={active}
+                          >{active ? 'ON' : 'OFF'}</span>
+                        </span>
+                        <span class="sci__exp-eta">{summary}</span>
+                      </button>
+
+                      {#if expOpen}
+                        <div class="sci__exp-body">
+                          {#if atm}
+                            <AtmProfileIndicator state={atm} />
+                          {:else if lts}
+                            <LtsOrbitIndicator state={lts} />
+                          {/if}
+                        </div>
+                      {/if}
                     </li>
                   {/each}
                 </ul>
@@ -155,7 +265,7 @@
       type="button"
       class="sci__node-head"
       aria-expanded={storeOpen}
-      onclick={toggleStore}
+      onclick={() => (storeOpen = !storeOpen)}
     >
       <span class="sci__chev" aria-hidden="true">{storeOpen ? '▾' : '▸'}</span>
       <span class="sci__node-title">STORAGE</span>
@@ -235,9 +345,7 @@
     margin-top: 0;
   }
 
-  /* Section header (matches PowerView's .pwr__node-head). The
-     left-edge indicator bar and trailing underline rhyme are kept
-     so SCI feels like a sibling tab, not a different visual world. */
+  /* Top-level section header (INSTRUMENTS / STORAGE). */
   .sci__node-head {
     appearance: none;
     background: transparent;
@@ -333,6 +441,16 @@
     font-family: var(--font-display);
     font-size: 10px;
   }
+  .sci__chev--sub {
+    width: 9px;
+    font-size: 9px;
+    color: var(--fg-mute);
+  }
+  .sci__chev--leaf {
+    width: 9px;
+    font-size: 9px;
+    color: var(--fg-mute);
+  }
   .sci__node-summary {
     flex: 0 0 auto;
     display: flex;
@@ -371,8 +489,7 @@
     line-height: 1.5;
   }
 
-  /* Per-storage rows — taller storage rows mirroring PWR's battery
-     pattern (icon + stacked text/gauge). */
+  /* Per-storage rows. */
   .sci__rows {
     list-style: none;
     margin: 0;
@@ -439,7 +556,7 @@
     text-align: right;
   }
 
-  /* ---- Instruments section ----------------------------------- */
+  /* ---- Instruments level (level-2 collapsibles) -------------- */
   .sci__instr-rows {
     list-style: none;
     margin: 0;
@@ -449,24 +566,32 @@
     gap: 4px;
   }
   .sci__instr {
-    padding: 6px 4px;
-    position: relative;
-    border-left: 2px solid transparent;
-    transition:
-      background 160ms ease,
-      border-left-color 160ms ease;
-  }
-  .sci__instr:hover {
-    background: rgba(126, 245, 184, 0.04);
-    border-left-color: var(--accent-dim);
+    margin-left: 4px;
   }
   .sci__instr-head {
+    appearance: none;
+    background: transparent;
+    border: none;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-width: 0;
+    gap: 8px;
+    padding: 4px 4px;
+    position: relative;
+    border-left: 2px solid transparent;
+    transition: background 160ms ease, border-left-color 160ms ease;
   }
-  .sci__instr:hover .sci__row-icon {
+  .sci__instr-head:hover,
+  .sci__instr-head:focus-visible {
+    background: rgba(126, 245, 184, 0.04);
+    border-left-color: var(--accent-dim);
+    outline: none;
+  }
+  .sci__instr-head:hover .sci__row-icon {
     color: var(--accent);
   }
   .sci__instr-name {
@@ -478,33 +603,106 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* ---- Experiment level (level-3 collapsibles) --------------- */
   .sci__exp-rows {
     list-style: none;
-    margin: 4px 0 2px 24px;
+    margin: 2px 0 4px 18px;       /* indent under instrument */
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
+    border-left: 1px solid var(--line);
+    padding-left: 10px;
   }
   .sci__exp {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
-    color: var(--fg-dim);
-    font-size: 10.5px;
-    letter-spacing: 0.04em;
+    flex-direction: column;
   }
-  .sci__exp-bullet {
-    color: var(--accent-dim);
-    font-family: var(--font-display);
+  .sci__exp-head {
+    appearance: none;
+    background: transparent;
+    border: none;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 3px 4px;
+    transition: background 140ms ease;
+  }
+  .sci__exp-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sci__exp-head:hover,
+  .sci__exp-head:focus-visible {
+    background: rgba(126, 245, 184, 0.04);
+    outline: none;
   }
   .sci__exp-label {
+    flex: 1 1 auto;
+    min-width: 0;
     color: var(--fg-dim);
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sci__exp-head:hover .sci__exp-label,
+  .sci__exp-head:focus-visible .sci__exp-label {
+    color: var(--accent-soft);
+  }
+  /* Live-updating completion percentage. Sits between the label and
+     the ON/OFF pill — mono so it tabular-aligns across rows. */
+  .sci__exp-pct {
+    flex: 0 0 auto;
     font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
   }
 
-  /* The VIEW button — small, monospaced, accent-bordered. Mirrors
-     PWR's deploy buttons. */
+  /* Status pill — OFF dim, ON in warn-orange (mirrors the orange
+     overlay on the regime indicator's currently-observing band). */
+  .sci__exp-status {
+    flex: 0 0 auto;
+    font-family: var(--font-display);
+    font-size: 8.5px;
+    letter-spacing: 0.20em;
+    padding: 1px 5px;
+    border: 1px solid var(--line);
+    color: var(--fg-mute);
+    border-radius: 1px;
+    transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+  }
+  .sci__exp-status--on {
+    color: var(--warn);
+    border-color: var(--warn);
+    background: rgba(240, 180, 41, 0.10);
+    text-shadow: 0 0 6px var(--warn-glow);
+  }
+  .sci__exp-eta {
+    margin-left: 17px;       /* align under chevron+label, not chevron */
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-mute);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+  .sci__exp-body {
+    margin: 6px 0 10px 18px;
+    display: flex;
+  }
+
+  /* The VIEW button — small, monospaced, accent-bordered. */
   .sci__view-btn {
     flex: 0 0 auto;
     appearance: none;

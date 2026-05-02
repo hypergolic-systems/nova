@@ -10,6 +10,7 @@ using Nova.Core.Components.Propulsion;
 using Nova.Core.Components.Science;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
+using Nova.Core.Science;
 using UnityEngine;
 // Disambiguate against UnityEngine.Light.
 using NovaLight = Nova.Core.Components.Electrical.Light;
@@ -378,6 +379,7 @@ public sealed class NovaPartTopic : Topic {
         return true;
       }
       case Thermometer thermometer: {
+        // IN — capability descriptor.
         JsonWriter.Sep(sb, ref first);
         JsonWriter.Begin(sb, '[');
         bool f = true;
@@ -393,6 +395,13 @@ public sealed class NovaPartTopic : Topic {
         }
         JsonWriter.End(sb, ']');
         JsonWriter.End(sb, ']');
+
+        // Build a subjectId → max-fidelity dict once across every
+        // DataStorage on the vessel; reused by both EXA and EXL.
+        var savedLocal = BuildLocalFidelityIndex(thermometer);
+
+        WriteAtmExperimentFrame(sb, thermometer, savedLocal, ref first);
+        WriteLtsExperimentFrame(sb, thermometer, savedLocal, ref first);
         return true;
       }
       case DataStorage storage: {
@@ -429,6 +438,169 @@ public sealed class NovaPartTopic : Topic {
       }
     }
     return false;
+  }
+
+  // --- Science experiment frames -----------------------------------
+
+  private static Dictionary<string, double> BuildLocalFidelityIndex(Thermometer t) {
+    var idx = new Dictionary<string, double>();
+    if (t.Vessel == null) return idx;
+    foreach (var ds in t.Vessel.AllComponents().OfType<DataStorage>()) {
+      foreach (var file in ds.Files) {
+        if (string.IsNullOrEmpty(file.SubjectId)) continue;
+        if (!idx.TryGetValue(file.SubjectId, out var existing) || file.Fidelity > existing) {
+          idx[file.SubjectId] = file.Fidelity;
+        }
+      }
+    }
+    return idx;
+  }
+
+  private static void WriteAtmExperimentFrame(
+      StringBuilder sb, Thermometer t,
+      Dictionary<string, double> savedLocal, ref bool first) {
+    string body = t.Vessel?.Context?.BodyName ?? "";
+    double altitude = t.Vessel?.Context?.Altitude ?? 0;
+    var layers = AtmosphericProfileExperiment.LayersFor(body);
+
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.Begin(sb, '[');
+    bool f = true;
+    WriteKind(sb, "EXA", ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, AtmosphericProfileExperiment.ExperimentId);
+    WriteBit(sb, t.AtmActive, ref f);
+    // willComplete: atm-profile is a transit-trigger today (binary
+    // seal on layer exit); always 1. Slot reserved for future
+    // satisfaction-gated atm sealing.
+    WriteBit(sb, true, ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, body);
+    WriteNum(sb, altitude, ref f);
+
+    // layers: [[name, top]…]
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.Begin(sb, '[');
+    bool firstLayer = true;
+    if (layers != null) {
+      foreach (var (name, top) in layers) {
+        JsonWriter.Sep(sb, ref firstLayer);
+        JsonWriter.Begin(sb, '[');
+        bool lf = true;
+        JsonWriter.Sep(sb, ref lf);
+        JsonWriter.WriteString(sb, name);
+        WriteNum(sb, top, ref lf);
+        JsonWriter.End(sb, ']');
+      }
+    }
+    JsonWriter.End(sb, ']');
+
+    // savedLocal: [[layerName, fidelity]…] — only present layers
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.Begin(sb, '[');
+    bool firstSaved = true;
+    if (layers != null) {
+      foreach (var (name, _) in layers) {
+        var subjectId = AtmosphericProfileExperiment.ExperimentId + "@" + body + ":" + name;
+        if (!savedLocal.TryGetValue(subjectId, out var fid)) continue;
+        JsonWriter.Sep(sb, ref firstSaved);
+        JsonWriter.Begin(sb, '[');
+        bool sf = true;
+        JsonWriter.Sep(sb, ref sf);
+        JsonWriter.WriteString(sb, name);
+        WriteNum(sb, fid, ref sf);
+        JsonWriter.End(sb, ']');
+      }
+    }
+    JsonWriter.End(sb, ']');
+
+    // savedKsc: [] — no archive producer yet.
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.Begin(sb, '[');
+    JsonWriter.End(sb, ']');
+
+    JsonWriter.End(sb, ']');
+  }
+
+  private static void WriteLtsExperimentFrame(
+      StringBuilder sb, Thermometer t,
+      Dictionary<string, double> savedLocal, ref bool first) {
+    var ctx       = t.Vessel?.Context;
+    string body   = ctx?.BodyName ?? "";
+    string parent = ctx?.SolarParentName ?? body;
+    var situation = ctx?.Situation ?? Situation.SrfLanded;
+    double bodyYearSeconds = ctx?.BodyYearSeconds ?? 0;
+    double simNow = Planetarium.GetUniversalTime();
+
+    int slicesPerYear = LongTermStudyExperiment.SlicesPerYear;
+    int currentSliceIndex = bodyYearSeconds > 0
+        ? LongTermStudyExperiment.SliceIndexAt(simNow, bodyYearSeconds)
+        : 0;
+    double phase = bodyYearSeconds > 0
+        ? (simNow - System.Math.Floor(simNow / bodyYearSeconds) * bodyYearSeconds) / bodyYearSeconds
+        : 0;
+
+    double sliceDuration = bodyYearSeconds > 0
+        ? LongTermStudyExperiment.SliceDurationFor(bodyYearSeconds)
+        : 1;
+    double activeFidelity = t.LtsActive
+        ? System.Math.Min(1.0, System.Math.Max(0.0, t.LtsAccumulatedSeconds / sliceDuration))
+        : 0;
+
+    // willComplete: even at full satisfaction going forward, can the
+    // accumulator reach 1.0 by slice end? Ratio of accumulated time
+    // to elapsed-in-slice gives the answer — a sub-1 ratio means
+    // we entered the slice late (or were starved earlier) and the
+    // slice will seal at partial fidelity. 1% slop tolerates rounding.
+    double phaseInSlice = bodyYearSeconds > 0
+        ? phase * slicesPerYear - currentSliceIndex
+        : 0;
+    bool willComplete = !t.LtsActive
+        || activeFidelity + (1.0 - phaseInSlice) >= 0.99;
+
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.Begin(sb, '[');
+    bool f = true;
+    WriteKind(sb, "EXL", ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, LongTermStudyExperiment.ExperimentId);
+    WriteBit(sb, t.LtsActive, ref f);
+    WriteBit(sb, willComplete, ref f);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, body);
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, situation.ToString());
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.WriteString(sb, parent);
+    WriteNum(sb, slicesPerYear, ref f);
+    WriteNum(sb, bodyYearSeconds, ref f);
+    WriteNum(sb, currentSliceIndex, ref f);
+    WriteNum(sb, phase, ref f);
+    WriteNum(sb, activeFidelity, ref f);
+
+    // savedLocal: only emit slices that have a saved file.
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.Begin(sb, '[');
+    bool firstSaved = true;
+    for (int i = 0; i < slicesPerYear; i++) {
+      var subjectId = LongTermStudyExperiment.ExperimentId + "@" + body + ":"
+                    + situation + ":" + i;
+      if (!savedLocal.TryGetValue(subjectId, out var fid)) continue;
+      JsonWriter.Sep(sb, ref firstSaved);
+      JsonWriter.Begin(sb, '[');
+      bool sf = true;
+      WriteNum(sb, i, ref sf);
+      WriteNum(sb, fid, ref sf);
+      JsonWriter.End(sb, ']');
+    }
+    JsonWriter.End(sb, ']');
+
+    // savedKsc: [] — no archive producer yet.
+    JsonWriter.Sep(sb, ref f);
+    JsonWriter.Begin(sb, '[');
+    JsonWriter.End(sb, ']');
+
+    JsonWriter.End(sb, ']');
   }
 
   private static void WriteKind(StringBuilder sb, string kind, ref bool first) {

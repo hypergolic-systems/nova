@@ -78,12 +78,57 @@ export type NovaDataStorageFrame = [
 ];
 
 // Capability descriptor for a science instrument. Static metadata
-// (name + experiment id list) — live experiment progress lands later
-// as a separate frame when the Experiments panel arrives.
+// (name + experiment id list). Live progress per experiment ships as
+// separate `EXA` / `EXL` frames on the same instrument part.
 export type NovaInstrumentFrame = [
   'IN',
   instrumentName: string,
   experimentIds: string[],
+];
+
+// Atmospheric Profile experiment state. Layers + saved fidelities for
+// the body the vessel currently orbits. `active` reflects the
+// instrument's `AtmActive` flag. `altitude` drives the altitude
+// pointer overlay; clamping to layer bounds is the UI's job.
+//
+// `willComplete` is the bright/dull-orange selector: 1 = the active
+// observation will reach full fidelity at segment end (transit-out
+// for atm; slice rollover for lts); 0 = the segment is in progress
+// but will fall short. Atm-profile is a transit-trigger today and
+// always emits `1`, but the slot is final so future sat-throttled
+// atm sealing won't need a wire change.
+export type NovaAtmExperimentFrame = [
+  'EXA',
+  experimentId: string,
+  active: 0 | 1,
+  willComplete: 0 | 1,
+  bodyName: string,
+  altitude: number,
+  layers: [name: string, top: number][],         // bottom→top, top in m
+  savedLocal: [layerName: string, fidelity: number][],
+  savedKsc:   [layerName: string, fidelity: number][],
+];
+
+// Long-Term Study experiment state. 12 sectors per body-year per
+// (body, situation). `phase` and `currentSliceIndex` are redundant
+// with each other but `phase` lets the UI position the body marker
+// continuously. `solarParentName` is the body whose Sun-orbit ring
+// the indicator draws (Mun → Kerbin; Gilly → Eve; Kerbin → Kerbin).
+export type NovaLtsExperimentFrame = [
+  'EXL',
+  experimentId: string,
+  active: 0 | 1,
+  willComplete: 0 | 1,
+  bodyName: string,
+  situation: string,
+  solarParentName: string,
+  slicesPerYear: number,
+  bodyYearSeconds: number,
+  currentSliceIndex: number,
+  phase: number,                                  // 0..1
+  activeFidelity: number,                         // 0..1
+  savedLocal: [sliceIndex: number, fidelity: number][],
+  savedKsc:   [sliceIndex: number, fidelity: number][],
 ];
 
 export type NovaComponentFrame =
@@ -96,7 +141,9 @@ export type NovaComponentFrame =
   | NovaCommandFrame
   | NovaFuelCellFrame
   | NovaDataStorageFrame
-  | NovaInstrumentFrame;
+  | NovaInstrumentFrame
+  | NovaAtmExperimentFrame
+  | NovaLtsExperimentFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -243,6 +290,71 @@ export interface InstrumentState {
   experimentIds: string[];
 }
 
+export interface AtmExperimentState {
+  /** "atm-profile". Used by ScienceView to match this state to the
+   *  matching experiment-id from the InstrumentState capability list. */
+  experimentId: string;
+  /** True iff the instrument is observing right now (drives orange
+   *  overlay on whichever layer the vessel currently transits). */
+  active: boolean;
+  /** True iff the active observation can still reach full fidelity
+   *  at segment end. False = "in progress but will fall short" (drives
+   *  the dull-orange variant). Always true for atm-profile today;
+   *  reserved slot for future EC-gated transit sealing. */
+  willComplete: boolean;
+  /** Current vessel body — drives label and the layer table. */
+  bodyName: string;
+  /** Live vessel altitude in meters. UI clamps to layer bounds. */
+  altitude: number;
+  /** Bottom→top layer table for `bodyName`. Empty when the body has
+   *  no atmosphere. Each layer's bottom = previous layer's top (or 0
+   *  for index 0). */
+  layers: { name: string; top: number }[];
+  /** Per-layer best fidelity stored on this vessel (0..1). Layers
+   *  with no saved file are omitted from the wire and absent here. */
+  savedLocal: Map<string, number>;
+  /** Per-layer KSC archive fidelity. Empty until transmission ships. */
+  savedKsc: Map<string, number>;
+}
+
+export interface LtsExperimentState {
+  /** "lts". */
+  experimentId: string;
+  /** True iff the instrument is currently accumulating against the
+   *  current slice (drives orange overlay on `currentSliceIndex`). */
+  active: boolean;
+  /** True iff the in-progress accumulator can still reach 1.0 by
+   *  slice end. False = the instrument started accumulating after
+   *  some of the slice elapsed (or is throttled), so the slice will
+   *  seal at partial fidelity even if active stays on. Drives the
+   *  dull-orange variant on the current sector. */
+  willComplete: boolean;
+  bodyName: string;
+  /** Stock ExperimentSituations enum name (e.g. "SrfLanded"). */
+  situation: string;
+  /** Body whose Sun-orbit ring the indicator draws. For Mun this is
+   *  "Kerbin"; for Kerbin it's "Kerbin"; for the Sun it's "Sun". */
+  solarParentName: string;
+  /** 12 today; surfaced for forward-compat. */
+  slicesPerYear: number;
+  /** Length of the body-year in seconds (Sun-orbit period of the
+   *  solar-parent body). UI computes per-slice ETA as
+   *  `(1 - phaseInSlice) * bodyYearSeconds / slicesPerYear`. */
+  bodyYearSeconds: number;
+  /** Index of the slice the vessel currently sits in, 0..slicesPerYear-1. */
+  currentSliceIndex: number;
+  /** Position around the body-year (0..1). Drives the orbiting
+   *  body marker — continuous between slice boundaries. */
+  phase: number;
+  /** Active accumulator fidelity for the in-progress slice. 0..1. */
+  activeFidelity: number;
+  /** Per-slice best stored fidelity on this vessel. Slices with no
+   *  saved file are absent. */
+  savedLocal: Map<number, number>;
+  /** Per-slice KSC archive fidelity. Empty until transmission ships. */
+  savedKsc: Map<number, number>;
+}
+
 export interface DataStorageState {
   /** Bytes occupied by the files currently in storage. Live counter
    *  — files come and go as experiments emit and (eventually) transmit. */
@@ -292,6 +404,8 @@ export interface NovaPart {
   fuelCell: FuelCellState[];
   dataStorage: DataStorageState[];
   instrument: InstrumentState[];
+  atmExperiment: AtmExperimentState[];
+  ltsExperiment: LtsExperimentState[];
 }
 
 export interface NovaPartStruct {
@@ -416,6 +530,8 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     fuelCell: [],
     dataStorage: [],
     instrument: [],
+    atmExperiment: [],
+    ltsExperiment: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -488,6 +604,35 @@ export function decodePart(f: NovaPartFrame): NovaPart {
             producedAt,
             instrument,
           })),
+        });
+        break;
+      case 'EXA':
+        out.atmExperiment.push({
+          experimentId:    c[1],
+          active:          c[2] === 1,
+          willComplete:    c[3] === 1,
+          bodyName:        c[4],
+          altitude:        c[5],
+          layers:          c[6].map(([name, top]) => ({ name, top })),
+          savedLocal:      new Map(c[7]),
+          savedKsc:        new Map(c[8]),
+        });
+        break;
+      case 'EXL':
+        out.ltsExperiment.push({
+          experimentId:      c[1],
+          active:            c[2] === 1,
+          willComplete:      c[3] === 1,
+          bodyName:          c[4],
+          situation:         c[5],
+          solarParentName:   c[6],
+          slicesPerYear:     c[7],
+          bodyYearSeconds:   c[8],
+          currentSliceIndex: c[9],
+          phase:             c[10],
+          activeFidelity:    c[11],
+          savedLocal:        new Map(c[12]),
+          savedKsc:          new Map(c[13]),
         });
         break;
     }

@@ -53,6 +53,13 @@ public static class AtmosphericProfileExperiment {
     return null;
   }
 
+  // Returns the body's layer table (bottom→top), or null if the body
+  // has no atmosphere. Each entry's `top` is the upper-altitude
+  // boundary (m); the bottom is implicit 0 m for index 0 and the
+  // previous entry's `top` for subsequent indices.
+  public static (string name, double top)[] LayersFor(string bodyName) =>
+      Layers.TryGetValue(bodyName, out var table) ? table : null;
+
   public static SubjectKey? SubjectAt(string bodyName, double altitude) {
     var layer = LayerAt(bodyName, altitude);
     return layer != null ? new SubjectKey(ExperimentId, bodyName, layer) : (SubjectKey?)null;

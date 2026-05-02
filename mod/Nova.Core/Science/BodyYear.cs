@@ -17,24 +17,27 @@ public static class BodyYear {
       string bodyName,
       Func<string, string> getParentBody,
       Func<string, double> getOrbitPeriod) {
+    string solarChild = SolarParentOf(bodyName, getParentBody);
+    return getOrbitPeriod(solarChild);
+  }
+
+  // Walks `bodyName` up its orbit hierarchy until the body whose parent
+  // is the root (the Sun). For Mun → Kerbin; Gilly → Eve; Kerbin →
+  // Kerbin; Sun → Sun.
+  public static string SolarParentOf(
+      string bodyName,
+      Func<string, string> getParentBody) {
     if (string.IsNullOrEmpty(bodyName))
       throw new ArgumentException("bodyName required", nameof(bodyName));
 
     string parent = getParentBody(bodyName);
-    if (parent == null) {
-      // bodyName itself is the root (Sun). Degenerate case — return whatever
-      // the caller's table says.
-      return getOrbitPeriod(bodyName);
-    }
+    if (parent == null) return bodyName;     // already the root
 
     string current = bodyName;
     while (getParentBody(parent) != null) {
-      // parent is itself an orbiter — current is a moon (or moon-of-moon).
-      // Walk up until current is a planet (parent has no parent).
       current = parent;
       parent = getParentBody(current);
     }
-    // parent has no parent → parent is the Sun → current orbits the Sun.
-    return getOrbitPeriod(current);
+    return current;
   }
 }
