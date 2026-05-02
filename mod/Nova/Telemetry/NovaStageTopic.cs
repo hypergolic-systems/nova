@@ -60,8 +60,8 @@ public sealed class NovaStageTopic : StageTopic {
     var stages = BuildStageDefinitions(v);
     if (stages.Count == 0) return;
 
-    var results = DeltaVSimulation.Run(virt, stages, time: Planetarium.GetUniversalTime());
-    if (results == null || results.Count == 0) return;
+    var results = DeltaVSimulation.Run(virt, stages, time: Planetarium.GetUniversalTime())
+                  ?? new List<DeltaVSimulation.StageResult>();
 
     // Local gravity at the active vessel — converts thrust + mass
     // into an actual TWR rather than a sea-level approximation.
@@ -70,16 +70,31 @@ public sealed class NovaStageTopic : StageTopic {
     double g = v.gravityForPos.magnitude;
     if (g <= 0.0) g = 9.80665;
 
-    foreach (var r in results) {
-      double weightN = r.StartMass * g;
-      float twr = weightN > 0
-        ? (float)(r.Thrust * 1000.0 / weightN)
-        : 0f;
-      _cached.Add(new StageScalar {
-        Stage = r.InverseStageIndex,
-        DeltaVActual = r.DeltaV,
-        TwrActual = twr,
-      });
+    var resultByStage = new Dictionary<int, DeltaVSimulation.StageResult>(results.Count);
+    foreach (var r in results) resultByStage[r.InverseStageIndex] = r;
+
+    // Emit one scalar per defined stage. Decoupler-only stages don't
+    // burn any propellant so DeltaVSimulation returns no result for
+    // them; we still need a scalar so the base topic produces a
+    // StageFrame and the UI can render the decoupler in its own row.
+    foreach (var stage in stages) {
+      if (resultByStage.TryGetValue(stage.InverseStageIndex, out var r)) {
+        double weightN = r.StartMass * g;
+        float twr = weightN > 0
+          ? (float)(r.Thrust * 1000.0 / weightN)
+          : 0f;
+        _cached.Add(new StageScalar {
+          Stage = r.InverseStageIndex,
+          DeltaVActual = r.DeltaV,
+          TwrActual = twr,
+        });
+      } else {
+        _cached.Add(new StageScalar {
+          Stage = stage.InverseStageIndex,
+          DeltaVActual = 0,
+          TwrActual = 0,
+        });
+      }
     }
   }
 
@@ -109,7 +124,7 @@ public sealed class NovaStageTopic : StageTopic {
       if (p.FindModuleImplementing<NovaEngineModule>() != null) {
         def.EnginePartIds.Add(p.persistentId);
       }
-      if (p.FindModuleImplementing<ModuleDecouplerBase>() != null) {
+      if (p.FindModuleImplementing<NovaDecouplerModule>() != null) {
         def.DecouplerPartIds.Add(p.persistentId);
       }
     }
