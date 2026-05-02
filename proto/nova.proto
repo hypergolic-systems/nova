@@ -204,10 +204,10 @@ message ReactionWheelState {
 // One progressive observation record. Lives in a DataStorage. Two
 // kinds, distinguished by which set of fields is populated:
 //
-//  Direct:      `recorded_*_pressure_atm` + `layer_*_pressure_atm`.
-//               The PartModule updates the recorded bounds each tick
-//               while loaded + active; fidelity is derived from
-//               (recorded span / layer span) and cached in `fidelity`.
+//  Direct:      `recorded_*_alt_m`. The PartModule updates the recorded
+//               altitude bounds each tick while loaded + active;
+//               fidelity is derived from (recorded altitude span /
+//               layer altitude span) and cached in `fidelity`.
 //
 //  Interpolated: `start_ut` + `end_ut`. No per-tick update needed —
 //                fidelity at any time is
@@ -225,16 +225,12 @@ message ScienceFile {
   double produced_at   = 4;   // UT when this file was first created
   string instrument    = 5;   // Player-facing name of the instrument that produced it
 
-  // Direct (atm-profile): pressure bounds the vessel has covered, plus
-  // the layer's full pressure span. Empty for interpolated files.
-  double recorded_min_pressure_atm = 6;
-  double recorded_max_pressure_atm = 7;
-  double layer_bottom_pressure_atm = 8;
-  double layer_top_pressure_atm    = 9;
-  // Altitude bounds the vessel covered while recording — for UI
-  // display (km read better than pressure on the SCI tab).
-  double recorded_min_alt_m        = 10;
-  double recorded_max_alt_m        = 11;
+  // Direct (atm-profile): altitude bounds the vessel has covered.
+  // Fidelity span uses the layer's effective altitude range
+  // (max(layer bottom, surface floor) → layer top), looked up from the
+  // experiment's body table at compute-time.
+  double recorded_min_alt_m        = 6;
+  double recorded_max_alt_m        = 7;
 
   // Interpolated (lts): start UT (when file was created — may be
   // mid-slice if the player enabled the experiment late) and the UT
@@ -244,9 +240,9 @@ message ScienceFile {
   // Storing `slice_duration` on the file (rather than re-deriving
   // from body year at read time) makes the file self-contained for
   // offline tooling.
-  double start_ut                  = 12;
-  double end_ut                    = 13;
-  double slice_duration_seconds    = 14;
+  double start_ut                  = 8;
+  double end_ut                    = 9;
+  double slice_duration_seconds    = 10;
 }
 
 message DataStorageState {

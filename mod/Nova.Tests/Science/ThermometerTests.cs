@@ -55,12 +55,10 @@ public class ThermometerTests {
   [TestMethod]
   public void WriteAtmReading_CreatesFileOnFirstCall() {
     var (_, therm, storage) = Build();
-    therm.WriteAtmReading("Kerbin", "troposphere", 0.85, 5_000, 100);
+    therm.WriteAtmReading("Kerbin", "troposphere", 5_000, 100);
     Assert.AreEqual(1, storage.Files.Count);
     var f = storage.Files[0];
     Assert.AreEqual("atm-profile@Kerbin:troposphere", f.SubjectId);
-    Assert.AreEqual(0.85, f.RecordedMinPressureAtm, 1e-9);
-    Assert.AreEqual(0.85, f.RecordedMaxPressureAtm, 1e-9);
     Assert.AreEqual(5_000, f.RecordedMinAltM, 1e-9);
     Assert.AreEqual(5_000, f.RecordedMaxAltM, 1e-9);
     Assert.AreEqual(0, f.Fidelity, 1e-9);  // single sample, no span yet
@@ -69,24 +67,33 @@ public class ThermometerTests {
   [TestMethod]
   public void WriteAtmReading_ExtendsBoundsOnSubsequentCalls() {
     var (_, therm, storage) = Build();
-    therm.WriteAtmReading("Kerbin", "troposphere", 0.85, 5_000,  100);
-    therm.WriteAtmReading("Kerbin", "troposphere", 0.55, 12_000, 110);
+    therm.WriteAtmReading("Kerbin", "troposphere", 5_000,  100);
+    therm.WriteAtmReading("Kerbin", "troposphere", 12_000, 110);
     Assert.AreEqual(1, storage.Files.Count, "second call must upsert, not duplicate");
     var f = storage.Files[0];
-    Assert.AreEqual(0.55, f.RecordedMinPressureAtm, 1e-9);
-    Assert.AreEqual(0.85, f.RecordedMaxPressureAtm, 1e-9);
     Assert.AreEqual(5_000,  f.RecordedMinAltM, 1e-9);
     Assert.AreEqual(12_000, f.RecordedMaxAltM, 1e-9);
-    // Span = 0.30 of layer's 0.908 atm range ≈ 0.33.
-    Assert.AreEqual(0.30 / 0.908, f.Fidelity, 0.01);
+    // Span 7000 m of troposphere's effective span (1000–18000 m = 17000 m).
+    Assert.AreEqual(7_000.0 / 17_000.0, f.Fidelity, 1e-9);
   }
 
   [TestMethod]
   public void WriteAtmReading_FullSpanYieldsFullFidelity() {
     var (_, therm, storage) = Build();
-    therm.WriteAtmReading("Kerbin", "troposphere", 1.000, 0,      100);
-    therm.WriteAtmReading("Kerbin", "troposphere", 0.092, 18_000, 200);
-    Assert.AreEqual(1.0, storage.Files[0].Fidelity, 1e-3);
+    // Surface floor is 1km — full troposphere coverage = 1000→18000 m.
+    therm.WriteAtmReading("Kerbin", "troposphere",  1_000, 100);
+    therm.WriteAtmReading("Kerbin", "troposphere", 18_000, 200);
+    Assert.AreEqual(1.0, storage.Files[0].Fidelity, 1e-9);
+  }
+
+  [TestMethod]
+  public void LayerAt_BelowSurfaceFloor_ReturnsNull() {
+    // Below 1 km on an atmosphere body, no layer ⇒ no subject ⇒ no
+    // file ever written. Player gets a "Surface" UI label instead.
+    Assert.IsNull(AtmosphericProfileExperiment.LayerAt("Kerbin",   0));
+    Assert.IsNull(AtmosphericProfileExperiment.LayerAt("Kerbin", 500));
+    Assert.AreEqual("troposphere", AtmosphericProfileExperiment.LayerAt("Kerbin", 1_000));
+    Assert.AreEqual("troposphere", AtmosphericProfileExperiment.LayerAt("Kerbin", 5_000));
   }
 
   [TestMethod]

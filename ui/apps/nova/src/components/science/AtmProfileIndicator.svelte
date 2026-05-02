@@ -1,23 +1,21 @@
 <script lang="ts">
   // Atmospheric Profile experiment status indicator.
   //
-  // Wifi-style semicircular layout: the planet's surface sits at the
-  // bottom-center as a small filled half-disc; the atmosphere layers
-  // are concentric half-rings stacked outward. A vessel marker rides
-  // a vertical radial from the center, positioned at the radius that
-  // corresponds to the live altitude — so as the vessel ascends the
-  // marker pushes outward through the layered shells, like a WiFi
-  // signal-strength glyph but radial-out instead of angular-out.
+  // Eyebrow-style stacked arcs centered on the +Y vertical: each layer
+  // is a 120° band (60° to either side of straight up), bottom→top in
+  // increasing radius. The planet's surface sits as a small half-disc
+  // at the center; a flat ground line spans the bounding box.
   //
-  // Each layer-ring carries a status color: blue when sealed locally,
-  // bright-orange when the vessel is currently transiting it (will
-  // seal on exit), dull-orange when the seal will fall short, dark
-  // when no data exists. KSC archive fidelity shows as a ladder of
-  // small green dots arrayed along the radial axis (one dot per
-  // layer, innermost-first), matching the LTS indicator's KSC strip.
+  // Each band has a status color: blue when sealed locally, bright-
+  // orange when the vessel currently transits it (will seal on exit),
+  // dull-orange when the seal will fall short, dark when no data
+  // exists. Bands FILL LEFT → RIGHT (sweep-fill, clockwise from the
+  // left endpoint over the top) by fidelity. KSC archive fidelity
+  // shows as a column of small dots on the right.
   //
-  // Atmosphereless body → single ghosted "—" placeholder; the layout
-  // doesn't reflow when the vessel transits between bodies.
+  // Atmosphereless body → single ghosted placeholder; surface (alt <
+  // body floor on an atmosphere body) renders as the layer label
+  // "Surface" with no fill activity.
 
   import type { AtmExperimentState } from '../../telemetry/nova-topics';
 
@@ -26,14 +24,20 @@
   }
   const { state }: Props = $props();
 
-  // Geometry — semicircle bounding box. Center at bottom-center.
-  // The arc fans up and out; surface lives at the center.
+  // Geometry — eyebrow arcs centered on +Y. 120° (= ±60° from
+  // vertical) is enough to read as a layered "rainbow" without the
+  // bulk of a full half-ring.
   const W = 96;
-  const H = 60;
+  const H = 40;
   const CX = W / 2;
-  const CY = H - 8;       // a few px of padding under the surface
-  const R_SURFACE = 5;    // half-disc radius (the planet)
-  const R_MAX = 46;       // outermost arc radius (top of topmost layer)
+  const CY = H - 4;       // small padding under the surface dot
+  const R_SURFACE = 4;
+  const R_MAX = 32;
+
+  const ARC_HALF_DEG = 60;             // 120° span = ±60° from vertical
+  const ARC_DEG     = ARC_HALF_DEG * 2;
+  const START_DEG   = 90 + ARC_HALF_DEG; // 150° — math, CCW from +x
+  const END_DEG_FULL = 90 - ARC_HALF_DEG; // 30°
 
   const topAlt = $derived(state.layers.at(-1)?.top ?? 0);
 
@@ -45,16 +49,42 @@
     return R_SURFACE + ratio * (R_MAX - R_SURFACE);
   }
 
-  // Semicircular annular path from `rInner` to `rOuter`, sweeping
-  // 180° from (cx-r, cy) up around to (cx+r, cy).
-  function halfRingPath(rInner: number, rOuter: number): string {
+  function deg2rad(d: number): number { return (d * Math.PI) / 180; }
+  function ang(rad: number, r: number): { x: number; y: number } {
+    return { x: CX + r * Math.cos(rad), y: CY - r * Math.sin(rad) };
+  }
+
+  // Annular slice between rInner and rOuter, sweeping clockwise (in
+  // screen coords) from the left endpoint at 150° to `endDeg`.
+  // endDeg = START_DEG ⇒ zero-width slice (callers should skip);
+  // endDeg = END_DEG_FULL ⇒ full 120° band.
+  function arcBand(rInner: number, rOuter: number, endDeg: number): string {
+    const startRad = deg2rad(START_DEG);
+    const endRad   = deg2rad(endDeg);
+    const a = ang(startRad, rOuter);
+    const b = ang(endRad,   rOuter);
+    const c = ang(endRad,   rInner);
+    const d = ang(startRad, rInner);
+    // Outer arc: math-decreasing angle = screen-clockwise = sweep 1.
+    // Inner arc: reverse direction = sweep 0. Both spans ≤ 120° so
+    // large-arc-flag = 0 always.
     return [
-      `M ${CX - rOuter} ${CY}`,
-      `A ${rOuter} ${rOuter} 0 0 1 ${CX + rOuter} ${CY}`,
-      `L ${CX + rInner} ${CY}`,
-      `A ${rInner} ${rInner} 0 0 0 ${CX - rInner} ${CY}`,
+      `M ${a.x} ${a.y}`,
+      `A ${rOuter} ${rOuter} 0 0 1 ${b.x} ${b.y}`,
+      `L ${c.x} ${c.y}`,
+      `A ${rInner} ${rInner} 0 0 0 ${d.x} ${d.y}`,
       'Z',
     ].join(' ');
+  }
+  function arcBandFull(rInner: number, rOuter: number): string {
+    return arcBand(rInner, rOuter, END_DEG_FULL);
+  }
+  // Thin top-edge arc only — drawn over each band so adjacent bands
+  // remain readable when both share a fill state.
+  function arcEdge(r: number): string {
+    const a = ang(deg2rad(START_DEG),    r);
+    const b = ang(deg2rad(END_DEG_FULL), r);
+    return `M ${a.x} ${a.y} A ${r} ${r} 0 0 1 ${b.x} ${b.y}`;
   }
 
   interface RingArc {
@@ -64,9 +94,8 @@
     /** Fidelity in [0,1] — drives how much of the band fills with the
      *  status color. 0 ⇒ the band reads as the empty/dark well. */
     fidelity: number;
-    /** Outer radius of the FILLED sub-annulus, computed from fidelity.
-     *  rInner ≤ rFill ≤ rOuter. */
-    rFill: number;
+    /** End angle (math-degrees CCW from +x) of the partial fill. */
+    fillEndDeg: number;
     ksc: number;
     color: 'saved' | 'active' | 'active-dull' | 'empty';
   }
@@ -96,12 +125,13 @@
       }
       const rInner = altToR(prevTop);
       const rOuter = altToR(l.top);
+      const clamped = Math.max(0, Math.min(1, fidelity));
       out.push({
         name:    l.name,
         rInner,
         rOuter,
         fidelity,
-        rFill:   rInner + Math.max(0, Math.min(1, fidelity)) * (rOuter - rInner),
+        fillEndDeg: START_DEG - ARC_DEG * clamped,
         ksc:     state.savedKsc.get(l.name) ?? 0,
         color,
       });
@@ -110,27 +140,8 @@
     return out;
   });
 
-  // Vessel altitude marker: rides the +Y radial from center upward,
-  // at radius = altitude in scaled units. Above the topmost layer
-  // (in space) we let it float past R_MAX.
-  const markerR = $derived(
-    topAlt > 0
-      ? Math.max(R_SURFACE + 1, R_SURFACE + (state.altitude / topAlt) * (R_MAX - R_SURFACE))
-      : R_SURFACE,
-  );
-  const markerY = $derived(CY - markerR);
-
   const hasAtmosphere = $derived(state.layers.length > 0);
 
-  // Recorded-bounds bracket: tick marks + connecting line on the +Y
-  // radial at the radii corresponding to `transitMinAlt` / `transitMaxAlt`.
-  // Sentinel: max <= min ⇒ no observation, hide the bracket entirely.
-  const hasBracket = $derived(state.transitMaxAlt > state.transitMinAlt);
-  const bracketTopY    = $derived(CY - altToR(state.transitMaxAlt));
-  const bracketBottomY = $derived(CY - altToR(state.transitMinAlt));
-
-  // Pretty-print the current layer name for the small label inside the
-  // SVG. Title-case, to read as a label rather than a wire id.
   function prettyLayer(name: string): string {
     if (!name) return '';
     return name.charAt(0).toUpperCase() + name.slice(1);
@@ -143,35 +154,31 @@
       <!-- empty wells, one per layer — the dark "unobserved" floor. -->
       {#each rings as r (r.name)}
         <path
-          d={halfRingPath(r.rInner, r.rOuter)}
+          d={arcBandFull(r.rInner, r.rOuter)}
           class="atm__ring atm__ring--empty"
         />
       {/each}
 
-      <!-- partial fill: an inner sub-annulus that grows outward as
-           fidelity climbs. fidelity=0 ⇒ no fill (well only);
-           fidelity=1 ⇒ fills the whole layer band. -->
+      <!-- partial fill: sub-band swept clockwise from the left edge
+           as fidelity climbs. fidelity=0 ⇒ no fill (well only);
+           fidelity=1 ⇒ fills the whole 120° band. -->
       {#each rings as r (r.name)}
         {#if r.fidelity > 0 && r.color !== 'empty'}
           <path
-            d={halfRingPath(r.rInner, r.rFill)}
+            d={arcBand(r.rInner, r.rOuter, r.fillEndDeg)}
             class="atm__ring atm__ring--{r.color}"
           />
         {/if}
       {/each}
 
-      <!-- thin layer-boundary arcs so neighbouring rings still read
-           when both have the same fill state (e.g. two saved layers) -->
+      <!-- thin layer-boundary arcs so neighbouring bands still read
+           when both have the same fill state (e.g. two saved layers). -->
       {#each rings as r (r.name)}
-        <path
-          d={`M ${CX - r.rOuter} ${CY} A ${r.rOuter} ${r.rOuter} 0 0 1 ${CX + r.rOuter} ${CY}`}
-          class="atm__ring-edge"
-          fill="none"
-        />
+        <path d={arcEdge(r.rOuter)} class="atm__ring-edge" fill="none" />
       {/each}
     {:else}
       <!-- ghosted placeholder when the body has no atmosphere -->
-      <path d={halfRingPath(R_SURFACE, R_MAX)} class="atm__ring atm__ring--ghost" />
+      <path d={arcBandFull(R_SURFACE, R_MAX)} class="atm__ring atm__ring--ghost" />
       <text
         x={CX} y={CY - (R_MAX + R_SURFACE) / 2 + 3}
         class="atm__none"
@@ -181,7 +188,7 @@
 
     <!-- planet surface — small filled half-disc at the center -->
     <path
-      d={halfRingPath(0, R_SURFACE)}
+      d={`M ${CX - R_SURFACE} ${CY} A ${R_SURFACE} ${R_SURFACE} 0 0 1 ${CX + R_SURFACE} ${CY} Z`}
       class="atm__surface"
     />
     <line
@@ -190,53 +197,15 @@
       class="atm__ground"
     />
 
-    {#if hasAtmosphere}
-      <!-- vessel altitude marker — radial pointer with a small triangle
-           tip. The radial line stays full-length so the eye reads
-           position-along-radius rather than just-a-dot. -->
-      <line
-        x1={CX} y1={CY - R_SURFACE}
-        x2={CX} y2={markerY}
-        class="atm__radial"
-      />
-      <polygon
-        points="{CX},{markerY - 3} {CX - 3},{markerY + 2} {CX + 3},{markerY + 2}"
-        class="atm__marker"
-      />
-
-      {#if hasBracket}
-        <!-- Recorded altitude bracket — the range the vessel has covered
-             during the current layer transit. Two short horizontal ticks
-             on either side of the radial, with a vertical line connecting
-             them. Renders to the right of the radial so the live marker
-             still reads cleanly. -->
-        <line
-          x1={CX + 4} y1={bracketTopY}
-          x2={CX + 4} y2={bracketBottomY}
-          class="atm__bracket"
-        />
-        <line
-          x1={CX + 2} y1={bracketTopY}
-          x2={CX + 7} y2={bracketTopY}
-          class="atm__bracket-tick"
-        />
-        <line
-          x1={CX + 2} y1={bracketBottomY}
-          x2={CX + 7} y2={bracketBottomY}
-          class="atm__bracket-tick"
-        />
-      {/if}
-
-      {#if state.currentLayerName}
-        <!-- Currently-observed layer name. Top-left of the bounding box;
-             the topmost arc is symmetric so this corner is empty even
-             when the largest ring is fully filled. -->
-        <text
-          x={2} y={9}
-          class="atm__layer-label"
-          text-anchor="start"
-        >{prettyLayer(state.currentLayerName)}</text>
-      {/if}
+    {#if hasAtmosphere && state.currentLayerName}
+      <!-- Current-regime label inside the SVG (or "Surface" when
+           below the body's surface floor). Top-left of the bounding
+           box; the topmost arc doesn't reach the corner. -->
+      <text
+        x={2} y={9}
+        class="atm__layer-label"
+        text-anchor="start"
+      >{prettyLayer(state.currentLayerName)}</text>
     {/if}
   </svg>
 
@@ -261,11 +230,11 @@
   }
   .atm__svg {
     width: 96px;
-    height: 60px;
+    height: 40px;
     overflow: visible;
   }
 
-  /* Empty cell well — every ring paints this base, then status color
+  /* Empty cell well — every band paints this base, then status color
      overlays. Keeps unobserved layers visible as concentric outlines. */
   .atm__ring {
     fill: rgba(0, 0, 0, 0.42);
@@ -313,30 +282,7 @@
     opacity: 0.7;
   }
 
-  .atm__radial {
-    stroke: var(--accent-soft);
-    stroke-width: 0.7;
-    opacity: 0.55;
-  }
-  .atm__marker {
-    fill: var(--accent-soft);
-    filter: drop-shadow(0 0 4px var(--accent-glow));
-  }
-  /* Recorded-altitude bracket — alt-min/alt-max ticks during the
-     current transit. Dim accent so it reads as "previously seen" and
-     doesn't fight the live vessel marker. */
-  .atm__bracket {
-    stroke: var(--accent-dim);
-    stroke-width: 0.7;
-    opacity: 0.7;
-  }
-  .atm__bracket-tick {
-    stroke: var(--accent);
-    stroke-width: 0.9;
-    opacity: 0.85;
-  }
-  /* Current-layer label inside the SVG. Tiny, dim — intentional weak
-     contrast so it doesn't compete with the rings or markers. */
+  /* Current-layer / "Surface" label inside the SVG. Tiny, dim. */
   .atm__layer-label {
     fill: var(--fg-dim);
     font-family: var(--font-display);
@@ -360,7 +306,7 @@
     flex-direction: column;
     justify-content: space-around;
     gap: 4px;
-    padding: 8px 0 6px 0;
+    padding: 4px 0;
   }
   .atm__ksc-dot {
     width: 4px;

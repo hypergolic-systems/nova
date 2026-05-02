@@ -1,9 +1,10 @@
 // Dev-only Nova-aware Ksp wrapper. Delegates everything to a real
 // `SimulatedKsp` (so the navball / staging / PAW continue to work
 // against the Dragonglass fixtures), but intercepts subscriptions to
-// the Nova-prefixed topics — `NovaVesselStructure/<id>` and
-// `NovaPart/<id>` — and emits canned frames so the SCI / PWR / RES
-// views have something to render in the browser.
+// the Nova-prefixed topics — `NovaVesselStructure/<id>`,
+// `NovaPart/<id>`, `NovaScience/<id>`, `NovaStorage/<id>` — and
+// emits canned frames so the SCI / PWR / RES views have something
+// to render in the browser.
 //
 // The fixture data is shaped to match the live broadcaster's wire
 // format (positional tuples). See `nova-topics.ts` for the type-level
@@ -22,6 +23,10 @@ import type {
   NovaPartFrame,
   NovaPartStructFrame,
   NovaComponentFrame,
+  NovaScienceFrame,
+  NovaStorageFrame,
+  NovaAtmExperimentFrame,
+  NovaLtsExperimentFrame,
   NovaScienceFileFrame,
 } from '../telemetry/nova-topics';
 
@@ -31,7 +36,9 @@ import type {
 const SIM_VESSEL_ID = 'sim-vessel';
 
 const VESSEL_STRUCT_PREFIX = 'NovaVesselStructure/';
-const PART_PREFIX = 'NovaPart/';
+const PART_PREFIX     = 'NovaPart/';
+const SCIENCE_PREFIX  = 'NovaScience/';
+const STORAGE_PREFIX  = 'NovaStorage/';
 
 // ---------- Time + environment simulation -------------------------
 
@@ -70,48 +77,72 @@ const SAVED_LOCAL_LTS: [number, number][] = [
 
 // ---------- Fixture: a small probe stack with science gear ---------
 
+// Tuple shapes minus the leading partId — fixture builders return
+// these and `frameFor` prepends the id.
+type InstrumentEntry = [
+  instrumentName: string,
+  experiments: (NovaAtmExperimentFrame | NovaLtsExperimentFrame)[],
+];
+type ScienceBody = [instruments: InstrumentEntry[]];
+type StorageBody = [
+  usedBytes: number,
+  capacityBytes: number,
+  fileCount: number,
+  files: NovaScienceFileFrame[],
+];
+
 interface PartFixture {
   id: string;
   name: string;       // KSP internal part name
   title: string;      // Player-facing
   parentId: string | null;
   tags: NovaPartStructFrame[4];
+  /** Resources + virtual-component view — published on NovaPart/<id>. */
   build: () => NovaComponentFrame[];
+  /** Optional science payload — published on NovaScience/<id> if set. */
+  buildScience?: () => ScienceBody;
+  /** Optional storage payload — published on NovaStorage/<id> if set. */
+  buildStorage?: () => StorageBody;
 }
 
-// Each tuple: [name, topAlt, bottomPressureAtm, topPressureAtm].
-// Mirrors `AtmosphericProfileExperiment.Layers["Kerbin"]` C#-side so
-// the sim and live wire frames produce identical shapes.
-const KERBIN_LAYERS: [string, number, number, number][] = [
-  ['troposphere',  18_000, 1.000, 0.092],
-  ['stratosphere', 45_000, 0.092, 0.005],
-  ['mesosphere',   70_000, 0.005, 0.000],
+// Each tuple: [name, topAlt]. Mirrors
+// `AtmosphericProfileExperiment.Layers["Kerbin"]` C#-side so the sim
+// and live wire frames produce identical shapes.
+const KERBIN_LAYERS: [string, number][] = [
+  ['troposphere',  18_000],
+  ['stratosphere', 45_000],
+  ['mesosphere',   70_000],
 ];
 
-// Approximate pressure at altitude — log-decay from sea-level 1 atm
-// to ~0 at the top of mesosphere (70 km), tuned so each layer's
-// boundary roughly hits the table values. Real KSP uses an
-// atmosphere curve; this is good enough for the indicator demo.
-function pressureForAltitude(alt: number): number {
-  if (alt <= 0)      return 1.0;
-  if (alt >= 70_000) return 0;
-  return Math.exp(-alt / 6_000);
+// Surface floor (m) — mirror of C# `SurfaceFloorMeters`. Below this
+// altitude, layer detection returns null and (in dev sim) the
+// telemetry currentLayerName flips to "surface".
+const ATM_SURFACE_FLOOR_M = 1_000;
+
+// Effective bottom altitude for fidelity-span purposes — first layer
+// floors at the surface; subsequent layers start at the previous
+// layer's top.
+function layerBottomAlt(layerIdx: number): number {
+  return layerIdx === 0
+    ? ATM_SURFACE_FLOOR_M
+    : KERBIN_LAYERS[layerIdx - 1][1];
 }
 
 const INSTRUMENT = '2HOT Thermometer';
 
-// Build a complete (full-fidelity) atm-profile file frame — the layer
-// has been fully covered. recorded bounds match the layer span.
+// Build a complete-or-partial atm-profile file frame from recorded
+// altitude bounds. Fidelity comes from altitude-coverage: span vs
+// effective layer span (top - max(prev layer top, surface floor)).
 function makeAtmFile(
   layer: 'troposphere' | 'stratosphere' | 'mesosphere',
-  recMinP: number, recMaxP: number,
   recMinAlt: number, recMaxAlt: number,
   producedAt: number,
 ): NovaScienceFileFrame {
-  const layerEntry = KERBIN_LAYERS.find(([n]) => n === layer)!;
-  const [, , bottomP, topP] = layerEntry;
-  const span = Math.abs(bottomP - topP);
-  const captured = Math.max(0, recMaxP - recMinP);
+  const idx = KERBIN_LAYERS.findIndex(([n]) => n === layer);
+  const [, top] = KERBIN_LAYERS[idx];
+  const bottom  = layerBottomAlt(idx);
+  const span    = top - bottom;
+  const captured = Math.max(0, recMaxAlt - recMinAlt);
   const fidelity = span > 0 ? Math.min(1, captured / span) : 0;
   return [
     `atm-profile@Kerbin:${layer}`,
@@ -119,7 +150,6 @@ function makeAtmFile(
     fidelity,
     producedAt,
     INSTRUMENT,
-    recMinP, recMaxP, bottomP, topP,
     recMinAlt, recMaxAlt,
     0, 0, 0,             // start_ut / end_ut / slice_duration unused
   ];
@@ -137,22 +167,19 @@ function makeLtsFile(sliceIdx: number, startUT: number, endUT: number): NovaScie
     cached,
     startUT,
     INSTRUMENT,
-    0, 0, 0, 0, 0, 0,    // direct fields unused
+    0, 0,                // direct fields unused
     startUT, endUT, SLICE_DURATION_S,
   ];
 }
 
 // Storage seed. Mk1 holds atm-profile records from a prior mission;
-// OKTO2 holds lts records. The atm files show varied coverage: tropo
-// only got the lower ~half of its pressure range (visible as a
-// partial-fill blue band in the indicator); strato fully covered;
-// meso untracked.
+// OKTO2 holds lts records. Atm files show varied coverage: tropo only
+// got 1–10 km (partial fill); strato fully covered; meso untracked.
 const MK1_FILES: NovaScienceFileFrame[] = [
-  // Troposphere — only covered 0–8 km / 1.0 atm down to ~0.5 atm.
-  // Recorded span = 0.5 of layer's 0.908 atm range ≈ 55% fidelity.
-  makeAtmFile('troposphere',  0.500, 1.000, 0,      8_000,  120),
+  // Troposphere — covered 1–10 km of the effective 1–18 km span ≈ 53%.
+  makeAtmFile('troposphere',  1_000, 10_000, 120),
   // Stratosphere — fully covered.
-  makeAtmFile('stratosphere', 0.005, 0.092, 18_000, 45_000, 480),
+  makeAtmFile('stratosphere', 18_000, 45_000, 480),
 ];
 const OKTO2_FILES: NovaScienceFileFrame[] = [
   makeLtsFile(0, 0,                                                SLICE_DURATION_S),
@@ -176,8 +203,6 @@ const simEnabled: Record<string, boolean> = {
 let simAtmLastLayer: string = '';
 let simAtmTransitMin = Infinity;
 let simAtmTransitMax = -Infinity;
-let simAtmTransitMinP = Infinity;
-let simAtmTransitMaxP = -Infinity;
 
 // LTS recorded-phase bracket — same idea; resets on slice rollover.
 let simLtsLastSlice = -1;
@@ -185,6 +210,7 @@ let simLtsRecordedMin = Infinity;
 let simLtsRecordedMax = -Infinity;
 
 function currentLayerName(altitude: number): string {
+  if (altitude < ATM_SURFACE_FLOOR_M) return 'surface';
   for (const [name, top] of KERBIN_LAYERS) if (altitude < top) return name;
   return '';
 }
@@ -217,6 +243,106 @@ function ltsState() {
   return { phase, sliceIdx, activeFid, willComplete };
 }
 
+// Storage display-bytes lerps with each file's fidelity, mirroring
+// `DataStorage.DisplayedBytes` C#-side.
+function storageDisplayedBytes(files: NovaScienceFileFrame[]): number {
+  let total = 0;
+  for (const f of files) {
+    const exp = f[1];
+    const size = exp === 'lts' ? 5_000 : 1_000;
+    const fid  = Math.max(0, Math.min(1, f[2]));
+    total += fid * size;
+  }
+  return Math.round(total);
+}
+
+function buildThermometerInstrument(): InstrumentEntry {
+  const altitude = currentAltitude();
+  const lts = ltsState();
+  const layerName = currentLayerName(altitude);
+  // "surface" is a UI sentinel for sub-floor; doesn't count as being
+  // in a real layer for transit / activity purposes.
+  const inLayer = layerName !== '' && layerName !== 'surface';
+
+  // Track atm transit bracket. Reset on layer change.
+  const atmEnabled = simEnabled['atm-profile'];
+  if (atmEnabled && layerName !== simAtmLastLayer) {
+    simAtmTransitMin = inLayer ? altitude : Infinity;
+    simAtmTransitMax = inLayer ? altitude : -Infinity;
+  } else if (atmEnabled && inLayer) {
+    simAtmTransitMin = Math.min(simAtmTransitMin, altitude);
+    simAtmTransitMax = Math.max(simAtmTransitMax, altitude);
+  }
+  simAtmLastLayer = layerName;
+  const atmHasBracket = simAtmTransitMax >= simAtmTransitMin;
+
+  // Track lts recorded-phase bracket. Reset on slice rollover.
+  const ltsEnabled = simEnabled['lts'];
+  if (ltsEnabled && lts.sliceIdx !== simLtsLastSlice) {
+    simLtsRecordedMin = lts.phase;
+    simLtsRecordedMax = lts.phase;
+  } else if (ltsEnabled) {
+    simLtsRecordedMin = Math.min(simLtsRecordedMin, lts.phase);
+    simLtsRecordedMax = Math.max(simLtsRecordedMax, lts.phase);
+  }
+  simLtsLastSlice = lts.sliceIdx;
+  const ltsHasBracket = ltsEnabled && simLtsRecordedMax >= simLtsRecordedMin;
+
+  const atmActive = atmEnabled && inLayer;
+  const ltsActive = ltsEnabled;
+
+  // Cheap stand-in for KSP's atmospheric temperature curve so the
+  // sim has something plausible to feed the temp plot — lapse rate
+  // through the troposphere, isotherm above, with a 100 K floor.
+  const tempK = Math.max(100, 290 - altitude * 0.0035);
+
+  const atmFrame: NovaAtmExperimentFrame = [
+    'EXA',
+    'atm-profile',
+    atmActive ? 1 : 0,
+    1,                                     // willComplete (atm always 1 today)
+    atmEnabled ? 1 : 0,
+    layerName,                              // "" / "surface" / layer name
+    atmHasBracket ? simAtmTransitMin  : 0,
+    atmHasBracket ? simAtmTransitMax  : 0,
+    atmEnabled ? 'Mk1 Command Pod' : '',
+    'Kerbin',
+    altitude,
+    tempK,
+    KERBIN_LAYERS,
+    MK1_FILES.map((f) => [
+      f[0].split(':')[1],   // "atm-profile@Kerbin:troposphere" → "troposphere"
+      f[2],                  // cached fidelity
+    ]),
+    [],
+  ];
+  const ltsFrame: NovaLtsExperimentFrame = [
+    'EXL',
+    'lts',
+    ltsActive ? 1 : 0,
+    lts.willComplete ? 1 : 0,
+    ltsEnabled ? 1 : 0,
+    ltsHasBracket ? simLtsRecordedMin : 0,
+    ltsHasBracket ? simLtsRecordedMax : 0,
+    ltsEnabled ? 'OKTO2 Probe Core' : '',
+    'Kerbin',
+    'SrfLanded',
+    'Kerbin',
+    SLICES_PER_YEAR,
+    KERBIN_YEAR_S,
+    lts.sliceIdx,
+    lts.phase,
+    ltsActive ? lts.activeFid : 0,
+    SAVED_LOCAL_LTS,
+    [],
+  ];
+  return ['2HOT Thermometer', [atmFrame, ltsFrame]];
+}
+
+function buildThermometerScience(): ScienceBody {
+  return [[buildThermometerInstrument()]];
+}
+
 const FIXTURE_PARTS: PartFixture[] = [
   {
     id: '5001',
@@ -229,14 +355,13 @@ const FIXTURE_PARTS: PartFixture[] = [
       ['B', 0.5, 200, -0.4],
       // Command idle draw.
       ['C', 0.05, 0, 0, 0],
-      // Small science drive — holds the atm-profile files.
-      [
-        'DS',
-        MK1_FILES.reduce((s, [, exp]) => s + (exp === 'lts' ? 5_000 : 1_000), 0),
-        51_200,
-        MK1_FILES.length,
-        MK1_FILES,
-      ],
+    ],
+    // Small science drive — holds the atm-profile files.
+    buildStorage: () => [
+      storageDisplayedBytes(MK1_FILES),
+      51_200,
+      MK1_FILES.length,
+      MK1_FILES,
     ],
   },
   {
@@ -245,96 +370,8 @@ const FIXTURE_PARTS: PartFixture[] = [
     title: '2HOT Thermometer',
     parentId: '5001',
     tags: ['power-consume', 'science-instrument'],
-    build: () => {
-      const altitude = currentAltitude();
-      const pressure = pressureForAltitude(altitude);
-      const lts = ltsState();
-      const layerName = currentLayerName(altitude);
-
-      // Track atm transit bracket. Reset on layer change.
-      const atmEnabled = simEnabled['atm-profile'];
-      if (atmEnabled && layerName !== simAtmLastLayer) {
-        simAtmTransitMin = layerName === '' ? Infinity  : altitude;
-        simAtmTransitMax = layerName === '' ? -Infinity : altitude;
-        simAtmTransitMinP = layerName === '' ? Infinity  : pressure;
-        simAtmTransitMaxP = layerName === '' ? -Infinity : pressure;
-      } else if (atmEnabled && layerName !== '') {
-        simAtmTransitMin = Math.min(simAtmTransitMin, altitude);
-        simAtmTransitMax = Math.max(simAtmTransitMax, altitude);
-        simAtmTransitMinP = Math.min(simAtmTransitMinP, pressure);
-        simAtmTransitMaxP = Math.max(simAtmTransitMaxP, pressure);
-      }
-      simAtmLastLayer = layerName;
-      const atmHasBracket = simAtmTransitMax >= simAtmTransitMin;
-
-      // Track lts recorded-phase bracket. Reset on slice rollover.
-      const ltsEnabled = simEnabled['lts'];
-      if (ltsEnabled && lts.sliceIdx !== simLtsLastSlice) {
-        simLtsRecordedMin = lts.phase;
-        simLtsRecordedMax = lts.phase;
-      } else if (ltsEnabled) {
-        simLtsRecordedMin = Math.min(simLtsRecordedMin, lts.phase);
-        simLtsRecordedMax = Math.max(simLtsRecordedMax, lts.phase);
-      }
-      simLtsLastSlice = lts.sliceIdx;
-      const ltsHasBracket = ltsEnabled && simLtsRecordedMax >= simLtsRecordedMin;
-
-      // active = enabled && in regime. Mirrors the C# state computation.
-      const atmActive = atmEnabled && layerName !== '';
-      const ltsActive = ltsEnabled;  // sim is always in an applicable situation
-
-      return [
-        ['IN', '2HOT Thermometer', ['atm-profile', 'lts']],
-        // EXA — current Kerbin atmosphere state.
-        [
-          'EXA',
-          'atm-profile',
-          atmActive ? 1 : 0,
-          1,                                     // willComplete (atm always 1 today)
-          atmEnabled ? 1 : 0,
-          layerName,                              // currentLayerName
-          atmHasBracket ? simAtmTransitMin  : 0,  // transitMinAlt
-          atmHasBracket ? simAtmTransitMax  : 0,  // transitMaxAlt
-          atmHasBracket ? simAtmTransitMinP : 0,  // transitMinPressureAtm
-          atmHasBracket ? simAtmTransitMaxP : 0,  // transitMaxPressureAtm
-          pressure,                               // currentPressureAtm
-          atmEnabled ? 'Mk1 Command Pod' : '',    // destinationStorage when enabled
-
-          'Kerbin',
-          altitude,
-          KERBIN_LAYERS,
-          // Derive savedLocal from MK1_FILES so the indicator's filled
-          // bands match what's actually in storage. Each tuple is
-          // (layerName, cached fidelity from the file's own snapshot).
-          MK1_FILES.map((f) => [
-            f[0].split(':')[1],   // "atm-profile@Kerbin:troposphere" → "troposphere"
-            f[2],                  // cached fidelity
-          ]),
-          [],
-        ],
-        // EXL — Kerbin LTS state.
-        [
-          'EXL',
-          'lts',
-          ltsActive ? 1 : 0,
-          lts.willComplete ? 1 : 0,
-          ltsEnabled ? 1 : 0,
-          ltsHasBracket ? simLtsRecordedMin : 0,
-          ltsHasBracket ? simLtsRecordedMax : 0,
-          ltsEnabled ? 'OKTO2 Probe Core' : '',
-          'Kerbin',
-          'SrfLanded',
-          'Kerbin',
-          SLICES_PER_YEAR,
-          KERBIN_YEAR_S,
-          lts.sliceIdx,
-          lts.phase,
-          ltsActive ? lts.activeFid : 0,
-          SAVED_LOCAL_LTS,
-          [],
-        ],
-      ];
-    },
+    build: () => [],   // no resources / components — pure instrument
+    buildScience: buildThermometerScience,
   },
   {
     id: '5003',
@@ -345,14 +382,13 @@ const FIXTURE_PARTS: PartFixture[] = [
     build: () => [
       // Command idle draw.
       ['C', 0.02, 0, 0, 0],
-      // Larger drive on the probe core — holds the LTS files.
-      [
-        'DS',
-        OKTO2_FILES.reduce((s, [, exp]) => s + (exp === 'lts' ? 5_000 : 1_000), 0),
-        102_400,
-        OKTO2_FILES.length,
-        OKTO2_FILES,
-      ],
+    ],
+    // Larger drive on the probe core — holds the LTS files.
+    buildStorage: () => [
+      storageDisplayedBytes(OKTO2_FILES),
+      102_400,
+      OKTO2_FILES.length,
+      OKTO2_FILES,
     ],
   },
 ];
@@ -390,7 +426,7 @@ export class NovaSimulatedKsp implements Ksp {
     topic: Topic<T, Ops>,
     cb: (frame: T, tObserved: number) => void,
   ): () => void {
-    if (topic.name.startsWith(VESSEL_STRUCT_PREFIX) || topic.name.startsWith(PART_PREFIX)) {
+    if (this.isNovaTopic(topic.name)) {
       return this.subscribeNova(topic.name, cb as (f: unknown, t: number) => void);
     }
     return this.inner.subscribe(topic, cb);
@@ -401,16 +437,17 @@ export class NovaSimulatedKsp implements Ksp {
     // toggle. Mutating `simEnabled` makes the next emit reflect the
     // change; we also force-emit immediately so the UI doesn't have to
     // wait for the next 100 ms tick to see the result.
-    if (topic.name.startsWith(PART_PREFIX) && op === 'setExperimentEnabled') {
-      const [experimentId, enabled] = args as unknown as [string, boolean];
+    if (topic.name.startsWith(SCIENCE_PREFIX) && op === 'setExperimentEnabled') {
+      // args = [instrumentIndex, experimentId, enabled]; the sim
+      // hosts a single Thermometer per instrument-bearing fixture, so
+      // we ignore instrumentIndex and key on experimentId only.
+      const [, experimentId, enabled] = args as unknown as [number, string, boolean];
       simEnabled[experimentId] = enabled;
       // Reset transit/recorded brackets on disable so re-enable starts fresh.
       if (!enabled) {
         if (experimentId === 'atm-profile') {
           simAtmTransitMin = Infinity;
           simAtmTransitMax = -Infinity;
-          simAtmTransitMinP = Infinity;
-          simAtmTransitMaxP = -Infinity;
           simAtmLastLayer = '';
         } else if (experimentId === 'lts') {
           simLtsRecordedMin = Infinity;
@@ -423,6 +460,13 @@ export class NovaSimulatedKsp implements Ksp {
     }
     this.inner.send(topic, op, ...args);
   };
+
+  private isNovaTopic(name: string): boolean {
+    return name.startsWith(VESSEL_STRUCT_PREFIX)
+        || name.startsWith(PART_PREFIX)
+        || name.startsWith(SCIENCE_PREFIX)
+        || name.startsWith(STORAGE_PREFIX);
+  }
 
   // --- Nova topic dispatch ---
 
@@ -463,8 +507,13 @@ export class NovaSimulatedKsp implements Ksp {
       return this.vesselStructureFrame();
     }
     if (topicName.startsWith(PART_PREFIX)) {
-      const partId = topicName.slice(PART_PREFIX.length);
-      return this.partFrame(partId);
+      return this.partFrame(topicName.slice(PART_PREFIX.length));
+    }
+    if (topicName.startsWith(SCIENCE_PREFIX)) {
+      return this.scienceFrame(topicName.slice(SCIENCE_PREFIX.length));
+    }
+    if (topicName.startsWith(STORAGE_PREFIX)) {
+      return this.storageFrame(topicName.slice(STORAGE_PREFIX.length));
     }
     return undefined;
   }
@@ -480,5 +529,19 @@ export class NovaSimulatedKsp implements Ksp {
     const p = FIXTURE_PARTS.find((q) => q.id === partId);
     if (!p) return undefined;
     return [partId, [], p.build()];
+  }
+
+  private scienceFrame(partId: string): NovaScienceFrame | undefined {
+    const p = FIXTURE_PARTS.find((q) => q.id === partId);
+    if (!p?.buildScience) return undefined;
+    const [instruments] = p.buildScience();
+    return [partId, instruments];
+  }
+
+  private storageFrame(partId: string): NovaStorageFrame | undefined {
+    const p = FIXTURE_PARTS.find((q) => q.id === partId);
+    if (!p?.buildStorage) return undefined;
+    const [used, cap, count, files] = p.buildStorage();
+    return [partId, used, cap, count, files];
   }
 }

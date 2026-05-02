@@ -20,6 +20,22 @@ public class DataStorage : VirtualComponent {
 
   public bool CanDeposit(long sizeBytes) => sizeBytes >= 0 && sizeBytes <= FreeBytes;
 
+  // Bytes the player should see in the storage gauge / file-list
+  // sizes. Each in-progress file contributes `fidelity × full_size` so
+  // the readout lerps as data accrues; full-fidelity files contribute
+  // their full size. Capacity logic uses `UsedBytes` (the reservation
+  // total) — `DisplayedBytes` is a UI signal only.
+  public long DisplayedBytes {
+    get {
+      double total = 0;
+      foreach (var f in Files) {
+        double clampedFidelity = f.Fidelity < 0 ? 0 : (f.Fidelity > 1 ? 1 : f.Fidelity);
+        total += clampedFidelity * FileSizeFor(f.ExperimentId);
+      }
+      return (long)total;
+    }
+  }
+
   // Lookup an existing file by its subject key. Returns null when no
   // file for that subject lives here yet.
   public ScienceFile FindBySubject(string subjectId) {

@@ -123,15 +123,25 @@
   interface Row {
     file: ScienceFile;
     decoded: DecodedSubject | null;
-    bytes: number;
+    /** Reserved (full) size on disk — what the storage commits when the
+     *  file is created. Drives the upper bound the player sees. */
+    sizeBytes: number;
+    /** Lerped display size — `fidelity × sizeBytes`, rounded. Reads as
+     *  "how much science is in this file right now". */
+    displayedBytes: number;
   }
 
   const rows = $derived.by<Row[]>(() => {
-    return files.map((f) => ({
-      file: f,
-      decoded: decodeSubject(f.subjectId, f.experimentId),
-      bytes: sizeBytes(f.experimentId),
-    }));
+    return files.map((f) => {
+      const size = sizeBytes(f.experimentId);
+      const fid  = Math.max(0, Math.min(1, f.fidelity));
+      return {
+        file: f,
+        decoded: decodeSubject(f.subjectId, f.experimentId),
+        sizeBytes: size,
+        displayedBytes: Math.round(fid * size),
+      };
+    });
   });
 
   const visible = $derived.by(() => {
@@ -163,9 +173,9 @@
     return out;
   });
 
-  // Total size across all files in this storage. Surfaced in the
-  // subtitle so the modal echoes the storage row's headline number.
-  const totalBytes = $derived(rows.reduce((s, r) => s + r.bytes, 0));
+  // Total displayed bytes across all files in this storage —
+  // matches the storage row gauge, which lerps with fidelity.
+  const totalBytes = $derived(rows.reduce((s, r) => s + r.displayedBytes, 0));
 </script>
 
 <Modal
@@ -239,7 +249,7 @@
                 style:color={fidelityColour(r.file.fidelity)}
               >{fmtMag(r.file.fidelity)}</span>
               <span class="fl__col fl__col--size" role="cell">
-                {fmtBytes(r.bytes)}
+                {fmtBytes(r.displayedBytes)}<em class="fl__col--size-cap">/{fmtBytes(r.sizeBytes)}</em>
               </span>
               <span class="fl__col fl__col--age" role="cell">
                 {fmtDuration(r.file.producedAt)}
@@ -390,6 +400,13 @@
     letter-spacing: 0;
     text-transform: none;
     font-variant-numeric: tabular-nums;
+  }
+  /* Capacity suffix after the lerped displayed-bytes value. Reads as
+     "150 B / 1 KB" — the leading number is what's collected, the
+     suffix is the reservation. */
+  .fl__col--size-cap {
+    font-style: normal;
+    color: var(--fg-mute);
   }
 
   .fl__rows::-webkit-scrollbar {

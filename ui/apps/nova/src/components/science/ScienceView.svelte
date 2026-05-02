@@ -10,11 +10,15 @@
   // Visual language matches PowerView (.pwr__) — same chrome, different
   // prefix (.sci__).
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import { NovaPartTopic } from '../../telemetry/nova-topics';
+  import {
+    useNovaScienceByTag,
+    useNovaStorageByTag,
+  } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import type { NovaTagged } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import { NovaScienceTopic } from '../../telemetry/nova-topics';
   import type {
     ScienceFile,
+    NovaStorage,
     AtmExperimentState,
     LtsExperimentState,
   } from '../../telemetry/nova-topics';
@@ -23,22 +27,30 @@
   import SegmentGauge from '../SegmentGauge.svelte';
   import FileListModal from './FileListModal.svelte';
   import AtmProfileIndicator from './AtmProfileIndicator.svelte';
+  import AtmTempPlot from './AtmTempPlot.svelte';
   import LtsOrbitIndicator from './LtsOrbitIndicator.svelte';
   import { fmtBytes, fmtDuration } from '../../util/units';
   import { experimentLabel } from '../../util/science-labels';
+
+  type StorageTagged = NovaTagged<NovaStorage>;
 
   interface Props {
     vesselId: string;
   }
   const { vesselId }: Props = $props();
 
-  const instruments = useNovaPartsByTag(() => vesselId, 'science-instrument');
-  const storages    = useNovaPartsByTag(() => vesselId, 'science-storage');
+  const instruments = useNovaScienceByTag(() => vesselId, 'science-instrument');
+  const storages    = useNovaStorageByTag(() => vesselId, 'science-storage');
 
   const ksp = getKsp();
 
-  function toggleExperiment(partId: string, expId: string, enabled: boolean): void {
-    ksp.send(NovaPartTopic(partId), 'setExperimentEnabled', expId, !enabled);
+  function toggleExperiment(
+    partId: string,
+    instrumentIndex: number,
+    expId: string,
+    enabled: boolean,
+  ): void {
+    ksp.send(NovaScienceTopic(partId), 'setExperimentEnabled', instrumentIndex, expId, !enabled);
   }
 
   // Aggregate roll-up across every DataStorage on the vessel.
@@ -48,11 +60,9 @@
     let fileCount = 0;
     for (const p of storages.current) {
       if (!p.state) continue;
-      for (const ds of p.state.dataStorage) {
-        used += ds.usedBytes;
-        cap += ds.capacityBytes;
-        fileCount += ds.fileCount;
-      }
+      used += p.state.usedBytes;
+      cap += p.state.capacityBytes;
+      fileCount += p.state.fileCount;
     }
     return { used, cap, fileCount };
   });
@@ -63,40 +73,47 @@
   let instrOpen = $state(true);
   let storeOpen = $state(true);
 
-  // ---- Tree open state (per instrument-part / per experiment) ---
+  // ---- Tree open state (per instrument / per experiment) -------
   // Closed-by-default sets — entries added on toggle. Default-open
   // logic: a key NOT in the set is treated as open. Toggling a key
   // collapses (adds to set); re-toggling expands (removes). Persisting
   // open-state in a Set this way means new instruments/experiments
   // appear expanded automatically, which matches the user's "show me
   // everything" expectation when a vessel comes online.
+  //
+  // Instrument-level keys are `${partId}::${instrumentIndex}` so that
+  // a multi-instrument part collapses each instrument independently.
   let collapsedInstr = $state<Set<string>>(new Set());
   let collapsedExp   = $state<Set<string>>(new Set());
 
-  function toggleInstrPart(partId: string): void {
+  function instrKey(partId: string, instrIdx: number): string {
+    return `${partId}::${instrIdx}`;
+  }
+  function toggleInstr(partId: string, instrIdx: number): void {
+    const k = instrKey(partId, instrIdx);
     const next = new Set(collapsedInstr);
-    if (next.has(partId)) next.delete(partId);
-    else next.add(partId);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
     collapsedInstr = next;
   }
-  function toggleExp(partId: string, expId: string): void {
-    const key = `${partId}::${expId}`;
+  function toggleExp(partId: string, instrIdx: number, expId: string): void {
+    const k = `${partId}::${instrIdx}::${expId}`;
     const next = new Set(collapsedExp);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
     collapsedExp = next;
   }
-  function isInstrOpen(partId: string): boolean {
-    return !collapsedInstr.has(partId);
+  function isInstrOpen(partId: string, instrIdx: number): boolean {
+    return !collapsedInstr.has(instrKey(partId, instrIdx));
   }
-  function isExpOpen(partId: string, expId: string): boolean {
-    return !collapsedExp.has(`${partId}::${expId}`);
+  function isExpOpen(partId: string, instrIdx: number, expId: string): boolean {
+    return !collapsedExp.has(`${partId}::${instrIdx}::${expId}`);
   }
 
   // ---- File list modal ------------------------------------------
   let openModalPartId = $state<string | null>(null);
 
-  function openFiles(p: NovaTaggedPart): void {
+  function openFiles(p: StorageTagged): void {
     openModalPartId = p.struct.id;
   }
   function closeFiles(): void {
@@ -108,26 +125,21 @@
       ? storages.current.find((p) => p.struct.id === openModalPartId) ?? null
       : null,
   );
-  const openFilesList = $derived.by<ScienceFile[]>(() => {
-    if (!openPart?.state) return [];
-    const all: ScienceFile[] = [];
-    for (const ds of openPart.state.dataStorage) all.push(...ds.files);
-    return all;
-  });
+  const openFilesList = $derived.by<ScienceFile[]>(() =>
+    openPart?.state ? openPart.state.files : [],
+  );
 
   // ---- Per-storage helpers --------------------------------------
-  function partTotals(p: NovaTaggedPart): { used: number; cap: number; files: number } {
-    let used = 0, cap = 0, files = 0;
-    if (!p.state) return { used, cap, files };
-    for (const ds of p.state.dataStorage) {
-      used += ds.usedBytes;
-      cap += ds.capacityBytes;
-      files += ds.fileCount;
-    }
-    return { used, cap, files };
+  function partTotals(p: StorageTagged): { used: number; cap: number; files: number } {
+    if (!p.state) return { used: 0, cap: 0, files: 0 };
+    return {
+      used:  p.state.usedBytes,
+      cap:   p.state.capacityBytes,
+      files: p.state.fileCount,
+    };
   }
 
-  function partFraction(p: NovaTaggedPart): number {
+  function partFraction(p: StorageTagged): number {
     const t = partTotals(p);
     return t.cap > 0 ? t.used / t.cap : 0;
   }
@@ -166,23 +178,24 @@
   }
 
   // Pretty-printers for the live status block in the experiment body.
-  // Display unit conventions: altitude in km (with one decimal), static
-  // pressure in atm (3 sig figs), phase as percent of body-year. Returns
-  // "—" when the relevant data isn't present yet.
+  // Display unit conventions: altitude in km (with one decimal), phase
+  // as percent of body-year. Returns "—" when the relevant data isn't
+  // present yet.
   function fmtKm(meters: number): string {
     return `${(meters / 1000).toFixed(1)} km`;
-  }
-  function fmtAtm(atm: number): string {
-    if (atm >= 1)     return `${atm.toFixed(2)} atm`;
-    if (atm >= 0.01)  return `${atm.toFixed(3)} atm`;
-    if (atm > 0)     return `${atm.toExponential(1)} atm`;
-    return '0 atm';
   }
   function fmtPct(frac: number, digits = 1): string {
     return `${(frac * 100).toFixed(digits)}%`;
   }
 
+  // Surface floor (m) below which the experiment doesn't gather data.
+  // Mirrors `AtmosphericProfileExperiment.SurfaceFloorMeters` C#-side.
+  const ATM_SURFACE_FLOOR_M = 1_000;
+
   function atmNow(s: AtmExperimentState): string {
+    if (s.currentLayerName === 'surface') {
+      return `Surface · 0–${fmtKm(ATM_SURFACE_FLOOR_M)}`;
+    }
     if (!s.currentLayerName) return 'above atmosphere';
     // The "now" line names the current regime AND the limits the
     // experiment must capture. Vessel position lives on the indicator;
@@ -190,16 +203,20 @@
     const idx   = s.layers.findIndex((l) => l.name === s.currentLayerName);
     if (idx < 0) return prettyLayer(s.currentLayerName);
     const layer = s.layers[idx];
-    const bottomAlt = idx === 0 ? 0 : s.layers[idx - 1].top;
-    return `${prettyLayer(s.currentLayerName)} · ${fmtKm(bottomAlt)}–${fmtKm(layer.top)} · ${fmtAtm(layer.bottomPressureAtm)}–${fmtAtm(layer.topPressureAtm)}`;
+    const bottomAlt = idx === 0 ? ATM_SURFACE_FLOOR_M : s.layers[idx - 1].top;
+    return `${prettyLayer(s.currentLayerName)} · ${fmtKm(bottomAlt)}–${fmtKm(layer.top)}`;
   }
   function atmSeen(s: AtmExperimentState): string {
     if (s.transitMaxAlt <= s.transitMinAlt) return '—';
-    const layer = s.layers.find((l) => l.name === s.currentLayerName);
-    const span = layer ? Math.abs(layer.bottomPressureAtm - layer.topPressureAtm) : 0;
-    const got  = Math.max(0, s.transitMaxPressureAtm - s.transitMinPressureAtm);
+    const idx   = s.layers.findIndex((l) => l.name === s.currentLayerName);
+    const layer = idx >= 0 ? s.layers[idx] : undefined;
+    const bottomAlt = idx === 0 ? ATM_SURFACE_FLOOR_M
+                    : idx >  0  ? s.layers[idx - 1].top
+                    : 0;
+    const span = layer ? Math.max(0, layer.top - bottomAlt) : 0;
+    const got  = Math.max(0, s.transitMaxAlt - s.transitMinAlt);
     const pct  = span > 0 ? Math.min(1, got / span) : 0;
-    return `${fmtKm(s.transitMinAlt)}–${fmtKm(s.transitMaxAlt)} · ${fmtAtm(s.transitMinPressureAtm)}–${fmtAtm(s.transitMaxPressureAtm)} · ${fmtPct(pct, 0)}`;
+    return `${fmtKm(s.transitMinAlt)}–${fmtKm(s.transitMaxAlt)} · ${fmtPct(pct, 0)}`;
   }
   function prettyLayer(name: string): string {
     return name ? name.charAt(0).toUpperCase() + name.slice(1) : '';
@@ -259,28 +276,29 @@
       {:else}
         <ul class="sci__instr-rows">
           {#each instruments.current as p (p.struct.id)}
-            {@const inst       = p.state?.instrument[0]}
-            {@const partOpen   = isInstrOpen(p.struct.id)}
-            <li class="sci__instr">
-              <button
-                type="button"
-                class="sci__instr-head"
-                aria-expanded={partOpen}
-                onclick={() => toggleInstrPart(p.struct.id)}
-              >
-                <span class="sci__chev sci__chev--sub" aria-hidden="true">{partOpen ? '▾' : '▸'}</span>
-                <span class="sci__row-icon">
-                  <ComponentIcon kind="thermometer" />
-                </span>
-                <span class="sci__instr-name">{p.struct.title}</span>
-              </button>
+            {#each p.state?.instruments ?? [] as inst, instrIdx (instrIdx)}
+              {@const partOpen = isInstrOpen(p.struct.id, instrIdx)}
+              {@const headLabel = inst.name || p.struct.title}
+              <li class="sci__instr">
+                <button
+                  type="button"
+                  class="sci__instr-head"
+                  aria-expanded={partOpen}
+                  onclick={() => toggleInstr(p.struct.id, instrIdx)}
+                >
+                  <span class="sci__chev sci__chev--sub" aria-hidden="true">{partOpen ? '▾' : '▸'}</span>
+                  <span class="sci__row-icon">
+                    <ComponentIcon kind="thermometer" />
+                  </span>
+                  <span class="sci__instr-name">{headLabel}</span>
+                </button>
 
-              {#if partOpen && inst && inst.experimentIds.length > 0}
+              {#if partOpen && inst.experimentIds.length > 0}
                 <ul class="sci__exp-rows">
                   {#each inst.experimentIds as expId (expId)}
-                    {@const atm     = p.state?.atmExperiment.find((s) => s.experimentId === expId)}
-                    {@const lts     = p.state?.ltsExperiment.find((s) => s.experimentId === expId)}
-                    {@const expOpen = isExpOpen(p.struct.id, expId)}
+                    {@const atm     = inst.atmExperiment?.experimentId === expId ? inst.atmExperiment : undefined}
+                    {@const lts     = inst.ltsExperiment?.experimentId === expId ? inst.ltsExperiment : undefined}
+                    {@const expOpen = isExpOpen(p.struct.id, instrIdx, expId)}
                     {@const active  = atm?.active || lts?.active}
                     {@const enabled = atm?.enabled ?? lts?.enabled ?? false}
                     {@const summary = atm ? atmSummary(atm) : lts ? ltsSummary(lts) : ''}
@@ -294,11 +312,11 @@
                         role="button"
                         tabindex="0"
                         aria-expanded={expOpen}
-                        onclick={() => toggleExp(p.struct.id, expId)}
+                        onclick={() => toggleExp(p.struct.id, instrIdx, expId)}
                         onkeydown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
-                            toggleExp(p.struct.id, expId);
+                            toggleExp(p.struct.id, instrIdx, expId);
                           }
                         }}
                       >
@@ -316,7 +334,7 @@
                             aria-label={`${enabled ? 'Disable' : 'Enable'} ${experimentLabel(expId)}`}
                             onclick={(e) => {
                               e.stopPropagation();
-                              toggleExperiment(p.struct.id, expId, enabled);
+                              toggleExperiment(p.struct.id, instrIdx, expId, enabled);
                             }}
                           >{stateLabel}</button>
                         </span>
@@ -325,11 +343,14 @@
 
                       {#if expOpen}
                         <div class="sci__exp-body">
-                          {#if atm}
-                            <AtmProfileIndicator state={atm} />
-                          {:else if lts}
-                            <LtsOrbitIndicator state={lts} />
-                          {/if}
+                          <div class="sci__exp-viz">
+                            {#if atm}
+                              <AtmProfileIndicator state={atm} />
+                              <AtmTempPlot atm={atm} />
+                            {:else if lts}
+                              <LtsOrbitIndicator state={lts} />
+                            {/if}
+                          </div>
                           {#if enabled}
                             <div class="sci__exp-detail">
                               {#if atm}
@@ -351,9 +372,13 @@
                                   <span class="sci__exp-detail-val">{ltsSeen(lts)}</span>
                                 </div>
                               {/if}
-                              <div class="sci__exp-detail-dest"
-                                class:sci__exp-detail-dest--missing={dest === ''}
-                              >{dest === '' ? '→ NO STORAGE' : `→ ${dest}`}</div>
+                              <div class="sci__exp-detail-line">
+                                <span class="sci__exp-detail-key">STORAGE</span>
+                                <span
+                                  class="sci__exp-detail-val"
+                                  class:sci__exp-detail-val--missing={dest === ''}
+                                >{dest === '' ? 'NO STORAGE' : dest}</span>
+                              </div>
                             </div>
                           {/if}
                         </div>
@@ -362,7 +387,8 @@
                   {/each}
                 </ul>
               {/if}
-            </li>
+              </li>
+            {/each}
           {/each}
         </ul>
       {/if}
@@ -831,28 +857,34 @@
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
   }
-  /* Indicator on the left, live status block on the right. Side-by-
-     side keeps the row compact (no vertical growth from text) and
-     reads as "visualization + caption" rather than "two things
-     stacked". */
+  /* Indicator(s) sit in a top row; LIMITS/SEEN/destination lives
+     below. Stacking the detail under the visualization keeps each
+     visualization free to use its own width (atm-profile + temp plot
+     are side-by-side; lts is a single ring) and lets the data block
+     stretch the full row width. */
   .sci__exp-body {
     margin: 6px 0 10px 18px;
     display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  /* Top viz row — one or more indicators side-by-side. Atm shows the
+     profile arc + the live temp plot; lts shows just the orbit ring. */
+  .sci__exp-viz {
+    display: flex;
     flex-direction: row;
     align-items: flex-start;
-    gap: 12px;
+    gap: 8px;
   }
-  /* Live status block beside the indicator — two compact rows of
+  /* Live status block under the viz row — two compact rows of
      LIMITS / SEEN data plus a destination strip. Only rendered when
      the experiment is enabled. */
   .sci__exp-detail {
-    flex: 1 1 auto;
-    min-width: 0;
     display: grid;
     grid-template-columns: auto 1fr;
     column-gap: 8px;
     row-gap: 2px;
-    padding-top: 4px;
     font-variant-numeric: tabular-nums;
   }
   .sci__exp-detail-line {
@@ -873,18 +905,10 @@
     line-height: 1.35;
     word-spacing: -0.05em;
   }
-  /* Destination strip — spans both grid columns under the data rows.
-     Dim text by default; red when no storage is reachable so the
-     player notices data loss. */
-  .sci__exp-detail-dest {
-    grid-column: 1 / -1;
-    margin-top: 4px;
-    font-family: var(--font-display);
-    font-size: 8.5px;
-    letter-spacing: 0.18em;
-    color: var(--fg-mute);
-  }
-  .sci__exp-detail-dest--missing {
+  /* Storage destination value rendered as a regular detail row;
+     turns red when no storage is reachable so the player notices
+     data loss. */
+  .sci__exp-detail-val--missing {
     color: var(--alert);
     text-shadow: 0 0 4px rgba(255, 82, 82, 0.4);
   }

@@ -8,26 +8,43 @@
 //
 // `state` is `undefined` until the first per-part frame arrives.
 // The view is responsible for rendering the loading slot.
+//
+// Three specialised flavors live here (one per per-part topic kind):
+//   useNovaPartsByTag    → NovaPart   (resources + components)
+//   useNovaScienceByTag  → NovaScience (instrument + experiments)
+//   useNovaStorageByTag  → NovaStorage (DataStorage + files)
 
+import type { Topic } from '@dragonglass/telemetry/core';
 import { useNovaVesselStructure } from './use-nova-vessel-structure.svelte';
 import { useKeyedSubscriptions } from './use-keyed-subscriptions.svelte';
 import {
   NovaPartTopic,
+  NovaScienceTopic,
+  NovaStorageTopic,
   decodePart,
+  decodeScience,
+  decodeStorage,
   type NovaPart,
+  type NovaScience,
+  type NovaStorage,
   type NovaPartStruct,
   type SystemTag,
 } from './nova-topics';
 
-export interface NovaTaggedPart {
+export interface NovaTagged<T> {
   struct: NovaPartStruct;
-  state: NovaPart | undefined;
+  state: T | undefined;
 }
 
-export function useNovaPartsByTag(
+// Generic — factor the structure-fetch + tag-filter + keyed-sub
+// plumbing once; the three flavours below differ only in the topic
+// factory + decoder they hand to the keyed-subscription core.
+function useByTag<F, T>(
   vesselId: string | (() => string | undefined),
   tag: SystemTag,
-): { readonly current: NovaTaggedPart[] } {
+  topicFor: (partId: string) => Topic<F, unknown>,
+  decode: (frame: F) => T,
+): { readonly current: NovaTagged<T>[] } {
   const structureRef = useNovaVesselStructure(vesselId);
 
   const matching = $derived.by<NovaPartStruct[]>(() => {
@@ -37,11 +54,11 @@ export function useNovaPartsByTag(
 
   const subs = useKeyedSubscriptions(
     () => matching.map((p) => p.id),
-    (partId) => NovaPartTopic(partId),
-    decodePart,
+    topicFor,
+    decode,
   );
 
-  const entries = $derived.by<NovaTaggedPart[]>(() =>
+  const entries = $derived.by<NovaTagged<T>[]>(() =>
     matching.map((p) => ({ struct: p, state: subs.get(p.id) })),
   );
 
@@ -50,4 +67,28 @@ export function useNovaPartsByTag(
       return entries;
     },
   };
+}
+
+// Back-compat alias — most existing call sites read `state: NovaPart`.
+export type NovaTaggedPart = NovaTagged<NovaPart>;
+
+export function useNovaPartsByTag(
+  vesselId: string | (() => string | undefined),
+  tag: SystemTag,
+): { readonly current: NovaTagged<NovaPart>[] } {
+  return useByTag(vesselId, tag, (id) => NovaPartTopic(id), decodePart);
+}
+
+export function useNovaScienceByTag(
+  vesselId: string | (() => string | undefined),
+  tag: SystemTag,
+): { readonly current: NovaTagged<NovaScience>[] } {
+  return useByTag(vesselId, tag, (id) => NovaScienceTopic(id), decodeScience);
+}
+
+export function useNovaStorageByTag(
+  vesselId: string | (() => string | undefined),
+  tag: SystemTag,
+): { readonly current: NovaTagged<NovaStorage>[] } {
+  return useByTag(vesselId, tag, (id) => NovaStorageTopic(id), decodeStorage);
 }

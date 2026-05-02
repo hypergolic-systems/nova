@@ -1,9 +1,13 @@
 // Nova-specific telemetry topic types.
 //
 // Wire types are positional tuples that mirror the JSON emitted by
-// the C# topics (see mod/Nova/Telemetry/NovaPartTopic.cs and
-// NovaVesselStructureTopic.cs). UI types are clean named objects;
-// `decodeStructure` and `decodePart` translate at the boundary so
+// the C# topics. Three per-part topics live alongside the structure
+// topic:
+//   NovaPart/<id>     → resources + virtual-component view
+//   NovaScience/<id>  → instrument capabilities + experiment frames
+//   NovaStorage/<id>  → DataStorage counters + inline file list
+// UI types are clean named objects; `decodeStructure`, `decodePart`,
+// `decodeScience`, `decodeStorage` translate at the boundary so
 // Svelte components only see the friendly shape.
 
 import { topic, type Topic } from '@dragonglass/telemetry/core';
@@ -62,7 +66,7 @@ export type NovaFuelCellFrame = [
 // the proto fields. Direct vs interpolated is determined by which set
 // of trailing fields is populated:
 //
-//  Direct (atm-profile)   → recordedMin/MaxPressureAtm + layerBottom/TopPressureAtm + recordedMin/MaxAltM
+//  Direct (atm-profile)   → recordedMin/MaxAltM
 //  Interpolated (lts)     → startUt + endUt + sliceDurationSeconds
 //
 // Both kinds share the leading prefix (subject id, experiment id, etc.)
@@ -73,10 +77,6 @@ export type NovaScienceFileFrame = [
   fidelity: number,
   producedAt: number,
   instrument: string,
-  recordedMinPressureAtm: number,
-  recordedMaxPressureAtm: number,
-  layerBottomPressureAtm: number,
-  layerTopPressureAtm:    number,
   recordedMinAltM: number,
   recordedMaxAltM: number,
   startUt:              number,
@@ -84,27 +84,25 @@ export type NovaScienceFileFrame = [
   sliceDurationSeconds: number,
 ];
 
-export type NovaDataStorageFrame = [
-  'DS',
+// NovaStorage/<id> wire frame. `usedBytes` here is the displayed-bytes
+// total (sums fidelity × size per file) so the gauge lerps as data
+// accrues. Reservation lives C#-side and isn't exposed.
+export type NovaStorageFrame = [
+  partId: string,
   usedBytes: number,
   capacityBytes: number,
   fileCount: number,
   files: NovaScienceFileFrame[],
 ];
 
-// Capability descriptor for a science instrument. Static metadata
-// (name + experiment id list). Live progress per experiment ships as
-// separate `EXA` / `EXL` frames on the same instrument part.
-export type NovaInstrumentFrame = [
-  'IN',
-  instrumentName: string,
-  experimentIds: string[],
-];
-
 // Atmospheric Profile experiment state. Layers + saved fidelities for
 // the body the vessel currently orbits. `active` reflects the
-// instrument's `AtmActive` flag. `altitude` drives the altitude
-// pointer overlay; clamping to layer bounds is the UI's job.
+// instrument's `AtmActive` flag. `altitude` drives indicator overlays;
+// clamping to layer bounds is the UI's job.
+//
+// `currentLayerName` is one of: a layer name (e.g. "troposphere"),
+// the sentinel "surface" when below the per-body floor (1 km on
+// Kerbin), or "" when above atmosphere / no atmosphere.
 //
 // `willComplete` is the bright/dull-orange selector: 1 = the active
 // observation will reach full fidelity at segment end (transit-out
@@ -118,19 +116,17 @@ export type NovaAtmExperimentFrame = [
   active: 0 | 1,
   willComplete: 0 | 1,
   enabled: 0 | 1,
-  currentLayerName: string,                       // "" when not in a layer
+  currentLayerName: string,                       // "" / "surface" / layer name
   transitMinAlt: number,                          // m; 0 when no observation
   transitMaxAlt: number,                          // m; 0 when no observation
-  transitMinPressureAtm: number,                  // 0 when no observation
-  transitMaxPressureAtm: number,                  // 0 when no observation
-  currentPressureAtm: number,                     // live; 0 outside atm
   destinationStorage: string,                     // "" when no storage on vessel
   bodyName: string,
   altitude: number,
-  // Each layer entry: [name, topAltMeters, bottomPressureAtm, topPressureAtm].
-  // bottom-to-top order; bottom altitude/pressure is the previous
-  // layer's top (or 0/surface for index 0).
-  layers: [name: string, topAlt: number, bottomP: number, topP: number][],
+  temperatureK: number,                           // live atmospheric temp at vessel
+  // Each layer entry: [name, topAltMeters]. bottom-to-top order; the
+  // layer's effective bottom is the previous layer's top (or the
+  // body's surface floor for index 0).
+  layers: [name: string, topAlt: number][],
   savedLocal: [layerName: string, fidelity: number][],
   savedKsc:   [layerName: string, fidelity: number][],
 ];
@@ -169,16 +165,27 @@ export type NovaComponentFrame =
   | NovaEngineFrame
   | NovaTankFrame
   | NovaCommandFrame
-  | NovaFuelCellFrame
-  | NovaDataStorageFrame
-  | NovaInstrumentFrame
-  | NovaAtmExperimentFrame
-  | NovaLtsExperimentFrame;
+  | NovaFuelCellFrame;
 
 export type NovaPartFrame = [
   partId: string,
   resources: NovaResourceFrame[],
   components: NovaComponentFrame[],
+];
+
+// NovaScience/<id> wire frame. A part may host multiple instruments
+// — each gets its own inner tuple. Within an instrument, the
+// `experiments` list holds one EXA / EXL tuple per supported
+// experiment kind; today every instrument is a Thermometer so both
+// atm + lts emit. Each experiment frame's `experimentId` (slot 1)
+// doubles as the capability id, so the wire stays single-source.
+export type NovaInstrumentEntry = [
+  instrumentName: string,
+  experiments: (NovaAtmExperimentFrame | NovaLtsExperimentFrame)[],
+];
+export type NovaScienceFrame = [
+  partId: string,
+  instruments: NovaInstrumentEntry[],
 ];
 
 export type NovaPartStructFrame = [
@@ -310,12 +317,8 @@ export interface ScienceFile {
    *  ("2HOT Thermometer", etc.). */
   instrument: string;
 
-  // Direct (atm-profile): pressure bounds the vessel has covered, plus
-  // the layer's full pressure span. Zeros for interpolated files.
-  recordedMinPressureAtm: number;
-  recordedMaxPressureAtm: number;
-  layerBottomPressureAtm: number;
-  layerTopPressureAtm:    number;
+  // Direct (atm-profile): altitude bounds the vessel has covered.
+  // Zeros for interpolated files.
   recordedMinAltM: number;
   recordedMaxAltM: number;
 
@@ -327,17 +330,9 @@ export interface ScienceFile {
   sliceDurationSeconds: number;
 }
 
-export interface InstrumentState {
-  /** Player-facing instrument name ("2HOT Thermometer"). */
-  name: string;
-  /** Wire-format experiment ids the instrument can run. UI maps to
-   *  display labels via `science-labels`. */
-  experimentIds: string[];
-}
-
 export interface AtmExperimentState {
   /** "atm-profile". Used by ScienceView to match this state to the
-   *  matching experiment-id from the InstrumentState capability list. */
+   *  matching experiment-id from the instrument's capability list. */
   experimentId: string;
   /** True iff the instrument is observing right now (drives orange
    *  overlay on whichever layer the vessel currently transits). */
@@ -351,7 +346,9 @@ export interface AtmExperimentState {
    *  out of any atmospheric layer reports `enabled=true, active=false`. */
   enabled: boolean;
   /** Layer the vessel is currently transiting (matches the wire-format
-   *  layer name, e.g. "stratosphere"). Empty when not in any layer. */
+   *  layer name, e.g. "stratosphere"), the sentinel `"surface"` when
+   *  below the body's surface floor (1 km on Kerbin), or `""` above
+   *  atmosphere / no atmosphere. */
   currentLayerName: string;
   /** Min altitude (m) recorded during the current layer transit.
    *  0 = no observation captured yet. */
@@ -359,15 +356,6 @@ export interface AtmExperimentState {
   /** Max altitude (m) recorded during the current layer transit.
    *  0 = no observation captured yet. */
   transitMaxAlt: number;
-  /** Min static pressure (atm) observed during the current layer
-   *  transit. Drives the fidelity-progress display since the C# side
-   *  scores file fidelity from pressure-span coverage. */
-  transitMinPressureAtm: number;
-  /** Max static pressure (atm) observed during the current layer
-   *  transit. */
-  transitMaxPressureAtm: number;
-  /** Live static pressure (atm) at the vessel's current position. */
-  currentPressureAtm: number;
   /** Player-facing title of the part where the next sealed file will
    *  land. Empty string = no `DataStorage` with capacity on the vessel. */
   destinationStorage: string;
@@ -375,17 +363,17 @@ export interface AtmExperimentState {
   bodyName: string;
   /** Live vessel altitude in meters. UI clamps to layer bounds. */
   altitude: number;
+  /** Live atmospheric temperature at the vessel's position, in Kelvin.
+   *  Sourced from the flight integrator — same as the stock readout.
+   *  The UI accumulates these per-frame samples client-side to plot
+   *  the temperature-vs-altitude profile of the current regime. */
+  temperatureK: number;
   /** Bottom→top layer table for `bodyName`. Empty when the body has
-   *  no atmosphere. Each layer's bottom = previous layer's top (or 0
-   *  for index 0). */
-  /** Bottom→top ordered. Each entry's `bottom` is the previous
-   *  entry's `top` (or surface = 0 for index 0). Pressure bounds in
-   *  atm; the higher pressure is the bottom. */
+   *  no atmosphere. Each layer's effective bottom is the previous
+   *  layer's top (or the body's surface floor for index 0). */
   layers: {
     name: string;
     top: number;             // m
-    bottomPressureAtm: number;
-    topPressureAtm: number;
   }[];
   /** Per-layer best fidelity stored on this vessel (0..1). Layers
    *  with no saved file are omitted from the wire and absent here. */
@@ -443,17 +431,6 @@ export interface LtsExperimentState {
   savedKsc: Map<number, number>;
 }
 
-export interface DataStorageState {
-  /** Bytes occupied by the files currently in storage. Live counter
-   *  — files come and go as experiments emit and (eventually) transmit. */
-  usedBytes: number;
-  /** Capacity ceiling in bytes. New files are dropped when used == capacity. */
-  capacityBytes: number;
-  /** Same as `files.length` — duplicated on the wire to support a future
-   *  paged-fetch UI that doesn't always materialise the file list. */
-  fileCount: number;
-  files: ScienceFile[];
-}
 
 export interface FuelCellState {
   /** Live W output, post-LP-throttle. Drops to 0 when `isActive` is
@@ -490,10 +467,34 @@ export interface NovaPart {
   tank: TankState[];
   command: CommandState[];
   fuelCell: FuelCellState[];
-  dataStorage: DataStorageState[];
-  instrument: InstrumentState[];
-  atmExperiment: AtmExperimentState[];
-  ltsExperiment: LtsExperimentState[];
+}
+
+// One instrument's decoded science payload. `experimentIds` is the
+// derived capability list (slot 1 of each emitted experiment frame).
+// `atmExperiment` / `ltsExperiment` are present iff the instrument
+// emits that experiment kind.
+export interface InstrumentScience {
+  name: string;
+  experimentIds: string[];
+  atmExperiment: AtmExperimentState | undefined;
+  ltsExperiment: LtsExperimentState | undefined;
+}
+
+// NovaScience/<id> decoded shape. A part may host multiple
+// instruments; each gets its own entry in `instruments`.
+export interface NovaScience {
+  id: string;
+  instruments: InstrumentScience[];
+}
+
+// NovaStorage/<id> decoded shape — one DataStorage's counters and
+// inline file list.
+export interface NovaStorage {
+  id: string;
+  usedBytes: number;
+  capacityBytes: number;
+  fileCount: number;
+  files: ScienceFile[];
 }
 
 export interface NovaPartStruct {
@@ -556,20 +557,34 @@ export interface NovaPartOps {
    * resets it to false.
    */
   setCommandTestLoad(active: boolean): void;
-
-  /**
-   * Toggle a specific experiment on or off on this part's
-   * Thermometer. `experimentId` matches the wire ids
-   * ("atm-profile" / "lts"). No-op when the part has no Thermometer
-   * or the id is unknown. Disabling LTS mid-slice triggers a partial-
-   * fidelity emit of the in-progress slice; disabling atm clears the
-   * transit memory so re-enabling starts fresh.
-   */
-  setExperimentEnabled(experimentId: string, enabled: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
   topic<NovaPartFrame, NovaPartOps>(`NovaPart/${partId}`);
+
+/**
+ * Inbound ops the UI can fire at a NovaScience topic. Keep in sync
+ * with `NovaScienceTopic.HandleOp` in mod/Nova/Telemetry — adding a
+ * method here without a matching C# case will silently no-op.
+ */
+export interface NovaScienceOps {
+  /**
+   * Toggle a specific experiment on or off on the instrument at
+   * `instrumentIndex` in the part's instrument list (matches the
+   * wire emit order). `experimentId` matches the wire ids
+   * ("atm-profile" / "lts"). No-op when the index is out of range
+   * or the experiment id is unknown. Rising-edge enable discards
+   * any prior in-progress file for the current subject so the
+   * fresh observation starts clean (files = unbroken periods).
+   */
+  setExperimentEnabled(instrumentIndex: number, experimentId: string, enabled: boolean): void;
+}
+
+export const NovaScienceTopic = (partId: string): Topic<NovaScienceFrame, NovaScienceOps> =>
+  topic<NovaScienceFrame, NovaScienceOps>(`NovaScience/${partId}`);
+
+export const NovaStorageTopic = (partId: string): Topic<NovaStorageFrame> =>
+  topic<NovaStorageFrame>(`NovaStorage/${partId}`);
 
 // ---------- Decoders -------------------------------------------
 
@@ -626,10 +641,6 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     tank: [],
     command: [],
     fuelCell: [],
-    dataStorage: [],
-    instrument: [],
-    atmExperiment: [],
-    ltsExperiment: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -684,81 +695,92 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           refillActive: c[7] === 1,
         });
         break;
-      case 'IN':
-        out.instrument.push({
-          name: c[1],
-          experimentIds: c[2],
-        });
-        break;
-      case 'DS':
-        out.dataStorage.push({
-          usedBytes: c[1],
-          capacityBytes: c[2],
-          fileCount: c[3],
-          files: c[4].map((f) => ({
-            subjectId:               f[0],
-            experimentId:            f[1],
-            fidelity:                f[2],
-            producedAt:              f[3],
-            instrument:              f[4],
-            recordedMinPressureAtm:  f[5],
-            recordedMaxPressureAtm:  f[6],
-            layerBottomPressureAtm:  f[7],
-            layerTopPressureAtm:     f[8],
-            recordedMinAltM:         f[9],
-            recordedMaxAltM:         f[10],
-            startUt:                 f[11],
-            endUt:                   f[12],
-            sliceDurationSeconds:    f[13],
-          })),
-        });
-        break;
-      case 'EXA':
-        out.atmExperiment.push({
-          experimentId:          c[1],
-          active:                c[2] === 1,
-          willComplete:          c[3] === 1,
-          enabled:               c[4] === 1,
-          currentLayerName:      c[5],
-          transitMinAlt:         c[6],
-          transitMaxAlt:         c[7],
-          transitMinPressureAtm: c[8],
-          transitMaxPressureAtm: c[9],
-          currentPressureAtm:    c[10],
-          destinationStorage:    c[11],
-          bodyName:              c[12],
-          altitude:              c[13],
-          layers:                c[14].map(([name, top, bottomP, topP]) => ({
-            name, top,
-            bottomPressureAtm: bottomP,
-            topPressureAtm:    topP,
-          })),
-          savedLocal:            new Map(c[15]),
-          savedKsc:              new Map(c[16]),
-        });
-        break;
-      case 'EXL':
-        out.ltsExperiment.push({
-          experimentId:       c[1],
-          active:             c[2] === 1,
-          willComplete:       c[3] === 1,
-          enabled:            c[4] === 1,
-          recordedMinPhase:   c[5],
-          recordedMaxPhase:   c[6],
-          destinationStorage: c[7],
-          bodyName:           c[8],
-          situation:          c[9],
-          solarParentName:    c[10],
-          slicesPerYear:      c[11],
-          bodyYearSeconds:    c[12],
-          currentSliceIndex:  c[13],
-          phase:              c[14],
-          activeFidelity:     c[15],
-          savedLocal:         new Map(c[16]),
-          savedKsc:           new Map(c[17]),
-        });
-        break;
     }
   }
   return out;
+}
+
+function decodeFile(f: NovaScienceFileFrame): ScienceFile {
+  return {
+    subjectId:            f[0],
+    experimentId:         f[1],
+    fidelity:             f[2],
+    producedAt:           f[3],
+    instrument:           f[4],
+    recordedMinAltM:      f[5],
+    recordedMaxAltM:      f[6],
+    startUt:              f[7],
+    endUt:                f[8],
+    sliceDurationSeconds: f[9],
+  };
+}
+
+function decodeAtm(c: NovaAtmExperimentFrame): AtmExperimentState {
+  return {
+    experimentId:       c[1],
+    active:             c[2] === 1,
+    willComplete:       c[3] === 1,
+    enabled:            c[4] === 1,
+    currentLayerName:   c[5],
+    transitMinAlt:      c[6],
+    transitMaxAlt:      c[7],
+    destinationStorage: c[8],
+    bodyName:           c[9],
+    altitude:           c[10],
+    temperatureK:       c[11],
+    layers:             c[12].map(([name, top]) => ({ name, top })),
+    savedLocal:         new Map(c[13]),
+    savedKsc:           new Map(c[14]),
+  };
+}
+
+function decodeLts(c: NovaLtsExperimentFrame): LtsExperimentState {
+  return {
+    experimentId:       c[1],
+    active:             c[2] === 1,
+    willComplete:       c[3] === 1,
+    enabled:            c[4] === 1,
+    recordedMinPhase:   c[5],
+    recordedMaxPhase:   c[6],
+    destinationStorage: c[7],
+    bodyName:           c[8],
+    situation:          c[9],
+    solarParentName:    c[10],
+    slicesPerYear:      c[11],
+    bodyYearSeconds:    c[12],
+    currentSliceIndex:  c[13],
+    phase:              c[14],
+    activeFidelity:     c[15],
+    savedLocal:         new Map(c[16]),
+    savedKsc:           new Map(c[17]),
+  };
+}
+
+function decodeInstrument(entry: NovaInstrumentEntry): InstrumentScience {
+  const [name, experiments] = entry;
+  let atmExperiment: AtmExperimentState | undefined;
+  let ltsExperiment: LtsExperimentState | undefined;
+  const experimentIds: string[] = [];
+  for (const e of experiments) {
+    experimentIds.push(e[1]);
+    if (e[0] === 'EXA') atmExperiment = decodeAtm(e as NovaAtmExperimentFrame);
+    else if (e[0] === 'EXL') ltsExperiment = decodeLts(e as NovaLtsExperimentFrame);
+  }
+  return { name, experimentIds, atmExperiment, ltsExperiment };
+}
+
+export function decodeScience(f: NovaScienceFrame): NovaScience {
+  const [id, instruments] = f;
+  return { id, instruments: instruments.map(decodeInstrument) };
+}
+
+export function decodeStorage(f: NovaStorageFrame): NovaStorage {
+  const [id, usedBytes, capacityBytes, fileCount, files] = f;
+  return {
+    id,
+    usedBytes,
+    capacityBytes,
+    fileCount,
+    files: files.map(decodeFile),
+  };
 }

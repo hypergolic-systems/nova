@@ -9,7 +9,7 @@ namespace Nova.Components;
 // don't FixedUpdate when unloaded.
 //
 // Atm-profile is direct-measurement: each tick (loaded + active + in
-// layer) we push a pressure/altitude reading into the file via
+// layer) we push an altitude reading into the file via
 // `WriteAtmReading`. Files exist on storage as soon as observation
 // begins; toggling the experiment off freezes them but doesn't delete.
 //
@@ -56,7 +56,7 @@ public class NovaThermometerModule : NovaPartModule {
     thermometer.AtmActive = layer != null;
 
     if (layer == null) return;
-    thermometer.WriteAtmReading(c.BodyName, layer, c.StaticPressureAtm, c.Altitude, ut);
+    thermometer.WriteAtmReading(c.BodyName, layer, c.Altitude, ut);
   }
 
   // Interpolated-measurement creation. We only need to ensure a file

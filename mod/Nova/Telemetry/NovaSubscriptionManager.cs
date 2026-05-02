@@ -4,17 +4,25 @@ using UnityEngine;
 
 namespace Nova.Telemetry;
 
-// Translates SubscriptionBus events for `NovaVesselStructure/<id>`
-// and `NovaPart/<id>` topics into AddComponent / Destroy calls on
-// the matching Vessel / Part GameObject. Mirrors Dragonglass's
-// PartSubscriptionManager pattern: no internal bookkeeping, the
-// topic component itself is the "is there a sampler for this id?"
-// answer via GetComponent<T>(). Always-on; lives on the persistent
-// telemetry host so it handles signals across scenes.
+// Translates SubscriptionBus events for Nova's per-id topics into
+// AddComponent / Destroy calls on the matching Vessel / Part
+// GameObject. Mirrors Dragonglass's PartSubscriptionManager pattern:
+// no internal bookkeeping, the topic component itself is the "is
+// there a sampler for this id?" answer via GetComponent<T>().
+// Always-on; lives on the persistent telemetry host so it handles
+// signals across scenes.
+//
+// Recognised topic prefixes:
+//   NovaVesselStructure/<vesselGuid>  → NovaVesselStructureTopic
+//   NovaPart/<partId>                 → NovaPartTopic
+//   NovaScience/<partId>              → NovaScienceTopic
+//   NovaStorage/<partId>              → NovaStorageTopic
 public sealed class NovaSubscriptionManager : MonoBehaviour {
   private const string LogPrefix = "[Nova/Telemetry] ";
-  private const string VesselPrefix = "NovaVesselStructure/";
-  private const string PartPrefix = "NovaPart/";
+  private const string VesselPrefix  = "NovaVesselStructure/";
+  private const string PartPrefix    = "NovaPart/";
+  private const string SciencePrefix = "NovaScience/";
+  private const string StoragePrefix = "NovaStorage/";
 
   private void OnEnable() {
     SubscriptionBus.SubscribeRequested += OnSubscribe;
@@ -38,6 +46,18 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
       if (TryResolvePart(topicName, PartPrefix, out var part)) {
         AttachOrEnable<NovaPartTopic>(part.gameObject);
       }
+      return;
+    }
+    if (topicName.StartsWith(SciencePrefix, StringComparison.Ordinal)) {
+      if (TryResolvePart(topicName, SciencePrefix, out var part)) {
+        AttachOrEnable<NovaScienceTopic>(part.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(StoragePrefix, StringComparison.Ordinal)) {
+      if (TryResolvePart(topicName, StoragePrefix, out var part)) {
+        AttachOrEnable<NovaStorageTopic>(part.gameObject);
+      }
     }
   }
 
@@ -52,6 +72,18 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(PartPrefix, StringComparison.Ordinal)) {
       if (TryResolvePart(topicName, PartPrefix, out var part)) {
         DisableIfPresent<NovaPartTopic>(part.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(SciencePrefix, StringComparison.Ordinal)) {
+      if (TryResolvePart(topicName, SciencePrefix, out var part)) {
+        DisableIfPresent<NovaScienceTopic>(part.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(StoragePrefix, StringComparison.Ordinal)) {
+      if (TryResolvePart(topicName, StoragePrefix, out var part)) {
+        DisableIfPresent<NovaStorageTopic>(part.gameObject);
       }
     }
   }

@@ -13,9 +13,10 @@ namespace Nova.Core.Components.Science;
 //
 //  * Atmospheric Profile (DIRECT): the mod-side PartModule, while the
 //    vessel is loaded + active in an applicable layer, calls
-//    `WriteAtmReading(pressure, altitude, ut)` each tick. The file
-//    gets created on first reading and is upserted in place; its
-//    fidelity is recomputed from the captured pressure span.
+//    `WriteAtmReading(altitude, ut)` each tick. The file gets created
+//    on first reading and is upserted in place; its fidelity is
+//    recomputed from the captured altitude span vs. the layer's
+//    effective span.
 //
 //  * Long-Term Study (INTERPOLATED): the file records `(start_ut,
 //    end_ut)` once on creation and the fidelity is computed at read
@@ -74,14 +75,15 @@ public class Thermometer : VirtualComponent {
   // Direct-measurement update for atm-profile. Called each tick by
   // NovaThermometerModule.FixedUpdate when active in an applicable
   // layer. Creates the file on first call (reserving its byte cost),
-  // upserts on subsequent calls. Extends the file's pressure /
-  // altitude bounds to include the current sample, and recomputes
-  // the cached fidelity snapshot.
+  // upserts on subsequent calls. Extends the file's altitude bounds
+  // to include the current sample, and recomputes the cached fidelity
+  // snapshot from altitude coverage of the layer's effective span.
   public void WriteAtmReading(string bodyName, string layerName,
-                              double pressureAtm, double altitudeM,
-                              double nowUT) {
+                              double altitudeM, double nowUT) {
     var layer = AtmosphericProfileExperiment.LayerByName(bodyName, layerName);
     if (!layer.HasValue) return;
+    var bottomAlt = AtmosphericProfileExperiment.LayerBottomAlt(bodyName, layerName);
+    if (!bottomAlt.HasValue) return;
 
     var subject = new SubjectKey(
         AtmosphericProfileExperiment.ExperimentId, bodyName, layerName);
@@ -92,28 +94,22 @@ public class Thermometer : VirtualComponent {
 
     var existing = storage.FindBySubject(subjectId);
     var file = existing ?? new ScienceFile {
-      SubjectId             = subjectId,
-      ExperimentId          = subject.ExperimentId,
-      ProducedAt            = nowUT,
-      Instrument            = InstrumentName,
-      LayerBottomPressureAtm = layer.Value.bottomPressureAtm,
-      LayerTopPressureAtm    = layer.Value.topPressureAtm,
-      RecordedMinPressureAtm = pressureAtm,
-      RecordedMaxPressureAtm = pressureAtm,
-      RecordedMinAltM        = altitudeM,
-      RecordedMaxAltM        = altitudeM,
+      SubjectId       = subjectId,
+      ExperimentId    = subject.ExperimentId,
+      ProducedAt      = nowUT,
+      Instrument      = InstrumentName,
+      RecordedMinAltM = altitudeM,
+      RecordedMaxAltM = altitudeM,
     };
 
     if (existing != null) {
-      file.RecordedMinPressureAtm = Math.Min(file.RecordedMinPressureAtm, pressureAtm);
-      file.RecordedMaxPressureAtm = Math.Max(file.RecordedMaxPressureAtm, pressureAtm);
-      file.RecordedMinAltM        = Math.Min(file.RecordedMinAltM, altitudeM);
-      file.RecordedMaxAltM        = Math.Max(file.RecordedMaxAltM, altitudeM);
+      file.RecordedMinAltM = Math.Min(file.RecordedMinAltM, altitudeM);
+      file.RecordedMaxAltM = Math.Max(file.RecordedMaxAltM, altitudeM);
     }
 
-    file.Fidelity = AtmosphericProfileExperiment.FidelityFromPressureCoverage(
-        file.RecordedMinPressureAtm, file.RecordedMaxPressureAtm,
-        file.LayerBottomPressureAtm, file.LayerTopPressureAtm);
+    file.Fidelity = AtmosphericProfileExperiment.FidelityFromAltCoverage(
+        file.RecordedMinAltM, file.RecordedMaxAltM,
+        bottomAlt.Value, layer.Value.topAltMeters);
 
     storage.Upsert(file, AtmosphericProfileExperiment.FileSizeBytes);
   }

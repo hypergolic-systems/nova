@@ -343,12 +343,16 @@ public class NovaVesselModule : VesselModule {
     Virtual.Tick(Planetarium.GetUniversalTime());
 
     // Telemetry: post-tick part state is fresh — mark dirty so the
-    // 10 Hz broadcaster picks up new rates / SOC. Cheap O(parts) walk;
-    // the topic only emits on dirty so unsubscribed parts are no-ops.
+    // 10 Hz broadcaster picks up new rates / SOC / file fidelity.
+    // Cheap O(parts × topics) walk; topics only emit on dirty, so
+    // unsubscribed parts are no-ops.
     if (vessel != null && vessel.parts != null) {
       for (int i = 0; i < vessel.parts.Count; i++) {
         var p = vessel.parts[i];
-        if (p != null) NovaPartTopic.MarkPartDirty(p.persistentId);
+        if (p == null) continue;
+        NovaPartTopic.MarkPartDirty(p.persistentId);
+        NovaScienceTopic.MarkPartDirty(p.persistentId);
+        NovaStorageTopic.MarkPartDirty(p.persistentId);
       }
     }
   }

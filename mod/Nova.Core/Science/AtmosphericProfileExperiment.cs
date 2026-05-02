@@ -5,8 +5,8 @@ namespace Nova.Core.Science;
 
 // "Profile the atmosphere by transit." A vessel inside an atmospheric
 // layer can record the layer; on layer exit a file is emitted with
-// fidelity = (captured pressure range) / (layer's full pressure range).
-// To get fidelity 1.0 the vessel must traverse the full pressure span
+// fidelity = (captured altitude range) / (layer's full altitude span).
+// To get fidelity 1.0 the vessel must traverse the full altitude span
 // of the layer (top to bottom or vice versa). Subject = (body, layer
 // name).
 //
@@ -17,64 +17,57 @@ public static class AtmosphericProfileExperiment {
   public const string ExperimentId   = "atm-profile";
   public const long   FileSizeBytes  = 1_000;
 
+  // Below this altitude (m) the experiment doesn't gather data —
+  // ground-level operations should read as "Surface", not as a tiny
+  // sliver of the troposphere. Applied uniformly across atmosphere
+  // bodies; troposphere fidelity-span uses this as its effective
+  // bottom.
+  public const double SurfaceFloorMeters = 1_000;
+
   public readonly struct Layer {
     public readonly string name;
     public readonly double topAltMeters;
-    /// <summary>Static atmospheric pressure (atm) at the layer's bottom — the
-    /// higher of the two pressures. Stock-KSP defaults at sea level
-    /// (or the previous layer's top).</summary>
-    public readonly double bottomPressureAtm;
-    /// <summary>Static pressure (atm) at the layer's top — the lower of
-    /// the two pressures.</summary>
-    public readonly double topPressureAtm;
 
-    public Layer(string name, double topAltMeters, double bottomPressureAtm, double topPressureAtm) {
-      this.name              = name;
-      this.topAltMeters      = topAltMeters;
-      this.bottomPressureAtm = bottomPressureAtm;
-      this.topPressureAtm    = topPressureAtm;
+    public Layer(string name, double topAltMeters) {
+      this.name         = name;
+      this.topAltMeters = topAltMeters;
     }
   }
 
-  // Per-body layer table, bottom→top. Pressure bounds shipped here
-  // are coarse stock-KSP approximations — the live mod overrides them
-  // at game start via `RefreshLayerPressures` using the actual
-  // CelestialBody pressure curves so fidelity scoring matches the
-  // pressure the player sees in flight (a layer reads "100%
-  // captured" exactly when the vessel has covered the body's true
-  // atmospheric span at those altitudes, not when it has covered our
-  // pre-baked guess).
+  // Per-body layer table, bottom→top.
   private static Dictionary<string, Layer[]> Layers = new() {
     ["Kerbin"] = new[] {
-      new Layer("troposphere",  18_000,  1.000, 0.092),
-      new Layer("stratosphere", 45_000,  0.092, 0.005),
-      new Layer("mesosphere",   70_000,  0.005, 0.000),
+      new Layer("troposphere",  18_000),
+      new Layer("stratosphere", 45_000),
+      new Layer("mesosphere",   70_000),
     },
     ["Eve"] = new[] {
-      new Layer("troposphere",  30_000,  5.000, 0.380),
-      new Layer("stratosphere", 60_000,  0.380, 0.020),
-      new Layer("mesosphere",   90_000,  0.020, 0.000),
+      new Layer("troposphere",  30_000),
+      new Layer("stratosphere", 60_000),
+      new Layer("mesosphere",   90_000),
     },
     ["Duna"] = new[] {
-      new Layer("troposphere",  15_000,  0.067, 0.013),
-      new Layer("stratosphere", 35_000,  0.013, 0.001),
-      new Layer("mesosphere",   50_000,  0.001, 0.000),
+      new Layer("troposphere",  15_000),
+      new Layer("stratosphere", 35_000),
+      new Layer("mesosphere",   50_000),
     },
     ["Jool"] = new[] {
-      new Layer("troposphere",   50_000, 15.000, 1.300),
-      new Layer("stratosphere", 120_000,  1.300, 0.050),
-      new Layer("mesosphere",   200_000,  0.050, 0.000),
+      new Layer("troposphere",   50_000),
+      new Layer("stratosphere", 120_000),
+      new Layer("mesosphere",   200_000),
     },
     ["Laythe"] = new[] {
-      new Layer("troposphere",  15_000,  0.600, 0.090),
-      new Layer("stratosphere", 35_000,  0.090, 0.005),
-      new Layer("mesosphere",   50_000,  0.005, 0.000),
+      new Layer("troposphere",  15_000),
+      new Layer("stratosphere", 35_000),
+      new Layer("mesosphere",   50_000),
     },
   };
 
   // Returns the layer name for the given (body, altitude), or null if
-  // the body has no atmosphere or the vessel is above it.
+  // the body has no atmosphere, the vessel is above it, OR the vessel
+  // is below the surface floor (so callers stop gathering data).
   public static string LayerAt(string bodyName, double altitude) {
+    if (altitude < SurfaceFloorMeters) return null;
     if (!Layers.TryGetValue(bodyName, out var table)) return null;
     foreach (var l in table)
       if (altitude < l.topAltMeters) return l.name;
@@ -86,30 +79,8 @@ public static class AtmosphericProfileExperiment {
   public static Layer[] LayersFor(string bodyName) =>
       Layers.TryGetValue(bodyName, out var table) ? table : null;
 
-  // Body names with a known layer table. Used by the mod-side startup
-  // hook to iterate which CelestialBodies it should query for live
-  // pressure values.
+  // Body names with a known layer table.
   public static IEnumerable<string> KnownBodies => Layers.Keys;
-
-  // Replace the cached pressure bounds on a body's layer table with
-  // values pulled live from a `getPressureAtm(altitude_m)` source —
-  // the mod side wires this to `CelestialBody.GetPressure(alt) /
-  // 101.325`. The altitude bounds (layer boundaries) are unchanged;
-  // only `bottomPressureAtm` / `topPressureAtm` get refreshed. A
-  // layer's bottom pressure is derived from the previous layer's top
-  // (or the surface pressure for index 0).
-  public static void RefreshLayerPressures(string bodyName, Func<double, double> getPressureAtm) {
-    if (!Layers.TryGetValue(bodyName, out var existing)) return;
-    var updated = new Layer[existing.Length];
-    double prevTop = getPressureAtm(0);   // surface pressure
-    for (int i = 0; i < existing.Length; i++) {
-      double topAlt = existing[i].topAltMeters;
-      double top    = getPressureAtm(topAlt);
-      updated[i]    = new Layer(existing[i].name, topAlt, prevTop, top);
-      prevTop       = top;
-    }
-    Layers[bodyName] = updated;
-  }
 
   // Returns the layer record for the given body+layer name, or null
   // when the layer isn't known.
@@ -119,15 +90,29 @@ public static class AtmosphericProfileExperiment {
     return null;
   }
 
-  // Pressure-coverage fidelity: how much of the layer's pressure span
-  // has been captured between [recordedMinAtm, recordedMaxAtm]. Both
-  // arguments must be in atm. Returns [0,1] with bounds-checking.
-  public static double FidelityFromPressureCoverage(
-      double recordedMinAtm, double recordedMaxAtm,
-      double layerBottomAtm, double layerTopAtm) {
-    double layerSpan = Math.Abs(layerBottomAtm - layerTopAtm);
-    if (layerSpan <= 1e-12) return 0;
-    double recorded = Math.Max(0, recordedMaxAtm - recordedMinAtm);
+  // Effective bottom altitude (m) for the given layer — the previous
+  // layer's top, or `SurfaceFloorMeters` for the first layer (since
+  // data isn't collected below the floor, the floor IS the layer's
+  // collectible bottom). Returns null if the layer isn't known.
+  public static double? LayerBottomAlt(string bodyName, string layerName) {
+    if (!Layers.TryGetValue(bodyName, out var table)) return null;
+    double prevTop = SurfaceFloorMeters;
+    foreach (var l in table) {
+      if (l.name == layerName) return prevTop;
+      prevTop = l.topAltMeters;
+    }
+    return null;
+  }
+
+  // Altitude-coverage fidelity: how much of the layer's altitude span
+  // has been captured between [recordedMinAltM, recordedMaxAltM]. All
+  // arguments in meters. Returns [0,1] with bounds-checking.
+  public static double FidelityFromAltCoverage(
+      double recordedMinAltM, double recordedMaxAltM,
+      double layerBottomAltM, double layerTopAltM) {
+    double layerSpan = Math.Abs(layerTopAltM - layerBottomAltM);
+    if (layerSpan <= 1e-9) return 0;
+    double recorded = Math.Max(0, recordedMaxAltM - recordedMinAltM);
     return Math.Min(1.0, Math.Max(0.0, recorded / layerSpan));
   }
 
