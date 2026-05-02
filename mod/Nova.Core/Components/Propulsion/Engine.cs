@@ -108,7 +108,15 @@ public class Engine : VirtualComponent {
     return clone;
   }
 
+  // The solver node this engine's device sits on. Set once by
+  // `OnBuildSolver` and cleared whenever the topology is rebuilt
+  // (the next OnBuildSolver call will replace it with the fresh
+  // node). Surfaced for telemetry — `NovaEngineTopic` walks reach
+  // from here to compute the engine's fuel pool.
+  public ResourceSolver.Node Node { get; private set; }
+
   public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
+    Node = node;
     device = node.AddDevice(ResourceSolver.Priority.Low);
     foreach (var prop in Propellants)
       device.AddInput(prop.Resource, prop.MaxFlow);

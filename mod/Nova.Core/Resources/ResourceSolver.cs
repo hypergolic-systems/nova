@@ -204,6 +204,56 @@ public class ResourceSolver {
 
   public IEnumerable<Node> ActiveNodes() => nodes.Where(n => !n.Jettisoned);
 
+  // ── Reach ────────────────────────────────────────────────────────────
+  //
+  // Static topology query: which nodes / buffers can supply `resource` to
+  // `from`? Mirrors the flow-direction semantics the LP enforces:
+  //
+  //   - Edges with a non-null AllowedResources that doesn't contain
+  //     `resource` are skipped entirely.
+  //   - Jettisoned nodes are excluded from the visited set.
+  //   - On a non-UpOnly edge, supply flows in either direction — both
+  //     ends of the edge are reachable from each other.
+  //   - On an UpOnly edge for `resource`, the LP clamps flow to ≤ 0
+  //     (i.e. only child→parent). So Parent can still reach Child
+  //     (Child supplies Parent), but Child cannot reach Parent
+  //     (Parent can't supply Child).
+  //
+  // Used by NovaEngineTopic to compute per-engine fuel pools without
+  // running the LP — same answer the solver would give if you isolated
+  // one engine and looked at which buffers drained.
+  public HashSet<Node> ReachableNodes(Node from, Resource resource) {
+    var visited = new HashSet<Node>();
+    if (from == null || from.Jettisoned) return visited;
+    visited.Add(from);
+    var stack = new Stack<Node>();
+    stack.Push(from);
+    while (stack.Count > 0) {
+      var n = stack.Pop();
+      foreach (var e in edges) {
+        if (e.AllowedResources != null && !e.AllowedResources.Contains(resource)) continue;
+        Node other;
+        if (e.Parent == n) {
+          other = e.Child;
+        } else if (e.Child == n) {
+          if (e.UpOnlyResources.Contains(resource)) continue;
+          other = e.Parent;
+        } else continue;
+        if (other.Jettisoned) continue;
+        if (visited.Add(other)) stack.Push(other);
+      }
+    }
+    return visited;
+  }
+
+  public List<Buffer> ReachableBuffers(Node from, Resource resource) {
+    var buffers = new List<Buffer>();
+    foreach (var node in ReachableNodes(from, resource))
+      foreach (var buf in node.buffers)
+        if (ReferenceEquals(buf.Resource, resource)) buffers.Add(buf);
+    return buffers;
+  }
+
   // ── Solve ────────────────────────────────────────────────────────────
 
   public void Solve() {
