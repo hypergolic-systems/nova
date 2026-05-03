@@ -128,6 +128,87 @@ public class ComponentMappingTests {
     Assert.AreEqual(260, restored.Tanks[1].Contents);
   }
 
+  // Save/load round-trip at vessel scope, exercising the lerp-buffer
+  // contract: at save time we materialize Contents (lerped against
+  // the live SimClock); at load time we re-baseline at the new
+  // vessel's clock UT with Rate=0 so no extrapolation drift carries
+  // across the save boundary. The next Solve repopulates rates.
+  [TestMethod]
+  public void Buffer_LerpStateRoundTripsAcrossSaveLoad() {
+    // Build a vessel mid-burn — engine draining its tank at full rate.
+    var src = new Nova.Core.Components.VirtualVessel();
+    var tank = new TankVolume {
+      Volume = 100, MaxRate = 100,
+      Tanks = {
+        new Buffer { Resource = Resource.RP1, Capacity = 100, Contents = 100 },
+      },
+    };
+    var engine = new Engine();
+    engine.Initialize(thrust: 10, isp: 300, propellants: new System.Collections.Generic.List<(Resource, double)> {
+      (Resource.RP1, 1),
+    });
+    engine.Throttle = 1.0;
+    src.AddPart(1u, "tank", 5.0, new System.Collections.Generic.List<Nova.Core.Components.VirtualComponent> { tank });
+    src.AddPart(2u, "engine", 5.0, new System.Collections.Generic.List<Nova.Core.Components.VirtualComponent> { engine });
+    src.UpdatePartTree(new System.Collections.Generic.Dictionary<uint, uint?> { { 1u, null }, { 2u, 1u } });
+    src.InitializeSolver(time: 1000.0);
+
+    // Tick to UT=1010. Tick's solve-first ordering means rates are
+    // set at simTime=1000 then the clock advances to 1010 with the
+    // lerp draining the tank correctly.
+    src.Tick(1010.0);
+    var liveContents = tank.Tanks[0].Contents;
+    Assert.IsTrue(liveContents > 0 && liveContents < 100,
+        $"Tank should be partially drained, got {liveContents:F2}");
+
+    // Save state.
+    var state = new PartState();
+    tank.Save(state);
+    var savedAmount = state.TankVolume.Amounts[0];
+    Assert.AreEqual(liveContents, savedAmount, 1e-9,
+        "Saved amount must equal live (lerped) Contents at save UT");
+
+    // Build a new vessel from the saved state at a LATER load UT.
+    // Verifies that no spurious time-elapsed lerp drift carries over.
+    var dst = new Nova.Core.Components.VirtualVessel();
+    var loadedTank = new TankVolume {
+      Volume = 100, MaxRate = 100,
+      Tanks = {
+        new Buffer { Resource = Resource.RP1, Capacity = 100, Contents = 100 },
+      },
+    };
+    var loadedEngine = new Engine();
+    loadedEngine.Initialize(thrust: 10, isp: 300, propellants: new System.Collections.Generic.List<(Resource, double)> {
+      (Resource.RP1, 1),
+    });
+    var loadedState = new PartState();
+    tank.Save(loadedState);
+    loadedTank.Load(loadedState);
+    dst.AddPart(1u, "tank", 5.0, new System.Collections.Generic.List<Nova.Core.Components.VirtualComponent> { loadedTank });
+    dst.AddPart(2u, "engine", 5.0, new System.Collections.Generic.List<Nova.Core.Components.VirtualComponent> { loadedEngine });
+    dst.UpdatePartTree(new System.Collections.Generic.Dictionary<uint, uint?> { { 1u, null }, { 2u, 1u } });
+    // Load happens at a different UT than save — simulates real
+    // save/load gap. The lerp must NOT extrapolate stale rates over
+    // the gap.
+    dst.InitializeSolver(time: 5000.0);
+
+    // The buffer's lerped Contents at load UT must equal the saved
+    // value, not lerp-shifted by the 4000-second clock gap.
+    Assert.AreEqual(savedAmount, loadedTank.Tanks[0].Contents, 1e-6,
+        "Loaded Contents must equal saved amount; no drift across save/load");
+
+    // Rate should be zero — the next Solve will compute new rates
+    // from baseline. needsSolve flag is set by InitializeSolver.
+    Assert.AreEqual(0, loadedTank.Tanks[0].Rate, 1e-9,
+        "Loaded Rate must be 0 — solver hasn't run yet");
+
+    // Advance the clock without solving. With Rate=0, Contents must
+    // not drift (the lerp evaluates to BaselineContents).
+    dst.Systems.Clock.UT += 100;
+    Assert.AreEqual(savedAmount, loadedTank.Tanks[0].Contents, 1e-6,
+        "With Rate=0, advancing the clock must not drift Contents");
+  }
+
   [TestMethod]
   public void Battery_ConstructFromStructure() {
     var structure = new BatteryStructure { Capacity = 500 };

@@ -1,27 +1,23 @@
 namespace Nova.Core.Systems;
 
-// ECS-style abstraction over the per-tick simulation work that
-// `NovaVesselModule` orchestrates. Each system advances its own
-// internal state at a cadence it controls — not all systems re-solve
-// every physics tick, and the runner advances simulation time in
-// dt-chunks bounded by the smallest `MaxTickDt()` across systems so
-// nobody steps past a state change they need to react to.
+// Computation-event-driven simulation system. Owned by
+// VirtualVessel; the vessel's runner calls `Solve()` whenever the
+// system's solution needs refreshing (rates changed, topology
+// changed, hysteresis fired, …) and reads `MaxTickDt()` to schedule
+// the next forecasted re-solve.
+//
+// Systems do NOT have a per-frame Tick. State evolution between
+// solves is whatever the system's data model encodes — for the
+// resource solvers, that's the lerp Buffer model: Contents is a
+// pure function of (BaselineContents, BaselineUT, Rate, clock.UT)
+// evaluated lazily on read. The runner advances the shared SimClock
+// directly; nothing accumulates per-tick work that requires every
+// system to be poked.
 //
 // Implementations:
 //   StagingFlowSystem  — water-fill solver for Topological resources.
 //   ProcessFlowSystem  — LP solver for Uniform resources.
-//   AccumulatorSystem  — hysteresis bridge between the two.
-//
-// Convention: a system's `Tick(dt)` must apply changes for exactly the
-// requested dt. The runner is responsible for choosing dt; systems do
-// not loop internally to "catch up" to wall-clock time.
 public abstract class BackgroundSystem {
-
-  // Apply this system's effects over a time step of `dt` seconds.
-  // The current state (rates, activities, etc.) is assumed valid for
-  // the entire interval — the runner has guaranteed it by clamping dt
-  // to the minimum `MaxTickDt()` across systems.
-  public abstract void Tick(double dt);
 
   // Maximum dt for which the current solved state is valid. Beyond
   // this horizon, a state change (buffer crossing a threshold, solar
@@ -36,7 +32,7 @@ public abstract class BackgroundSystem {
   public abstract void Solve();
 
   // Mark the system's current solution as invalid; the runner will
-  // call Solve() before the next Tick.
+  // call Solve() before the next clock advance.
   public void Invalidate() { needsSolve = true; }
 
   protected bool needsSolve = true;

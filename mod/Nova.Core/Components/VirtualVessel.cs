@@ -505,7 +505,6 @@ public class VirtualVessel {
     // refresh the per-wheel forecasts so the cached `nextExpiry`
     // reflects current drain/fill rates before the loop consumes it.
     UpdateReactionWheelForecasts();
-    nextExpiry = ComputeNextExpiry(simulationTime);
 
     var iterations = 0;
 
@@ -519,6 +518,18 @@ public class VirtualVessel {
         break;
       }
 
+      // Solve FIRST if invalidated. This sets buffer rates at the
+      // current clock UT, so the lerp during the upcoming clock
+      // advance reflects them. Pre-lerp Tick had this backwards —
+      // it integrated first (with rate=0 on a fresh vessel) and
+      // solved at the end, which left a window of unaccounted-for
+      // drain on the very first tick after init.
+      if (needsSolve) {
+        DoSolve();
+      }
+
+      nextExpiry = ComputeNextExpiry(simulationTime);
+
       // Floor the step at MinTickStep ahead of simulationTime — a
       // ValidUntil within FP precision of `now` would otherwise land
       // nextStop == simulationTime and stall. Capped by targetTime so
@@ -528,44 +539,40 @@ public class VirtualVessel {
 
       var dt = nextStop - simulationTime;
       if (dt > 0) {
-        IntegrateBuffers(dt);
+        AdvanceClock(dt);
         IntegrateFuelCellManifolds(dt);
         IntegrateReactionWheelBuffers(dt);  // refreshes per-wheel ValidUntil
         simulationTime = nextStop;
-        // Don't recompute nextExpiry here — keep the cached value so
-        // the expiry check below can fire for the event we just hit.
       }
 
       // Fire any component whose ValidUntil has elapsed (slice rollover,
       // scheduled emissions). Component-driven Demand changes propagate
-      // via the needsSolve flag — DoSolve below picks them up.
+      // via the needsSolve flag — next iter's DoSolve picks them up.
       if (FireComponentUpdates(simulationTime))
         needsSolve = true;
 
-      if (needsSolve || simulationTime >= nextExpiry) {
-        DoSolve();
-      }
+      // Crossing nextExpiry means a forecasted event (buffer empties,
+      // fuel-cell hysteresis flip, etc.) just fired — re-solve next
+      // iter to reflect the new state.
+      if (simulationTime >= nextExpiry)
+        needsSolve = true;
     }
 
+    // Final solve if still invalidated — keeps state consistent for
+    // subsequent reads even if no further Tick happens.
     if (needsSolve) {
       DoSolve();
     }
   }
 
-  // Advance the shared simulation clock by deltaT. Buffers don't need
-  // per-tick mutation — Contents lerps from baseline + Rate × elapsed
-  // against the clock at read time. Current rates are valid for this
-  // dt window; the runner's nextExpiry guarantees we don't step past
-  // a state change without re-solving.
-  //
-  // System.Tick(dt) hooks are also called — they're no-ops for the
-  // current Staging/Process pair but reserved for future systems
-  // (e.g. a thermal system tracking heat-energy diffusion) that
-  // might need their own per-tick advance work.
-  private void IntegrateBuffers(double deltaT) {
+  // Advance the shared simulation clock by deltaT. Systems are
+  // computation-event-driven — they don't have per-tick work, so
+  // there's nothing to call here beyond the clock advance. Buffers
+  // lerp Contents lazily against the clock; the runner's nextExpiry
+  // guarantees we don't step past a state change without re-solving.
+  private void AdvanceClock(double deltaT) {
     if (deltaT <= 0) return;
     systems.Clock.UT += deltaT;
-    foreach (var sys in systems.All) sys.Tick(deltaT);
   }
 
   private void UpdateShadowState() {

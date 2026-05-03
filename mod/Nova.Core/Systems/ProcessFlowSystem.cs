@@ -116,12 +116,14 @@ public class ProcessFlowSystem : BackgroundSystem {
     if (buffer.Resource.Domain != ResourceDomain.Uniform) throw new ArgumentException(
         $"ProcessFlowSystem only accepts Uniform resources; got {buffer.Resource.Name} " +
         $"({buffer.Resource.Domain}). Topological resources belong on StagingFlowSystem.");
-    // Adopt this system's clock so Contents lerps against the same UT
-    // as the staging-side buffers. Battery / others construct their
-    // own Buffer with BaselineContents pre-set; we just need to wire
-    // the clock + baseline UT.
+    // Adopt this system's clock and re-baseline at "now". Whatever
+    // the buffer's prior BaselineUT was (default 0 from fresh
+    // construction, or save-load left-over), it should be reset on
+    // adoption so the lerp evaluates against the live clock from
+    // here on. Rate stays at 0 — the next Solve will compute a real
+    // rate at this baseline.
     buffer.Clock = clock;
-    if (buffer.BaselineUT == 0) buffer.BaselineUT = clock.UT;
+    buffer.BaselineUT = clock.UT;
     if (!buffersByResource.TryGetValue(buffer.Resource, out var list))
       buffersByResource[buffer.Resource] = list = new List<Buffer>();
     list.Add(buffer);
@@ -220,11 +222,6 @@ public class ProcessFlowSystem : BackgroundSystem {
     return earliest;
   }
 
-  // Lerp-based buffers don't need per-tick mutation — Contents is
-  // computed lazily from baseline + Rate × elapsed against the
-  // shared clock. The clock advance is VirtualVessel's job.
-  public override void Tick(double dt) {
-  }
 
   // ── LP construction (one-shot, on first Solve) ─────────────────────
 

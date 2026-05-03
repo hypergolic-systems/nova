@@ -132,7 +132,11 @@ public class FuelCellTests {
   [TestMethod]
   public void Hysteresis_TurnsOnBelowTwentyPercent() {
     var fc = MakeFuelCell(isActive: false);
-    var battery = MakeBattery(capacity: 1000, contents: 150); // SoC = 0.15
+    // 100 kJ capacity. With Tick's solve-first ordering the cell
+    // actually fires within the tick — at 2.5 kW the bigger battery
+    // doesn't fully charge in 1 s, so SoC stays below 0.8 and
+    // hysteresis doesn't flip back.
+    var battery = MakeBattery(capacity: 100_000, contents: 15_000); // SoC = 0.15
     var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
         MakeTank(Resource.LiquidOxygen, 10));
 
@@ -144,7 +148,7 @@ public class FuelCellTests {
   [TestMethod]
   public void Hysteresis_TurnsOffAboveEightyPercent() {
     var fc = MakeFuelCell(isActive: true);
-    var battery = MakeBattery(capacity: 1000, contents: 850); // SoC = 0.85
+    var battery = MakeBattery(capacity: 100_000, contents: 85_000); // SoC = 0.85
     var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
         MakeTank(Resource.LiquidOxygen, 10));
 
@@ -157,7 +161,7 @@ public class FuelCellTests {
   public void Hysteresis_HoldsInBand_AboveOnThreshold() {
     // OFF + SoC=0.5 should stay OFF.
     var fc = MakeFuelCell(isActive: false);
-    var battery = MakeBattery(capacity: 1000, contents: 500);
+    var battery = MakeBattery(capacity: 100_000, contents: 50_000);
     var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
         MakeTank(Resource.LiquidOxygen, 10));
 
@@ -170,7 +174,7 @@ public class FuelCellTests {
   public void Hysteresis_HoldsInBand_BelowOffThreshold() {
     // ON + SoC=0.5 should stay ON.
     var fc = MakeFuelCell(isActive: true);
-    var battery = MakeBattery(capacity: 1000, contents: 500);
+    var battery = MakeBattery(capacity: 100_000, contents: 50_000);
     var vessel = BuildVessel(fc, battery, MakeTank(Resource.LiquidHydrogen, 10),
         MakeTank(Resource.LiquidOxygen, 10));
 

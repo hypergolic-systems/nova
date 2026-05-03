@@ -598,11 +598,4 @@ public class StagingFlowSystem : BackgroundSystem {
     return earliest;
   }
 
-  // Buffers are lerp-based now — Contents lazily computes from
-  // baseline + Rate × elapsed. This Tick exists to satisfy the
-  // BackgroundSystem contract; the actual time advancement is the
-  // shared clock's job (driven by VirtualVessel.Tick or
-  // DeltaVSimulation). No per-tick buffer mutation needed.
-  public override void Tick(double dt) {
-  }
 }

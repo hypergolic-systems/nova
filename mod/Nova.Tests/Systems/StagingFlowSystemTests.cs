@@ -109,8 +109,8 @@ public class StagingFlowSystemTests {
     var totalAmount = 657.0 + 584.0;
     Assert.AreEqual(-100 * 657 / totalAmount, tL.Rate, 0.01);
     Assert.AreEqual(-100 * 584 / totalAmount, tR.Rate, 0.01);
-    // After 1s of integration the ratio remains the same.
-    sys.Tick(1.0);
+    // After 1s of clock advance, the ratio remains the same.
+    sys.Clock.UT += 1.0;
     Assert.AreEqual(657 / 584.0, tL.Contents / tR.Contents, 0.001);
   }
 

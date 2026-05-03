@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace Nova.Core.Systems;
 
 // Container for the per-vessel simulation systems. Owned by
@@ -8,8 +6,7 @@ namespace Nova.Core.Systems;
 // system (Topological flow → Staging, Uniform flow → Process).
 //
 // Adding a system later (e.g. ControlSystem for hysteresis +
-// reactive logic, ThermalSystem for heat) means a new field here and
-// inclusion in `All`.
+// reactive logic, ThermalSystem for heat) means a new field here.
 public class VesselSystems {
   // Per-vessel simulation clock. Shared by every Buffer the systems
   // own — lerp-based Contents reads from here. VirtualVessel.Tick
@@ -20,15 +17,9 @@ public class VesselSystems {
   public StagingFlowSystem Staging { get; }
   public ProcessFlowSystem Process { get; }
 
-  // Iteration order matters for the runner: Staging produces buffer
-  // rates and demand satisfactions that Process never reads (the two
-  // domains are disjoint). Order chosen for readability.
-  public IEnumerable<BackgroundSystem> All { get; }
-
   public VesselSystems() {
     Clock = new SimClock();
     Staging = new StagingFlowSystem(Clock);
     Process = new ProcessFlowSystem(Clock);
-    All = new BackgroundSystem[] { Staging, Process };
   }
 }
