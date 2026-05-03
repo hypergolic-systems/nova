@@ -57,7 +57,7 @@ justfile
 
 Two output assemblies, both shipped to `GameData/Nova/`:
 
-- **`Nova.Core.dll`** — platform-agnostic simulation engine. Resource solver (OR-Tools GLOP LP), virtual component system, RCS solver, persistence file format. No KSP types.
+- **`Nova.Core.dll`** — platform-agnostic simulation engine. Two-solver resource runtime (water-fill StagingFlowSystem for Topological resources, OR-Tools GLOP ProcessFlowSystem for Uniform resources), virtual component system, RCS solver, persistence file format. No KSP types.
 - **`Nova.dll`** — KSP integration layer. KSPAddon, Harmony patches, PartModule subclasses, save/load builders. References `Nova.Core`.
 
 The two-DLL split is intentional: it lets Nova.Core be tested in isolation and prevents accidental KSP coupling in the engine. Don't merge them.
@@ -67,7 +67,8 @@ The two-DLL split is intentional: it lets Nova.Core be tested in isolation and p
 ```
 Nova.Core (engine)
   Nova.Core.Components{,.Control,.Crew,.Electrical,.Propulsion,.Structural}
-  Nova.Core.Resources       # ResourceSolver, Resource, Buffer, DV/Shadow/Solar
+  Nova.Core.Resources       # Resource, Buffer, DeltaVSimulation, Shadow/Solar
+  Nova.Core.Systems         # StagingFlowSystem, ProcessFlowSystem, BackgroundSystem, VesselSystems
   Nova.Core.Flight          # RcsSolver
   Nova.Core.Persistence     # NovaFileFormat
     Nova.Core.Persistence.Protos   # protobuf message types (generated from proto/nova.proto)
@@ -82,16 +83,17 @@ Nova (mod)
 
 ## Architecture
 
-### Resource solver (`Nova.Core/Resources/`)
+### Resource flow (`Nova.Core/Systems/`)
 
-LP-based resource flow simulation. Each tick, `ResourceSolver.Solve()`:
+Two specialised solvers, partitioned by resource domain. Each implements `BackgroundSystem` (`Solve` / `Tick(dt)` / `MaxTickDt`); `VesselSystems` is the per-vessel container; `VirtualVessel.Tick` is the runner.
 
-1. Maximize consumer satisfaction across all consumers.
-2. Pin satisfaction levels.
-3. Maximize buffer fill with remaining capacity.
-4. Minimize cost (prefer cheap producers).
+- **`StagingFlowSystem`** — water-fill for **Topological** resources (RP-1, LOX, LH₂, Hydrazine, Xenon). Owns the vessel topology graph (nodes, edges with `AllowedResources` / `UpOnlyResources` filters, drain priorities). Per Solve, per (DrainPriority, resource, connected component): drain pools proportionally to current Contents, clipped per-pool by `MaxRateOut`, recurse on the binding pool. Pure arithmetic — no LP, no degeneracy.
 
-`Topology` is a graph of `Node`s with `Edge`s; nodes hold `NodeResource` entries with LP variables and conservation constraints.
+- **`ProcessFlowSystem`** — slim LP for **Uniform** resources (ElectricCharge today; O₂ / CO₂ / H₂O / heat tomorrow). Single vessel-wide pool per resource, no topology. Device-priority loop (Critical → High → Low) with `max α + ε·Σ activity`, then a lex-2 cleanup pass that minimises Σ supply + Σ fill to suppress LP-cycling artefacts.
+
+The two domains never share a resource (Resource.Domain enum tags it at construction). Components register with one or both at `OnBuildSystems(VesselSystems, StagingFlowSystem.Node)` time.
+
+For the LP envelope on the Process side, see `docs/lp_hygiene.md`.
 
 ### Virtual component system (`Nova.Core/Components/`)
 
