@@ -48,7 +48,6 @@ namespace Nova.Telemetry;
 //   ["B", soc(0..1), capacity, currentRate]                         Battery
 //   ["W", motorRate, busRate, bufferFraction, refillActive]          ReactionWheel
 //   ["L", currentRate]                                              Light
-//   ["E", alternatorMaxRate, alternatorRate]                        Engine
 //   ["T", volume]                                                   TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
 //          lh2ManifoldFraction, loxManifoldFraction, refillActive]   FuelCell
@@ -332,16 +331,6 @@ public sealed class NovaPartTopic : Topic {
         bool f = true;
         WriteKind(sb, "L", ref f);
         WriteNum(sb, light.Rate * light.Activity, ref f);
-        JsonWriter.End(sb, ']');
-        return true;
-      }
-      case Engine engine: {
-        JsonWriter.Sep(sb, ref first);
-        JsonWriter.Begin(sb, '[');
-        bool f = true;
-        WriteKind(sb, "E", ref f);
-        WriteNum(sb, engine.AlternatorRate, ref f);
-        WriteNum(sb, engine.AlternatorOutput, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

@@ -11,36 +11,16 @@ public class Engine : VirtualComponent {
   public double Thrust; // kN (vacuum) — also serves as MaxThrust on the wire
   public double Isp; // s (vacuum)
   public double Throttle;
-  public double AlternatorRate; // W at full output (0 = no alternator)
 
-  // Gimbal authority. `GimbalRangeRad` of 0 means non-gimbaling
-  // (LV-T30); a positive value enables thrust-vectoring. The attitude
-  // QP writes signed per-tick deflections back into
-  // `GimbalPitchDeflection` / `GimbalYawDeflection` ∈ [-1, 1] and
-  // `NovaEngineModule.FixedUpdate` applies them to the gimbal pivot.
-  // Vessel-local geometry (pivot position, axes, thrust direction)
-  // isn't stored here — `NovaVesselModule.SolveAttitude` re-extracts
-  // it from the live part transforms each time it rebuilds the
-  // solver, matching the existing RCS pattern.
   public double GimbalRangeRad;
   public double GimbalPitchDeflection;
   public double GimbalYawDeflection;
 
-  // Runtime state mirroring KSP's ignition/flameout flags. Written
-  // by NovaEngineModule each tick; read by NovaEngineTopic to drive
-  // the wire's status byte.
   public bool Ignited;
   public bool Flameout;
 
   public double Satisfaction => device != null ? device.Satisfaction : 0;
   public double NormalizedOutput => device != null ? device.Activity : 0;
-  // Live EC/s the alternator is delivering after the LP throttles it
-  // to actual load. Distinct from `AlternatorRate * NormalizedOutput`,
-  // which is the *capacity* at this engine throttle — when load is
-  // below capacity, the LP scales `alternator.Activity` down and the
-  // real output is well below capacity.
-  public double AlternatorOutput =>
-      alternator != null ? alternator.Activity * AlternatorRate : 0;
 
   public class Propellant {
     public Resource Resource;
@@ -56,13 +36,11 @@ public class Engine : VirtualComponent {
   private double batchMass; // kg per recipe batch
 
   private ResourceSolver.Device device;
-  private ResourceSolver.Device alternator;
 
-  public void Initialize(double thrust, double isp, double alternatorRate,
+  public void Initialize(double thrust, double isp,
       List<(Resource resource, double ratio)> propellants) {
     Thrust = thrust;
     Isp = isp;
-    AlternatorRate = alternatorRate;
 
     Propellants.Clear();
     foreach (var (resource, ratio) in propellants) {
@@ -93,7 +71,6 @@ public class Engine : VirtualComponent {
       Thrust = Thrust,
       Isp = Isp,
       Throttle = Throttle,
-      AlternatorRate = AlternatorRate,
       GimbalRangeRad = GimbalRangeRad,
       GimbalPitchDeflection = GimbalPitchDeflection,
       GimbalYawDeflection = GimbalYawDeflection,
@@ -120,16 +97,6 @@ public class Engine : VirtualComponent {
     device = node.AddDevice(ResourceSolver.Priority.Low);
     foreach (var prop in Propellants)
       device.AddInput(prop.Resource, prop.MaxFlow);
-
-    if (AlternatorRate > 0) {
-      alternator = node.AddDevice(ResourceSolver.Priority.Low);
-      alternator.AddOutput(Resource.ElectricCharge, AlternatorRate);
-      alternator.AddParent(device);
-      // Demand=1 keeps sum-max trying to drive alt up; the parent constraint
-      // caps it at engine activity, and conservation drops it back down when
-      // there's no EC sink (battery full + no consumer).
-      alternator.Demand = 1.0;
-    }
   }
 
   public override void OnPreSolve() {

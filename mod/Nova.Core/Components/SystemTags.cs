@@ -57,9 +57,8 @@ public static class SystemTags {
         case Command cmd:
           if (cmd.IdleDraw > 0 || cmd.TestLoadRate > 0) set.Add(PowerConsume);
           break;
-        case Engine e:
+        case Engine _:
           set.Add(Propulsion);
-          if (e.AlternatorRate > 0) set.Add(PowerGen);
           break;
         case Rcs _:
           set.Add(Rcs);

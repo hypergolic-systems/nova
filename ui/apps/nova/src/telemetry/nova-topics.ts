@@ -42,7 +42,6 @@ export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, 
 export type NovaBatteryFrame  = ['B', soc: number, capacity: number, rate: number];
 export type NovaWheelFrame    = ['W', motorRate: number, busRate: number, bufferFraction: number, refillActive: 0 | 1];
 export type NovaLightFrame    = ['L', rate: number];
-export type NovaEngineFrame   = ['E', alternatorMaxRate: number, alternatorRate: number];
 export type NovaTankFrame     = ['T', volume: number];
 export type NovaCommandFrame  = [
   'C',
@@ -162,7 +161,6 @@ export type NovaComponentFrame =
   | NovaBatteryFrame
   | NovaWheelFrame
   | NovaLightFrame
-  | NovaEngineFrame
   | NovaTankFrame
   | NovaCommandFrame
   | NovaFuelCellFrame;
@@ -264,15 +262,6 @@ export interface WheelState {
 export interface LightState {
   /** Live EC/s draw, post-LP-throttle. */
   rate: number;
-}
-
-export interface EngineState {
-  /** Nominal alternator capacity at full activity, EC/s. */
-  alternatorMaxRate: number;
-  /** Live EC/s output, post-LP-solve. The LP throttles converter
-   *  activity to whatever balances current load — display this
-   *  directly; do not multiply by engine throttle. */
-  alternatorRate: number;
 }
 
 export interface TankState {
@@ -463,7 +452,6 @@ export interface NovaPart {
   battery: BatteryState[];
   wheel: WheelState[];
   light: LightState[];
-  engine: EngineState[];
   tank: TankState[];
   command: CommandState[];
   fuelCell: FuelCellState[];
@@ -637,7 +625,6 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     battery: [],
     wheel: [],
     light: [],
-    engine: [],
     tank: [],
     command: [],
     fuelCell: [],
@@ -666,12 +653,6 @@ export function decodePart(f: NovaPartFrame): NovaPart {
         break;
       case 'L':
         out.light.push({ rate: c[1] });
-        break;
-      case 'E':
-        out.engine.push({
-          alternatorMaxRate: c[1],
-          alternatorRate: c[2],
-        });
         break;
       case 'T':
         out.tank.push({ volume: c[1] });

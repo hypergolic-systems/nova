@@ -50,20 +50,10 @@ public class SystemTagsTests {
   }
 
   [TestMethod]
-  public void EngineWithoutAlternator_TagsPropulsionOnly() {
-    var engine = new Engine { AlternatorRate = 0 };
+  public void Engine_TagsPropulsionOnly() {
+    var engine = new Engine();
     var tags = SystemTags.For(new VirtualComponent[] { engine });
     CollectionAssert.AreEqual(new List<string> { SystemTags.Propulsion }, tags);
-  }
-
-  [TestMethod]
-  public void EngineWithAlternator_TagsPropulsionAndPowerGen() {
-    var engine = new Engine { AlternatorRate = 1.5 };
-    var tags = SystemTags.For(new VirtualComponent[] { engine });
-    // Power-gen sorts before propulsion in canonical order.
-    CollectionAssert.AreEqual(
-      new List<string> { SystemTags.PowerGen, SystemTags.Propulsion },
-      tags);
   }
 
   [TestMethod]

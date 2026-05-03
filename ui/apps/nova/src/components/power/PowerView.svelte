@@ -60,7 +60,6 @@
     if (!p.state) return 0;
     let total = 0;
     for (const s of p.state.solar) total += s.rate;
-    for (const e of p.state.engine) total += e.alternatorRate;
     for (const fc of p.state.fuelCell) total += fc.currentOutput;
     return total;
   }
@@ -208,14 +207,10 @@
   // section's dominant kind so first-frame rows aren't iconless.
   function genKind(p: NovaTaggedPart): ComponentKind {
     if (p.state && p.state.fuelCell.length > 0) return 'fuelCell';
-    if (p.state && p.state.engine.length > 0 && p.state.solar.length === 0) return 'engine';
     return 'solar';
   }
-  // A part is "solar" for grouping purposes when it carries solar
-  // components and no engine alternator. Engine-with-alternator parts
-  // stay top-level so they don't get hidden inside a SOLAR header.
   function isSolarPart(p: NovaTaggedPart): boolean {
-    return !!p.state && p.state.solar.length > 0 && p.state.engine.length === 0;
+    return !!p.state && p.state.solar.length > 0;
   }
   function isFuelCellPart(p: NovaTaggedPart): boolean {
     return !!p.state && p.state.fuelCell.length > 0;

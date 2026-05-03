@@ -52,7 +52,7 @@ public class DockingPortTests {
 
   private static Engine MakeEngine(double thrust, double isp, params (string resource, double ratio)[] propellants) {
     var engine = new Engine();
-    engine.Initialize(thrust, isp, 0,
+    engine.Initialize(thrust, isp,
       propellants.Select(p => (Resource.Get(p.resource), p.ratio)).ToList());
     return engine;
   }

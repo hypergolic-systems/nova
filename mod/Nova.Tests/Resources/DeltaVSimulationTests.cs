@@ -19,7 +19,7 @@ public class DeltaVSimulationTests {
 
   private static Engine MakeEngine(double thrust, double isp, params (Resource resource, double ratio)[] propellants) {
     var engine = new Engine();
-    engine.Initialize(thrust, isp, 0, propellants.Select(p => (p.resource, p.ratio)).ToList());
+    engine.Initialize(thrust, isp, propellants.Select(p => (p.resource, p.ratio)).ToList());
     return engine;
   }
 

@@ -98,8 +98,6 @@ public static class ComponentFactory {
     engine.Initialize(
       thrust: double.Parse(node.GetValue("thrust")),
       isp: double.Parse(node.GetValue("isp")),
-      alternatorRate: node.GetValue("alternatorRate") != null
-        ? double.Parse(node.GetValue("alternatorRate")) : 0,
       propellants: node.GetNodes("PROPELLANT")
         .Select(n => (Resource.Get(n.GetValue("resource")),
                      double.Parse(n.GetValue("ratio"))))
