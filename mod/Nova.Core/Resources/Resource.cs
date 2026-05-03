@@ -3,11 +3,33 @@ using System.Collections.Generic;
 
 namespace Nova.Core.Resources;
 
+// Resource domain controls which solver owns this resource's flow.
+//
+//   Topological — flows along vessel topology (pipes, decouplers, up-only
+//                 edges). Stored in tanks, drained by drain priority,
+//                 staged-aware. Examples: RP-1, LOX, LH2, Hydrazine.
+//                 Solved by StagingFlowSystem (water-fill).
+//
+//   Uniform     — single vessel-wide pool, no topology distinctions.
+//                 May be cyclic (closed-loop life support, ISRU recycle).
+//                 Examples: ElectricCharge today; O2/CO2/H2O/heat
+//                 tomorrow. Solved by ProcessFlowSystem (LP).
+//
+// Resources don't switch domains. The Accumulator pattern bridges
+// when a component needs to consume one domain's resource but produce
+// in the other (e.g. fuel cell consumes Topological LH2/LOX, produces
+// Uniform EC).
+public enum ResourceDomain {
+  Topological,
+  Uniform,
+}
+
 public class Resource {
   public string Name;
   public string Abbreviation;
   public UnitDefinition Unit;
   public double Density; // kg/U
+  public ResourceDomain Domain;
 
   private static Dictionary<string, Resource> registry = new();
 
@@ -36,13 +58,15 @@ public class Resource {
       Abbreviation = "EC",
       Unit = UnitDefinition.Watt,
       Density = 0,
+      Domain = ResourceDomain.Uniform,
     };
-    
+
     registry["Liquid Hydrogen"] = new Resource {
       Name = "Liquid Hydrogen",
       Abbreviation = "LH2",
       Unit = UnitDefinition.Liter,
       Density = 0.07,
+      Domain = ResourceDomain.Topological,
     };
 
     registry["Liquid Oxygen"] = new Resource {
@@ -50,6 +74,7 @@ public class Resource {
       Abbreviation = "LOX",
       Unit = UnitDefinition.Liter,
       Density = 1.2,
+      Domain = ResourceDomain.Topological,
     };
 
     registry["RP-1"] = new Resource {
@@ -57,6 +82,7 @@ public class Resource {
       Abbreviation = "RP-1",
       Unit = UnitDefinition.Liter,
       Density = 0.8,
+      Domain = ResourceDomain.Topological,
     };
 
     registry["Hydrazine"] = new Resource {
@@ -64,6 +90,7 @@ public class Resource {
       Abbreviation = "N2H4",
       Unit = UnitDefinition.Liter,
       Density = 1.0,
+      Domain = ResourceDomain.Topological,
     };
 
     registry["Xenon"] = new Resource {
@@ -73,6 +100,7 @@ public class Resource {
       // KSP uses a density of around ~1 kg/L for Xenon. However, Dawn used supercritical Xenon at a
       // density of ~2 kg/L, so we use the denser value.
       Density = 2,
+      Domain = ResourceDomain.Topological,
     };
   }
 
