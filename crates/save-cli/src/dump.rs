@@ -254,9 +254,10 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
 
     if let Some(tv) = &part.tank_volume {
         println!(
-            "{p2}TankVolume: {:.1}L, {} tank(s)",
+            "{p2}TankVolume: {:.1}L, {} tank(s), max_rate={:.1}",
             tv.volume,
-            tv.tanks.len()
+            tv.tanks.len(),
+            tv.max_rate,
         );
         let amounts = state
             .and_then(|s| s.tank_volume.as_ref())
@@ -265,8 +266,8 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
         for (t, tank) in tv.tanks.iter().enumerate() {
             let amount = amounts.get(t).copied().unwrap_or(f64::NAN);
             println!(
-                "{p4}{}: {:.1}/{:.1} (out={:.1}, in={:.1})",
-                tank.resource, amount, tank.capacity, tank.max_rate_out, tank.max_rate_in
+                "{p4}{}: {:.1}/{:.1}",
+                tank.resource, amount, tank.capacity,
             );
         }
     }
