@@ -360,6 +360,7 @@ public class ResourceSolver {
       if (devs.Count == 0) return;
 
       DeactivateAllAlphaConstraints();
+      alphaVar.SetBounds(0, 1e6);
       foreach (var d in devs) {
         var c = deviceAlpha[d];
         c.SetCoefficient(alphaVar, -d.Demand);
@@ -445,6 +446,17 @@ public class ResourceSolver {
   // most-balanced distribution: supply_p ≥ β × normalized_amount_p,
   // max β. Iterates with bottleneck handling — pools at MaxSupplyRate
   // get pinned and the residual demand is shared among the rest.
+  //
+  // Each iteration is a lexicographic two-step solve:
+  //   1. max β (the fairness target).
+  //   2. pin β at β*, min Σ supply (cycle suppression / anti-sloshing).
+  //
+  // Step 2 is what prevents the LP from picking a `supply=X, fill=X`
+  // solution that satisfies conservation through pure cycling — a
+  // pathology that surfaces in any flow LP without flow-cost
+  // penalization. The old solver's drain-min phase did the same job
+  // by costing supply asymmetrically; we now do it cleanly via
+  // lex-max-min.
   private void IteratePoolBeta(List<Pool> activePools,
       HashSet<Pool> pinnedPools) {
 
@@ -476,6 +488,8 @@ public class ResourceSolver {
         c.SetBounds(0, double.PositiveInfinity);
       }
 
+      // Step 1: max β.
+      alphaVar.SetBounds(0, 1e6);
       lpSolver.Maximize(alphaVar);
       var status = lpSolver.Solve();
 
@@ -486,31 +500,51 @@ public class ResourceSolver {
           pinnedPools.Add(p);
         }
         DeactivateAllAlphaConstraints();
+        alphaVar.SetBounds(0, 1e6);
         return;
       }
 
       var betaStar = alphaVar.SolutionValue();
+
+      // Step 2: pin β at β*, min Σ supply over all pools. The sum
+      // includes pinned pools too — they appear as constants and don't
+      // change the optimization but it keeps the objective expression
+      // stable. This step picks the no-sloshing solution at β*.
+      alphaVar.SetBounds(betaStar, betaStar);
+      var minSupplyObj = new LinearExpr();
+      foreach (var p in pools) minSupplyObj += p.SupplyVar;
+      lpSolver.Minimize(minSupplyObj);
+      var status2 = lpSolver.Solve();
+
+      if (status2 != Solver.ResultStatus.OPTIMAL) {
+        // Anti-sloshing infeasible (shouldn't happen if max β was
+        // OPTIMAL — same feasible region with one variable pinned).
+        // Fail-safe: pin everyone at zero.
+        foreach (var p in pls) {
+          p.SupplyVar.SetBounds(0, 0);
+          foreach (var t in p.Tanks) t.Rate = 0;
+          pinnedPools.Add(p);
+        }
+        DeactivateAllAlphaConstraints();
+        alphaVar.SetBounds(0, 1e6);
+        return;
+      }
+
       var poolValues = new Dictionary<Pool, double>(pls.Count);
       foreach (var p in pls) poolValues[p] = p.SupplyVar.SolutionValue();
 
       ExtractResults();
 
-      // If β-LP determined no further drain is feasible, β* = 0 and
-      // all active pools are pinned at zero. (Happens when conservation
-      // says total drain at this DP is zero — e.g. high-priority pools
-      // have already covered demand.)
       if (betaStar < Epsilon) {
         foreach (var p in pls) {
           p.SupplyVar.SetBounds(poolValues[p], poolValues[p]);
           pinnedPools.Add(p);
         }
         DeactivateAllAlphaConstraints();
+        alphaVar.SetBounds(0, 1e6);
         return;
       }
 
-      // Pools at MaxSupplyRate are bottlenecked physically; pin and
-      // recurse on the rest. If nothing is at max, the conservation
-      // sum is what bounds β — pin everything at fair share and exit.
       var bottlenecks = new List<Pool>();
       foreach (var p in pls) {
         if (poolValues[p] >= p.MaxSupplyRate - Epsilon && p.MaxSupplyRate > Epsilon)
@@ -523,6 +557,7 @@ public class ResourceSolver {
           pinnedPools.Add(p);
         }
         DeactivateAllAlphaConstraints();
+        alphaVar.SetBounds(0, 1e6);
         return;
       }
 
@@ -542,6 +577,7 @@ public class ResourceSolver {
       pinnedPools.Add(p);
     }
     DeactivateAllAlphaConstraints();
+    alphaVar.SetBounds(0, 1e6);
   }
 
   // Wide-bound all α-fairness constraints (devices + pools). Called at

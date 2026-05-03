@@ -50,7 +50,7 @@ public static class TankPresets {
       Resource = resource,
       Capacity = capacity,
       Contents = capacity,
-      MaxRateIn = double.PositiveInfinity,
-      MaxRateOut = double.PositiveInfinity,
+      MaxRateIn = TankVolume.DefaultMaxRate,
+      MaxRateOut = TankVolume.DefaultMaxRate,
     };
 }

@@ -86,12 +86,12 @@ public class TankPresetsTests {
   }
 
   [TestMethod]
-  public void All_Presets_DefaultFull_WithInfiniteFlow() {
+  public void All_Presets_DefaultFull_WithEnvelopeFlow() {
     foreach (var p in TankPresets.All) {
       foreach (var b in p.Build(1000)) {
         Assert.AreEqual(b.Capacity, b.Contents, $"{p.Id} contents != capacity");
-        Assert.AreEqual(double.PositiveInfinity, b.MaxRateIn, $"{p.Id} MaxRateIn");
-        Assert.AreEqual(double.PositiveInfinity, b.MaxRateOut, $"{p.Id} MaxRateOut");
+        Assert.AreEqual(TankVolume.DefaultMaxRate, b.MaxRateIn, $"{p.Id} MaxRateIn");
+        Assert.AreEqual(TankVolume.DefaultMaxRate, b.MaxRateOut, $"{p.Id} MaxRateOut");
       }
     }
   }

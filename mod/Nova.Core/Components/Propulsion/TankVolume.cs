@@ -9,6 +9,13 @@ using Nova.Core.Utils;
 namespace Nova.Core.Components.Propulsion;
 
 public class TankVolume : VirtualComponent {
+  // Default tank rate cap (L/s) used when a config doesn't specify
+  // an explicit MaxRateIn / MaxRateOut. Sized at the LP-hygiene
+  // envelope upper edge — well above any real engine flow rate, so
+  // tank rate caps don't bind in practice, while staying safely
+  // bounded for GLOP's pivot numerics. See docs/lp_hygiene.md.
+  public const double DefaultMaxRate = 10000;
+
   public double Volume;
   public List<Buffer> Tanks = new();
 
@@ -21,8 +28,8 @@ public class TankVolume : VirtualComponent {
         Resource = Resource.Get(t.Resource),
         Capacity = t.Capacity,
         Contents = t.Capacity, // default: full
-        MaxRateOut = t.MaxRateOut > 0 ? t.MaxRateOut : double.PositiveInfinity,
-        MaxRateIn = t.MaxRateIn > 0 ? t.MaxRateIn : double.PositiveInfinity,
+        MaxRateOut = t.MaxRateOut > 0 ? t.MaxRateOut : DefaultMaxRate,
+        MaxRateIn = t.MaxRateIn > 0 ? t.MaxRateIn : DefaultMaxRate,
       });
     }
   }
@@ -37,8 +44,8 @@ public class TankVolume : VirtualComponent {
         Resource = Resource.Get(t.Resource),
         Capacity = t.Capacity,
         Contents = t.Capacity,
-        MaxRateOut = t.MaxRateOut > 0 ? t.MaxRateOut : double.PositiveInfinity,
-        MaxRateIn = t.MaxRateIn > 0 ? t.MaxRateIn : double.PositiveInfinity,
+        MaxRateOut = t.MaxRateOut > 0 ? t.MaxRateOut : DefaultMaxRate,
+        MaxRateIn = t.MaxRateIn > 0 ? t.MaxRateIn : DefaultMaxRate,
       });
     }
   }

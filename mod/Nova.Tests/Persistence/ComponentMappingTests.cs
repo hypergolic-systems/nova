@@ -32,7 +32,7 @@ public class ComponentMappingTests {
     Assert.AreEqual(50, tank.Tanks[0].MaxRateOut);
     Assert.AreEqual(100, tank.Tanks[0].MaxRateIn);
     Assert.AreEqual("Liquid Oxygen", tank.Tanks[1].Resource.Name);
-    Assert.AreEqual(double.PositiveInfinity, tank.Tanks[1].MaxRateOut);
+    Assert.AreEqual(TankVolume.DefaultMaxRate, tank.Tanks[1].MaxRateOut);
   }
 
   [TestMethod]
