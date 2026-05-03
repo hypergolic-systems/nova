@@ -1,3 +1,6 @@
+using System;
+using Nova.Core.Resources;
+
 namespace Nova.Core.Systems;
 
 // Container + orchestrator for the per-vessel simulation systems.
@@ -51,5 +54,59 @@ public class VesselSystems {
   // needs poking.
   public void AdvanceClock(double dt) {
     if (dt > 0) Clock.UT += dt;
+  }
+
+  // ── Unified device factory ───────────────────────────────────────
+  // Construct a Device with all inputs/outputs declared up-front. The
+  // resources' domain picks the underlying solver:
+  //   Topological (RP-1, LOX, LH₂, …) → Staging.Consumer.
+  //   Uniform     (ElectricCharge, …)  → Process.Device.
+  // Validation throws on mixed domains, on Topological outputs, and
+  // on devices with no inputs and no outputs.
+  //
+  // `node` is required (Staging-bound devices need it; Process-bound
+  // devices treat it as harmless metadata). `priority` only matters
+  // on the Process side.
+  public Device AddDevice(
+      StagingFlowSystem.Node node,
+      (Resource resource, double rate)[] inputs = null,
+      (Resource resource, double rate)[] outputs = null,
+      ProcessFlowSystem.Priority priority = ProcessFlowSystem.Priority.Low) {
+
+    inputs  = inputs  ?? Array.Empty<(Resource, double)>();
+    outputs = outputs ?? Array.Empty<(Resource, double)>();
+
+    if (inputs.Length == 0 && outputs.Length == 0)
+      throw new ArgumentException(
+          "Device must declare at least one input or output.");
+
+    ResourceDomain? domain = null;
+    foreach (var (r, _) in inputs)  domain = MergeDomain(domain, r);
+    foreach (var (r, _) in outputs) domain = MergeDomain(domain, r);
+
+    if (domain == ResourceDomain.Topological && outputs.Length > 0)
+      throw new ArgumentException(
+          "Topological devices cannot declare outputs — only tanks store " +
+          "topological resources.");
+
+    if (domain == ResourceDomain.Topological) {
+      var c = Staging.RegisterConsumer(node);
+      foreach (var (r, rate) in inputs) c.AddInput(r, rate);
+      return new Device(c);
+    } else {
+      var d = Process.AddDevice(priority);
+      foreach (var (r, rate) in inputs)  d.AddInput(r, rate);
+      foreach (var (r, rate) in outputs) d.AddOutput(r, rate);
+      return new Device(d);
+    }
+  }
+
+  private static ResourceDomain? MergeDomain(ResourceDomain? acc, Resource r) {
+    if (acc == null) return r.Domain;
+    if (acc != r.Domain) throw new ArgumentException(
+        $"Device cannot mix resource domains: {r.Name} is {r.Domain}, " +
+        $"prior endpoints were {acc}. A Device's Activity is managed by " +
+        $"exactly one solver, so all of its endpoints must share a domain.");
+    return acc;
   }
 }

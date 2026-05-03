@@ -17,20 +17,20 @@ public class Engine : VirtualComponent {
   public bool Ignited;
   public bool Flameout;
 
-  // Effective throttle achieved this tick. Equals consumer.Activity,
-  // which the staging system computes as Throttle × min(per-propellant
+  // Effective throttle achieved this tick. Equals device.Activity,
+  // which the staging system computes as Demand × min(per-propellant
   // satisfaction). When all propellants are fully supplied, Activity ==
-  // Throttle and NormalizedOutput == Throttle. When any propellant is
+  // Demand and NormalizedOutput == Throttle. When any propellant is
   // starved, the staging system's coupling pass scales Activity down
   // and the unstuck propellants stop being allocated — so the engine
   // doesn't over-drain anything, even when other engines on the same
   // stage continue to fire.
-  public double NormalizedOutput => consumer?.Activity ?? 0;
+  public double NormalizedOutput => device?.Activity ?? 0;
 
   // Fraction of requested Throttle actually achieved (1.0 = fully
   // supplied; 0 = fully starved). Useful for telemetry that wants
   // satisfaction independent of the throttle setting.
-  public double Satisfaction => Throttle > 1e-12 ? (consumer?.Activity ?? 0) / Throttle : 0;
+  public double Satisfaction => Throttle > 1e-12 ? (device?.Activity ?? 0) / Throttle : 0;
 
   public class Propellant {
     public Resource Resource;
@@ -45,10 +45,10 @@ public class Engine : VirtualComponent {
   private double massFlow; // kg/s at full throttle
   private double batchMass; // kg per recipe batch
 
-  // Coupled-input consumer registered with the staging system. One
-  // input per propellant; the staging solver couples them natively
-  // (min Activity across inputs gates whether the engine fires at all).
-  internal StagingFlowSystem.Consumer consumer;
+  // Coupled-input device on the staging system. One input per
+  // propellant; the staging solver couples them natively (min
+  // Activity across inputs gates whether the engine fires at all).
+  internal Device device;
 
   public void Initialize(double thrust, double isp,
       List<(Resource resource, double ratio)> propellants) {
@@ -106,12 +106,11 @@ public class Engine : VirtualComponent {
 
   public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     Node = node;
-    consumer = systems.Staging.RegisterConsumer(node);
-    foreach (var prop in Propellants)
-      consumer.AddInput(prop.Resource, prop.MaxFlow);
+    device = systems.AddDevice(node,
+        inputs: Propellants.Select(p => (p.Resource, p.MaxFlow)).ToArray());
   }
 
   public override void OnPreSolve() {
-    if (consumer != null) consumer.Throttle = Throttle;
+    if (device != null) device.Demand = Throttle;
   }
 }

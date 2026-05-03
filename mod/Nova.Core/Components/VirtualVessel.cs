@@ -25,12 +25,12 @@ public class VirtualVessel {
   // DID or DIDN'T trigger a re-solve.
   public int SolveCount { get; private set; }
 
-  // Vessel-level solar aggregation. One Process Device sums every
-  // panel's ChargeRate as its output coefficient; per-tick Demand caps
-  // the LP variable so output tops out at the SolarOptimizer result
+  // Vessel-level solar aggregation. One Device sums every panel's
+  // ChargeRate as its output coefficient; per-tick Demand caps the
+  // LP variable so output tops out at the SolarOptimizer result
   // (sunlit-and-deployed-aware). See ComputeSolarRates +
   // UpdateSolarDeviceDemand.
-  private ProcessFlowSystem.Device solarDevice;
+  private Device solarDevice;
   private double totalChargeRate;
   private double cachedOptimalRate;
   private bool vesselSunlit = true;
@@ -114,8 +114,8 @@ public class VirtualVessel {
       return;
     }
 
-    solarDevice = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
-    solarDevice.AddOutput(Resource.ElectricCharge, totalChargeRate);
+    solarDevice = systems.AddDevice(rootNode,
+        outputs: new[] { (Resource.ElectricCharge, totalChargeRate) });
     solarDevice.Demand = 0;  // populated per-tick via UpdateSolarDeviceDemand
   }
 

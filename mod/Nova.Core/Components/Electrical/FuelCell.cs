@@ -64,7 +64,7 @@ public class FuelCell : VirtualComponent {
   // Combined volumetric production drain at full activity (mix-L/s).
   public double ProductionDrainRate => Lh2Rate + LoxRate;
 
-  internal ProcessFlowSystem.Device production;
+  internal Device production;
 
   public override VirtualComponent Clone() {
     return new FuelCell {
@@ -87,17 +87,17 @@ public class FuelCell : VirtualComponent {
     // staging solver's coupling pass guarantees refill stops drawing
     // either propellant if the other can't be supplied.
     // Push the persisted RefillActive into Manifold's runtime state
-    // before configuring the refill device — Configure* reads
-    // RefillActive to set the initial Throttle.
+    // before configuring the refill device — Configure reads
+    // RefillActive to set the initial Demand.
     Manifold.RefillActive = RefillActive;
-    Manifold.ConfigureStagingRefill(systems, node,
+    Manifold.Configure(systems, node,
         (Resource.LiquidHydrogen, RefillRate * Lh2Frac),
         (Resource.LiquidOxygen,   RefillRate * LoxFrac));
 
     // Production: vessel-wide EC producer. Activity is gated each tick
     // by OnPreSolve (IsActive + manifold-non-empty).
-    production = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
-    production.AddOutput(Resource.ElectricCharge, EcOutput);
+    production = systems.AddDevice(node,
+        outputs: new[] { (Resource.ElectricCharge, EcOutput) });
     production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
   }
 

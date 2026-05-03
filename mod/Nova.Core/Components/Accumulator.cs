@@ -40,18 +40,18 @@ public class Accumulator {
   public double BaselineContents;
   public double BaselineUT;
 
-  // Shared clock — installed by ConfigureProcessRefill /
-  // ConfigureStagingRefill. Tests can leave this null; ContentsAt
-  // then collapses to a static-value lookup at BaselineUT.
+  // Shared clock — installed by Configure(). Tests can leave this
+  // null; ContentsAt then collapses to a static-value lookup at
+  // BaselineUT.
   internal SimClock Clock;
 
   // ── Refill side ──────────────────────────────────────────────────
-  // Exactly one of these is non-null after a Configure* call. The
-  // Accumulator pushes hysteresis-driven activation into Demand or
-  // Throttle on OnPreSolve, and reads the achieved Activity back on
-  // OnPostSolve.
-  internal ProcessFlowSystem.Device   processRefill;
-  internal StagingFlowSystem.Consumer stagingRefill;
+  // The Accumulator owns a single unified Device for the refill side;
+  // VesselSystems.AddDevice routes it to Staging or Process based on
+  // the inputs' domain. The Accumulator pushes hysteresis-driven
+  // activation into Demand on OnPreSolve and reads the achieved
+  // Activity back on OnPostSolve.
+  internal Device refillDevice;
   // Capacity-units per second when refill activity = 1.
   public double RefillRate;
   // Last-solve achieved fraction (0..1). Updated in OnPostSolve.
@@ -134,56 +134,40 @@ public class Accumulator {
   }
 
   // ── Configure ────────────────────────────────────────────────────
-  // Wire a single-input refill on the Process system (e.g.
-  // ReactionWheel pulling EC). Installs the SimClock at the same time
-  // and rebaselines BaselineUT to "now" so the lerp anchors against
-  // the live clock from here on.
-  public void ConfigureProcessRefill(VesselSystems systems,
-      Resource resource, double refillRate,
-      ProcessFlowSystem.Priority priority = ProcessFlowSystem.Priority.Low) {
-    RefillRate = refillRate;
-    processRefill = systems.Process.AddDevice(priority);
-    processRefill.AddInput(resource, refillRate);
-    processRefill.Demand = RefillActive ? 1.0 : 0.0;
-    InstallClock(systems.Clock);
-  }
-
-  // Wire a multi-input refill on the Staging system (e.g. FuelCell
-  // hydrolox manifold). RefillRate = sum of per-input rates — the
-  // Accumulator's lerp uses the total volumetric flow.
-  public void ConfigureStagingRefill(VesselSystems systems,
+  // Wire the refill side. The inputs' resource domain picks Staging
+  // (Topological — coupled multi-input water-fill) or Process
+  // (Uniform — LP) automatically via VesselSystems.AddDevice.
+  // RefillRate = sum of per-input rates — the lerp uses the total.
+  // Installs the SimClock and rebaselines BaselineUT to "now" so the
+  // lerp anchors against the live clock from here on.
+  public void Configure(VesselSystems systems,
       StagingFlowSystem.Node node,
       params (Resource resource, double rate)[] inputs) {
-    stagingRefill = systems.Staging.RegisterConsumer(node);
+    refillDevice = systems.AddDevice(node, inputs: inputs);
     double total = 0;
-    foreach (var (resource, rate) in inputs) {
-      stagingRefill.AddInput(resource, rate);
-      total += rate;
-    }
+    foreach (var (_, rate) in inputs) total += rate;
     RefillRate = total;
-    stagingRefill.Throttle = RefillActive ? 1.0 : 0.0;
+    refillDevice.Demand = RefillActive ? 1.0 : 0.0;
     InstallClock(systems.Clock);
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────
   // Pre-solve: hysteresis flip on FillFraction, push the resulting
-  // active state into the underlying refiller's Demand (Process) or
-  // Throttle (Staging) for the upcoming solve.
+  // active state into the underlying refill device's Demand for the
+  // upcoming solve.
   public void OnPreSolve() {
     double frac = FillFraction;
     if (RefillActive && frac >= RefillOffFraction) RefillActive = false;
     else if (!RefillActive && frac <= RefillOnFraction) RefillActive = true;
-
-    double on = RefillActive ? 1.0 : 0.0;
-    if (processRefill != null) processRefill.Demand   = on;
-    if (stagingRefill != null) stagingRefill.Throttle = on;
+    if (refillDevice != null)
+      refillDevice.Demand = RefillActive ? 1.0 : 0.0;
   }
 
-  // Post-solve: capture the underlying refiller's achieved Activity,
+  // Post-solve: capture the refill device's achieved Activity,
   // recompute net Rate (rebaselining at "now"), and forecast the next
   // hysteresis flip.
   public void OnPostSolve() {
-    RefillActivity = processRefill?.Activity ?? stagingRefill?.Activity ?? 0;
+    RefillActivity = refillDevice?.Activity ?? 0;
     RebaselineNow();
     RecomputeRate();
     RefreshValidUntil();

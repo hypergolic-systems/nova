@@ -11,16 +11,16 @@ public class Rcs : VirtualComponent {
   public int ThrusterCount; // set by KSP module after counting transforms
   public double Throttle; // 0-1, aggregate from RCS solver
 
-  // Coupled-input consumer registered with the staging system. Single
-  // input today (Hydrazine), but the same pattern handles future
-  // bipropellant RCS modules cleanly.
-  internal StagingFlowSystem.Consumer consumer;
+  // Coupled-input device on the staging system. Single input today
+  // (Hydrazine), but the same pattern handles future bipropellant RCS
+  // modules cleanly.
+  internal Device device;
 
   // Fraction of requested rate actually delivered (1.0 = full supply).
-  public double Satisfaction => Throttle > 1e-12 ? (consumer?.Activity ?? 0) / Throttle : 0;
+  public double Satisfaction => Throttle > 1e-12 ? (device?.Activity ?? 0) / Throttle : 0;
 
   // Effective throttle achieved this tick.
-  public double NormalizedOutput => consumer?.Activity ?? 0;
+  public double NormalizedOutput => device?.Activity ?? 0;
 
   public class Propellant {
     public Resource Resource;
@@ -73,12 +73,11 @@ public class Rcs : VirtualComponent {
       }
     }
 
-    consumer = systems.Staging.RegisterConsumer(node);
-    foreach (var prop in Propellants)
-      consumer.AddInput(prop.Resource, prop.MaxFlow);
+    device = systems.AddDevice(node,
+        inputs: Propellants.Select(p => (p.Resource, p.MaxFlow)).ToArray());
   }
 
   public override void OnPreSolve() {
-    if (consumer != null) consumer.Throttle = Throttle;
+    if (device != null) device.Demand = Throttle;
   }
 }

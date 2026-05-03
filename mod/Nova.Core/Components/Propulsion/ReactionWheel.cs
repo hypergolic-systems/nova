@@ -119,10 +119,10 @@ public class ReactionWheel : VirtualComponent {
     if (Buffer.Contents > Buffer.Capacity) Buffer.Contents = Buffer.Capacity;
 
     // Push the persisted RefillActive into the Accumulator runtime
-    // state. ConfigureProcessRefill reads it to set initial Demand.
+    // state. Configure reads it to set the initial Demand.
     Buffer.RefillActive = RefillActive;
-    Buffer.ConfigureProcessRefill(systems, Resource.ElectricCharge,
-        RefillRateWatts, ProcessFlowSystem.Priority.Low);
+    Buffer.Configure(systems, node,
+        (Resource.ElectricCharge, RefillRateWatts));
   }
 
   public override void OnPreSolve() {

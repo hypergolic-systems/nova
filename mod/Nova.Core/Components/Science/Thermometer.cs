@@ -57,15 +57,15 @@ public class Thermometer : VirtualComponent {
   public string AtmCurrentLayer;     // for find-file-for-current-layer
   public string LtsCurrentSubjectId; // for slice-boundary scheduling
 
-  internal ProcessFlowSystem.Device device;
+  internal Device device;
 
   public double Satisfaction => device.Satisfaction;
   public double Activity     => device.Activity;
   public double ActualEcRate => EcRate * Activity;
 
   public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
-    device = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
-    device.AddInput(Resource.ElectricCharge, EcRate);
+    device = systems.AddDevice(node,
+        inputs: new[] { (Resource.ElectricCharge, EcRate) });
     device.Demand = (AtmActive || LtsActive) ? 1.0 : 0.0;
   }
 
