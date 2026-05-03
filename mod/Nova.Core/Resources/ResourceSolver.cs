@@ -5,12 +5,44 @@ using Google.OrTools.LinearSolver;
 
 namespace Nova.Core.Resources;
 
+// Iterative max-min fair LP. Per device priority, repeatedly solve
+//
+//     max α  subject to:
+//         activity[d] ≥ α × Demand[d]   (for active devices at this priority)
+//         supply[p]   ≥ α × amount_n[p] (for active pools at this priority)
+//         conservation, edge bounds, parent constraints, pool/device caps
+//         fixed flows from previous iterations (other priorities, prior bottlenecks)
+//
+// On each iteration: identify the binding entity (a device, pool, or
+// edge that's at its physical limit), pin its flow at the α*-value,
+// remove it from the active set, and re-solve. Loop ends when α* ≥ 1
+// (all demand met for this priority) or the active set empties (no
+// further progress possible). Then move to the next priority.
+//
+// Why this shape:
+//   - Symmetric same-priority pools drain in lockstep — α forces
+//     supply / amount to be equal across active pools.
+//   - Disconnected sub-networks decouple: each component's α-LP is
+//     independent because conservation only spans flow-connected nodes.
+//   - Conversion chains (A → B → C via converter devices) are LP-native
+//     and the α-LP doesn't disturb them.
+//   - Closed cycles (e.g. life-support O₂ ⇄ CO₂) work — LP is steady
+//     state; cyclic flow vars are just constraints that close.
+//   - Edge rate limits, when added, slot in as additional linear
+//     constraints; iteration's bottleneck identification handles them
+//     by construction.
+//
+// The pool-α coefficient is amount[p] / max_amount[r] within its
+// resource — keeps the LP coefficient in [0, 1], avoiding the dynamic-
+// range issues that would come from putting raw Buffer.Contents in
+// (see docs/lp_hygiene.md). A 0.1 floor avoids tiny pools producing
+// near-zero coefficients; pools below 10% of max still participate
+// in fairness, just at a slightly looser bound.
 public class ResourceSolver {
 
   // ── Public API types ─────────────────────────────────────────────────
 
   public enum Priority { Critical, High, Low }
-  private const int PriorityCount = 3;
 
   public class Node {
     internal long id;
@@ -76,29 +108,18 @@ public class ResourceSolver {
     }
   }
 
-  // Unified Device — handles both consumers (inputs only) and producers
-  // (outputs only) and hybrids (both — fuel cells). Activity ∈ [0, demand]
-  // is maximized by the priority sum-max objective. Optional `parent`
-  // gates activity ≤ parent.activity for incidental producers (e.g. an
-  // engine alternator: alt ≤ engine throttle, but lack of EC demand
-  // doesn't pull engine throttle down because the constraint is one-way).
   public class Device {
     internal Node node;
     internal Priority priority;
     internal List<(Resource Resource, double MaxRate)> inputs = new();
     internal List<(Resource Resource, double MaxRate)> outputs = new();
     internal Device parent;
-    // Persistent LP handle, set once in BuildLP.
     internal Variable Var;
 
     public double Demand;
     public double Activity;
     public double Satisfaction => Demand > 1e-9 ? Activity / Demand : 0;
-    // Per-tick UB scaling: solar panels use this for binary deploy/shadow
-    // gating without needing topology rebuild. Default 1 = full activity.
     public double MaxActivity = 1;
-    // Hint for VirtualVessel.ComputeNextExpiry — when does this device's
-    // production envelope change next? Used by solar for shadow transition.
     public double ValidUntil = double.PositiveInfinity;
 
     public void AddInput(Resource resource, double maxRate) {
@@ -128,9 +149,12 @@ public class ResourceSolver {
     public Resource Resource;
     public int DrainPriority;
     public List<Buffer> Tanks = new();
-    // Persistent LP handles.
     public Variable SupplyVar;
     public Variable FillVar;
+    // Pre-allocated α-fairness constraint:
+    //   SupplyVar - α × normalized_amount ≥ 0
+    // Coefficient on α set per-iteration; bounds toggled to enable/disable.
+    public Constraint AlphaConstraint;
     public double TotalAmount => Tanks.Sum(t => t.Contents > 1e-9 ? t.Contents : 0);
     public double MaxSupplyRate => Tanks.Sum(t => t.Contents > 1e-9 ? t.MaxRateOut : 0);
     public double MaxFillRate => Tanks.Sum(t => t.Contents < t.Capacity - 1e-9 ? t.MaxRateIn : 0);
@@ -164,40 +188,21 @@ public class ResourceSolver {
   private List<ConservationEntry> conservationEntries = new();
   private Dictionary<(Node, Resource), ConservationEntry> conservationByNodeRes = new();
   private Solver lpSolver;
-  private Constraint[] devicePin;
-  private LinearExpr drainCostExpr;
-  private int maxDrainPriority;
 
-  // Fair-distribution apparatus (Phase C). One zVar per resource that
-  // has multiple pools. Each tick the fair constraint for pool p in
-  // resource r enforces:
-  //
-  //   pool.SupplyVar - z_r * max(amount / maxAmount_r, FairnessFloor) ≤ 0
-  //
-  // where maxAmount_r is the largest TotalAmount across r's pools.
-  // Per-resource normalization keeps the coefficient bounded above by
-  // 1; FairnessFloor (0.1) bounds it below so the LP coefficient lives
-  // in [0.1, 1] regardless of how skewed pool amounts are. Without the
-  // floor a tiny pool against a full battery would yield coefficients
-  // around 1e-8 — well below GLOP's tolerance (see docs/lp_hygiene.md).
-  // The cost: pools below 10% of the resource's max participate in
-  // fairness with a slightly looser bound than their literal share,
-  // but the imbalance is small and bounded.
-  // costPinConstraint freezes the drain cost at its minimum so the
-  // fairness pass can only shuffle among equally-cheap solutions.
+  // α-LP apparatus.
+  private Variable alphaVar;
+  private Dictionary<Device, Constraint> deviceAlpha = new();
+  // poolsByResource lets us compute per-resource max amount each tick
+  // (for normalizing pool α-coefficients).
+  private Dictionary<Resource, List<Pool>> poolsByResource = new();
+
+  // Coefficient floor for pool α-fairness — keeps LP coefficients away
+  // from GLOP's tolerance floor (~1e-6) when pool amounts span widely
+  // within a resource.
   private const double FairnessFloor = 0.1;
 
-  private Dictionary<Resource, Variable> zVars;
-  private Dictionary<Resource, List<Pool>> poolsByResource;
-  private Constraint costPinConstraint;
-  private Dictionary<Pool, Constraint> fairConstraints;
-
-  // Cost weights for the post-pinning drain-min phase. Uniform `Epsilon`
-  // is the tie-breaking minimum; `DrainPriorityStep` makes lower-priority
-  // pools more expensive (so high-priority pools drain first). Caller-set
-  // `drainCosts` are added on top of both.
-  private const double DefaultDrainEpsilon = 1e-6;
-  private const double DrainPriorityStep = 1.0;
+  // Bound below which a value counts as "zero" for tightness checks.
+  private const double Epsilon = 1e-9;
 
   // ── Public methods ───────────────────────────────────────────────────
 
@@ -220,6 +225,10 @@ public class ResourceSolver {
     parent.children.Add(child);
   }
 
+  // Per-resource staging modifier. Nonzero costs push the corresponding
+  // resource into a later DrainPriority class than its node would
+  // otherwise belong to. Currently no callers set non-zero costs; kept
+  // for API compatibility.
   public void SetDrainCost(Resource resource, double cost) {
     drainCosts[resource] = cost;
   }
@@ -229,23 +238,7 @@ public class ResourceSolver {
   public IEnumerable<Node> ActiveNodes() => nodes.Where(n => !n.Jettisoned);
 
   // ── Reach ────────────────────────────────────────────────────────────
-  //
-  // Static topology query: which nodes / buffers can supply `resource` to
-  // `from`? Mirrors the flow-direction semantics the LP enforces:
-  //
-  //   - Edges with a non-null AllowedResources that doesn't contain
-  //     `resource` are skipped entirely.
-  //   - Jettisoned nodes are excluded from the visited set.
-  //   - On a non-UpOnly edge, supply flows in either direction — both
-  //     ends of the edge are reachable from each other.
-  //   - On an UpOnly edge for `resource`, the LP clamps flow to ≤ 0
-  //     (i.e. only child→parent). So Parent can still reach Child
-  //     (Child supplies Parent), but Child cannot reach Parent
-  //     (Parent can't supply Child).
-  //
-  // Used by NovaEngineTopic to compute per-engine fuel pools without
-  // running the LP — same answer the solver would give if you isolated
-  // one engine and looked at which buffers drained.
+
   public HashSet<Node> ReachableNodes(Node from, Resource resource) {
     var visited = new HashSet<Node>();
     if (from == null || from.Jettisoned) return visited;
@@ -289,93 +282,276 @@ public class ResourceSolver {
 
     ResetPerTickBounds();
 
-    // Device priority loop. At each priority, maximize sum of activities
-    // and pin the optimum so subsequent (lower) priorities can't regress it.
-    var devicePriorities = new SortedSet<Priority>(
-      nodes.SelectMany(n => n.devices).Select(d => d.priority));
+    // Pinned-entity tracking. Pinning sets a Variable's bounds to a
+    // single value; once pinned, the entity's flow stays fixed through
+    // the rest of this Solve.
+    var pinnedDevices = new HashSet<Device>();
+    var pinnedPools = new HashSet<Pool>();
+
+    // Outer loop: device priorities, descending (Critical first).
+    var devicePriorities = nodes.SelectMany(n => n.devices)
+                                .Select(d => d.priority)
+                                .Distinct()
+                                .OrderBy(p => (int)p)
+                                .ToList();
 
     foreach (var devPri in devicePriorities) {
-      lpSolver.Maximize(SumDeviceActivity(devPri));
-      if (lpSolver.Solve() != Solver.ResultStatus.OPTIMAL) {
-        ExtractResults();
+      var devicesAtPri = nodes.SelectMany(n => n.devices)
+        .Where(d => d.priority == devPri
+                 && !pinnedDevices.Contains(d)
+                 && !d.node.Jettisoned
+                 && d.Demand > Epsilon)
+        .ToList();
+
+      // Phase A: max α for device satisfaction at this priority. Only
+      // device-α-fairness is active (pool fairness is Phase B's job).
+      // Pool supplies are NOT pinned here — Phase B redistributes them
+      // fairly subject to the activities pinned by Phase A.
+      if (devicesAtPri.Count > 0) {
+        IterateDeviceAlpha(devicesAtPri, pinnedDevices);
+      }
+
+      // Phase B: max β for pool drain fairness, sub-stepped by pool
+      // DrainPriority. Devices are now pinned for this priority; pool
+      // drains follow conservation, but among pools at the same DP that
+      // share a resource, β-maximin enforces proportional drain.
+      //
+      // High-DP pools drain first; if they satisfy demand, low-DP pools
+      // get pinned at zero on a subsequent round (their β-LP returns
+      // β=0 with no slack).
+      var drainPriorities = pools
+        .Where(p => !pinnedPools.Contains(p) && !p.Node.Jettisoned)
+        .Select(p => p.DrainPriority)
+        .Distinct()
+        .OrderByDescending(dp => dp)
+        .ToList();
+
+      foreach (var dp in drainPriorities) {
+        var poolsAtDp = pools
+          .Where(p => p.DrainPriority == dp
+                   && !pinnedPools.Contains(p)
+                   && !p.Node.Jettisoned
+                   && p.MaxSupplyRate > Epsilon)
+          .ToList();
+
+        if (poolsAtDp.Count == 0) continue;
+
+        IteratePoolBeta(poolsAtDp, pinnedPools);
+      }
+    }
+  }
+
+  // Phase A: maximize device-side α. Iteratively pin devices that hit
+  // their demand cap and re-solve for the residual. Pool variables are
+  // free during this phase — supply gets distributed however the LP
+  // basis picks. Phase B re-distributes pools fairly afterward.
+  //
+  // Solution capture pattern: GLOP invalidates its basis on any bound
+  // mutation, after which Variable.SolutionValue() returns 0 until the
+  // next Solve. We snapshot values immediately after each Solve and
+  // call ExtractResults while the basis is fresh, then mutate.
+  private void IterateDeviceAlpha(List<Device> activeDevices,
+      HashSet<Device> pinnedDevices) {
+
+    var devs = new List<Device>(activeDevices);
+    int maxIter = devs.Count + 1;
+
+    for (int iter = 0; iter < maxIter; iter++) {
+      if (devs.Count == 0) return;
+
+      DeactivateAllAlphaConstraints();
+      foreach (var d in devs) {
+        var c = deviceAlpha[d];
+        c.SetCoefficient(alphaVar, -d.Demand);
+        c.SetBounds(0, double.PositiveInfinity);
+      }
+
+      // Objective: max α + ε × Σ activity. The α term is the primary
+      // max-min fairness target. The small ε-weighted sum fills
+      // activities up to their physical UBs in the slack region — so
+      // when one device is supply-blocked (forces α* = 0), the others
+      // still get pushed to their demand cap rather than left at the
+      // basis-arbitrary lower bound.
+      var obj = new LinearExpr() + alphaVar;
+      foreach (var d in devs) obj += d.Var * 1e-3;
+      lpSolver.Maximize(obj);
+      var status = lpSolver.Solve();
+
+      if (status != Solver.ResultStatus.OPTIMAL) {
+        foreach (var d in devs) {
+          d.Var.SetBounds(0, 0);
+          d.Activity = 0;
+          pinnedDevices.Add(d);
+        }
+        DeactivateAllAlphaConstraints();
         return;
       }
-      // Snapshot the LP solution into Activity / Rate before mutating the
-      // pin bounds. SetBounds on a Constraint invalidates the GLOP basis,
-      // which makes Variable.SolutionValue() return 0 until the LP is
-      // re-solved — even if no actual change to the optimum is required.
+
+      var alphaStar = alphaVar.SolutionValue();
+      var devValues = new Dictionary<Device, double>(devs.Count);
+      foreach (var d in devs) devValues[d] = d.Var.SolutionValue();
+
+      // Capture LP solution into Device.Activity / Buffer.Rate before
+      // mutating. (Buffer.Rate captured here is provisional; Phase B
+      // will overwrite with the fair distribution.)
       ExtractResults();
-      var aStar = lpSolver.Objective().Value();
-      if (aStar > 1e-9)
-        devicePin[(int)devPri].SetBounds(aStar - 1e-9, double.PositiveInfinity);
+
+      if (alphaStar >= 1.0 - Epsilon) {
+        foreach (var d in devs) {
+          d.Var.SetBounds(devValues[d], devValues[d]);
+          pinnedDevices.Add(d);
+        }
+        DeactivateAllAlphaConstraints();
+        return;
+      }
+
+      // α < 1: find devices at their physical UB. Pin those, recurse on
+      // the rest.
+      var bottlenecks = new List<Device>();
+      foreach (var d in devs) {
+        var ub = Math.Min(d.Demand, d.MaxActivity);
+        if (devValues[d] >= ub - Epsilon) bottlenecks.Add(d);
+      }
+
+      if (bottlenecks.Count == 0) {
+        // Conservation-bound — supply can't satisfy demand. Pin all at
+        // current LP values.
+        foreach (var d in devs) {
+          d.Var.SetBounds(devValues[d], devValues[d]);
+          pinnedDevices.Add(d);
+        }
+        DeactivateAllAlphaConstraints();
+        return;
+      }
+
+      foreach (var d in bottlenecks) {
+        d.Var.SetBounds(devValues[d], devValues[d]);
+        pinnedDevices.Add(d);
+      }
+      devs.RemoveAll(d => bottlenecks.Contains(d));
     }
 
-    // Phase B: drain minimization. With all device activities pinned,
-    // minimize total buffer drain. Pool weights: high-DrainPriority pools
-    // are cheap (drain first); same-DP pools at same cost (LP picks based
-    // on basis). FillVar is uncosted, so degenerate (supply=X, fill=X)
-    // collapses to (0, 0) — the asymmetry is what eliminates same-pool
-    // and cross-pool sloshing.
-    //
-    // If drain-min returns ABNORMAL — typical when the drain gradient is
-    // below GLOP's tolerance, e.g. fuel cells with µL/s reactant flow
-    // whose pool weights are ~1e-6 × ~1e-4 — we keep the priority-loop
-    // values already captured above. The drain-min only refines tie-breaks
-    // and produces no useful information when the gradient is degenerate.
-    lpSolver.Minimize(drainCostExpr ?? new LinearExpr());
-    if (lpSolver.Solve() != Solver.ResultStatus.OPTIMAL) return;
-    var costStar = lpSolver.Objective().Value();
-    ExtractResults();
+    // Iteration cap fallback.
+    foreach (var d in devs) {
+      d.Var.SetBounds(d.Activity, d.Activity);
+      pinnedDevices.Add(d);
+    }
+    DeactivateAllAlphaConstraints();
+  }
 
-    // Phase C: fair distribution. Among solutions with the minimum drain
-    // cost, pick the one that distributes drain proportionally to the
-    // remaining contents in each pool — so symmetric same-priority pools
-    // (asparagus side tanks, etc.) drain in lockstep instead of the LP
-    // arbitrarily picking one to drain first based on the simplex basis.
-    //
-    // Per resource: minimize z_r subject to drain_p ≤ z_r * (amount_p /
-    // maxAmount_r) for each pool p in resource r. At the optimum the
-    // binding pools all have equal drain/amount ratios — equal time-to-
-    // empty. Normalizing by maxAmount_r keeps the z coefficient inside
-    // GLOP's working envelope even for MJ-scale battery pools.
-    //
-    // costPinConstraint locks the drain cost at costStar (1e-9 slack so
-    // GLOP can move off the existing vertex). The objective is the sum
-    // of all active z's — each minimizes independently within its
-    // resource since cross-resource drain isn't coupled by demand.
-    if (zVars.Count == 0) return;
+  // Phase B: maximize pool-side β at one DrainPriority class. Active
+  // devices are already pinned by Phase A; pool drains are determined
+  // up to the slack region inside conservation. β-maximin enforces the
+  // most-balanced distribution: supply_p ≥ β × normalized_amount_p,
+  // max β. Iterates with bottleneck handling — pools at MaxSupplyRate
+  // get pinned and the residual demand is shared among the rest.
+  private void IteratePoolBeta(List<Pool> activePools,
+      HashSet<Pool> pinnedPools) {
 
-    costPinConstraint.SetBounds(0, costStar + 1e-9);
+    var pls = new List<Pool>(activePools);
+    int maxIter = pls.Count + 1;
 
-    var fairObj = new LinearExpr();
-    bool anyActive = false;
-    foreach (var kvp in poolsByResource) {
-      if (!zVars.TryGetValue(kvp.Key, out var z)) continue;
-      double maxAmount = 0;
-      foreach (var pool in kvp.Value) {
-        var a = pool.TotalAmount;
-        if (a > maxAmount) maxAmount = a;
-      }
-      if (maxAmount < 1e-9) continue;
+    for (int iter = 0; iter < maxIter; iter++) {
+      if (pls.Count == 0) return;
 
-      foreach (var pool in kvp.Value) {
-        var amount = pool.TotalAmount;
-        if (amount > 1e-9) {
-          var normalized = Math.Max(amount / maxAmount, FairnessFloor);
-          fairConstraints[pool].SetCoefficient(z, -normalized);
-          fairConstraints[pool].SetBounds(double.NegativeInfinity, 0);
+      DeactivateAllAlphaConstraints();
+
+      // Per-resource max among active pools, for normalization.
+      var maxByResource = new Dictionary<Resource, double>();
+      foreach (var p in pls) {
+        var amt = p.TotalAmount;
+        if (amt > Epsilon) {
+          if (!maxByResource.TryGetValue(p.Resource, out var ex) || amt > ex)
+            maxByResource[p.Resource] = amt;
         }
       }
-      fairObj += z;
-      anyActive = true;
-    }
 
-    if (!anyActive) return;
+      foreach (var p in pls) {
+        var amt = p.TotalAmount;
+        if (amt < Epsilon) continue;
+        if (!maxByResource.TryGetValue(p.Resource, out var max) || max < Epsilon) continue;
+        var norm = Math.Max(amt / max, FairnessFloor);
+        var c = p.AlphaConstraint;
+        c.SetCoefficient(alphaVar, -norm);
+        c.SetBounds(0, double.PositiveInfinity);
+      }
 
-    lpSolver.Minimize(fairObj);
-    if (lpSolver.Solve() == Solver.ResultStatus.OPTIMAL) {
+      lpSolver.Maximize(alphaVar);
+      var status = lpSolver.Solve();
+
+      if (status != Solver.ResultStatus.OPTIMAL) {
+        foreach (var p in pls) {
+          p.SupplyVar.SetBounds(0, 0);
+          foreach (var t in p.Tanks) t.Rate = 0;
+          pinnedPools.Add(p);
+        }
+        DeactivateAllAlphaConstraints();
+        return;
+      }
+
+      var betaStar = alphaVar.SolutionValue();
+      var poolValues = new Dictionary<Pool, double>(pls.Count);
+      foreach (var p in pls) poolValues[p] = p.SupplyVar.SolutionValue();
+
       ExtractResults();
+
+      // If β-LP determined no further drain is feasible, β* = 0 and
+      // all active pools are pinned at zero. (Happens when conservation
+      // says total drain at this DP is zero — e.g. high-priority pools
+      // have already covered demand.)
+      if (betaStar < Epsilon) {
+        foreach (var p in pls) {
+          p.SupplyVar.SetBounds(poolValues[p], poolValues[p]);
+          pinnedPools.Add(p);
+        }
+        DeactivateAllAlphaConstraints();
+        return;
+      }
+
+      // Pools at MaxSupplyRate are bottlenecked physically; pin and
+      // recurse on the rest. If nothing is at max, the conservation
+      // sum is what bounds β — pin everything at fair share and exit.
+      var bottlenecks = new List<Pool>();
+      foreach (var p in pls) {
+        if (poolValues[p] >= p.MaxSupplyRate - Epsilon && p.MaxSupplyRate > Epsilon)
+          bottlenecks.Add(p);
+      }
+
+      if (bottlenecks.Count == 0) {
+        foreach (var p in pls) {
+          p.SupplyVar.SetBounds(poolValues[p], poolValues[p]);
+          pinnedPools.Add(p);
+        }
+        DeactivateAllAlphaConstraints();
+        return;
+      }
+
+      foreach (var p in bottlenecks) {
+        p.SupplyVar.SetBounds(poolValues[p], poolValues[p]);
+        pinnedPools.Add(p);
+      }
+      pls.RemoveAll(p => bottlenecks.Contains(p));
     }
+
+    // Iteration cap fallback.
+    foreach (var p in pls) {
+      double sup = 0;
+      foreach (var t in p.Tanks) sup -= t.Rate;
+      if (sup < 0) sup = 0;
+      p.SupplyVar.SetBounds(sup, sup);
+      pinnedPools.Add(p);
+    }
+    DeactivateAllAlphaConstraints();
+  }
+
+  // Wide-bound all α-fairness constraints (devices + pools). Called at
+  // the start of each phase iteration to guarantee a clean slate.
+  private void DeactivateAllAlphaConstraints() {
+    foreach (var c in deviceAlpha.Values)
+      c.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
+    foreach (var p in pools)
+      if (p.AlphaConstraint != null)
+        p.AlphaConstraint.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
   }
 
   // ── Topology finalization ────────────────────────────────────────────
@@ -421,6 +597,7 @@ public class ResourceSolver {
 
   private void BuildPools() {
     pools.Clear();
+    poolsByResource.Clear();
     foreach (var node in nodes) {
       var byResource = new Dictionary<Resource, Pool>();
       foreach (var buffer in node.buffers) {
@@ -432,11 +609,13 @@ public class ResourceSolver {
           };
           byResource[buffer.Resource] = pool;
           pools.Add(pool);
+          if (!poolsByResource.TryGetValue(pool.Resource, out var list))
+            poolsByResource[pool.Resource] = list = new List<Pool>();
+          list.Add(pool);
         }
         pool.Tanks.Add(buffer);
       }
     }
-    maxDrainPriority = pools.Count > 0 ? pools.Max(p => p.DrainPriority) : 0;
   }
 
   private void BuildFlowVars(Dictionary<Node, HashSet<Resource>> nodeResources) {
@@ -476,6 +655,11 @@ public class ResourceSolver {
   private void BuildLP() {
     lpSolver = Solver.CreateSolver("GLOP");
 
+    // The α scalar. Bounded above by a generous finite cap to keep
+    // GLOP's pivot numerics happy; α should always settle in [0, ~few]
+    // in normal operation.
+    alphaVar = lpSolver.MakeNumVar(0, 1e6, "alpha");
+
     // Device variables.
     int di = 0;
     foreach (var node in nodes)
@@ -499,14 +683,13 @@ public class ResourceSolver {
         $"flow_{fv.Parent.id}_{fv.Child.id}_{fv.Resource.Abbreviation}_{fi++}");
     }
 
-    // Conservation equality constraints (RHS reset per tick to 0,0 since
-    // we no longer accumulate fixedSupply across passes).
+    // Conservation equality constraints.
     foreach (var entry in conservationEntries)
       entry.Eq = lpSolver.MakeConstraint(0, 0,
         $"Cons_{entry.Node.id}_{entry.Resource.Abbreviation}");
 
     // Wire device input (consumption, -maxRate) and output (production,
-    // +maxRate) coefficients. Topology-constant.
+    // +maxRate) into conservation rows. Topology-constant.
     foreach (var node in nodes)
       foreach (var device in node.devices) {
         foreach (var (res, maxRate) in device.inputs) {
@@ -540,9 +723,7 @@ public class ResourceSolver {
         childEntry.Eq.SetCoefficient(fv.Var, 1);
     }
 
-    // Parent constraints: device.activity ≤ parent.activity. One-way only —
-    // alternator-on-engine: alt is bounded by engine, but engine is free
-    // to be at full throttle even when alt's output has nowhere to go.
+    // Parent constraints: device.activity ≤ parent.activity. One-way.
     foreach (var node in nodes)
       foreach (var device in node.devices) {
         if (device.parent == null) continue;
@@ -552,75 +733,32 @@ public class ResourceSolver {
         c.SetCoefficient(device.parent.Var, -1);
       }
 
-    // Pre-allocate sum-pin constraints (one per device priority level).
-    // Coefficients are 1 on every device of that priority — topology-constant.
-    // Per-tick we toggle bounds (-inf,+inf for inactive, [lb,+inf] for active).
-    devicePin = new Constraint[PriorityCount];
-    for (int i = 0; i < PriorityCount; i++) {
-      var pri = (Priority)i;
-      devicePin[i] = lpSolver.MakeConstraint(double.NegativeInfinity, double.PositiveInfinity,
-        $"PinSat_{pri}");
-      foreach (var node in nodes)
-        foreach (var device in node.devices)
-          if (device.priority == pri)
-            devicePin[i].SetCoefficient(device.Var, 1);
-    }
-
-    // Pre-build the drain cost objective expression. Per-pool weight =
-    // Epsilon (uniform tie-breaker) + (MaxDP − DP) × Step (staging order)
-    // + drainCosts[res] (caller override). FillVar is intentionally NOT
-    // costed — that asymmetry is what prevents simultaneous drain+fill at
-    // the same pool and cross-pool sloshing.
-    //
-    // costPinConstraint mirrors drainCostExpr's coefficients so Phase C
-    // can pin the drain cost at its minimum (set per-tick after Phase B).
-    if (pools.Count > 0) {
-      drainCostExpr = new LinearExpr();
-      costPinConstraint = lpSolver.MakeConstraint(0, double.PositiveInfinity, "CostPin");
-      foreach (var pool in pools) {
-        var dc = drainCosts.TryGetValue(pool.Resource, out var c) ? c : 0;
-        var weight = DefaultDrainEpsilon
-                     + (maxDrainPriority - pool.DrainPriority) * DrainPriorityStep
-                     + dc;
-        drainCostExpr += pool.SupplyVar * weight;
-        costPinConstraint.SetCoefficient(pool.SupplyVar, weight);
-      }
-    }
-
-    // Pre-allocate fair-distribution apparatus, one zVar per multi-pool
-    // resource. Single-pool resources need no fairness (their drain is
-    // already determined by demand + conservation). The SupplyVar
-    // coefficient on each fair constraint is fixed at 1; the z
-    // coefficient is set per-tick during Phase C, normalized by the
-    // resource's max amount so the LP coefficient stays in [-1, 0].
-    poolsByResource = new Dictionary<Resource, List<Pool>>();
-    foreach (var pool in pools) {
-      if (!poolsByResource.TryGetValue(pool.Resource, out var list))
-        poolsByResource[pool.Resource] = list = new List<Pool>();
-      list.Add(pool);
-    }
-
-    zVars = new Dictionary<Resource, Variable>();
-    fairConstraints = new Dictionary<Pool, Constraint>();
-    foreach (var kvp in poolsByResource) {
-      if (kvp.Value.Count <= 1) continue;
-      zVars[kvp.Key] = lpSolver.MakeNumVar(0, double.PositiveInfinity,
-        $"z_{kvp.Key.Abbreviation}");
-      foreach (var pool in kvp.Value) {
+    // Pre-allocate device α-fairness constraints. One per device:
+    //   activity[d] - α × Demand[d] ≥ 0   (when active)
+    // Coefficient on activity is fixed at 1; coefficient on α and the
+    // bound are toggled per-iteration.
+    foreach (var node in nodes)
+      foreach (var device in node.devices) {
         var c = lpSolver.MakeConstraint(double.NegativeInfinity, double.PositiveInfinity,
-          $"Fair_{pool.Node.id}_{pool.Resource.Abbreviation}");
-        c.SetCoefficient(pool.SupplyVar, 1);
-        fairConstraints[pool] = c;
+          $"DevAlpha_{device.Var.Name()}");
+        c.SetCoefficient(device.Var, 1);
+        deviceAlpha[device] = c;
       }
+
+    // Pre-allocate pool α-fairness constraints. One per pool:
+    //   supply[p] - α × normalized_amount[p] ≥ 0   (when active)
+    foreach (var pool in pools) {
+      var c = lpSolver.MakeConstraint(double.NegativeInfinity, double.PositiveInfinity,
+        $"PoolAlpha_{pool.Node.id}_{pool.Resource.Abbreviation}");
+      c.SetCoefficient(pool.SupplyVar, 1);
+      pool.AlphaConstraint = c;
     }
   }
 
   // ── Per-tick reset ──────────────────────────────────────────────────
 
   private void ResetPerTickBounds() {
-    // Device UBs from current state. Demand is the per-tick LP target;
-    // MaxActivity is a separate cap (binary deploy/shadow toggle for
-    // solar). Jettisoned nodes pin everything at 0.
+    // Device UBs: clamped to min(Demand, MaxActivity), 0 if jettisoned.
     foreach (var node in nodes) {
       bool jett = node.Jettisoned;
       foreach (var device in node.devices) {
@@ -630,38 +768,22 @@ public class ResourceSolver {
       }
     }
 
-    // Pool supply + fill UBs from buffer state. Both always enabled.
+    // Pool supply + fill UBs from buffer state.
     foreach (var pool in pools) {
       pool.SupplyVar.SetBounds(0, pool.MaxSupplyRate);
       pool.FillVar.SetBounds(0, pool.MaxFillRate);
     }
 
-    // Conservation RHS resets to (0, 0) — single-pass solve, no committed
-    // accumulator carryover.
+    // Conservation RHS resets.
     foreach (var entry in conservationEntries)
       entry.Eq.SetBounds(0, 0);
 
-    // All sum-pin constraints inactive — populated as priority loop runs.
-    foreach (var pin in devicePin)
-      pin.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
-
-    // Fair-distribution apparatus inactive until Phase C.
-    if (costPinConstraint != null)
-      costPinConstraint.SetBounds(0, double.PositiveInfinity);
-    if (fairConstraints != null)
-      foreach (var c in fairConstraints.Values)
-        c.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
-  }
-
-  // ── Objective helpers ────────────────────────────────────────────────
-
-  private LinearExpr SumDeviceActivity(Priority priority) {
-    var expr = new LinearExpr();
-    foreach (var node in nodes)
-      foreach (var device in node.devices)
-        if (device.priority == priority)
-          expr += device.Var;
-    return expr;
+    // α-fairness constraints inactive — Solve activates per round.
+    foreach (var c in deviceAlpha.Values)
+      c.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
+    foreach (var pool in pools)
+      if (pool.AlphaConstraint != null)
+        pool.AlphaConstraint.SetBounds(double.NegativeInfinity, double.PositiveInfinity);
   }
 
   // ── Result extraction ────────────────────────────────────────────────
@@ -685,11 +807,11 @@ public class ResourceSolver {
       var totalAmount = pool.TotalAmount;
       foreach (var tank in pool.Tanks) {
         if (netRate > 0) {
-          var share = totalAmount > 1e-9 ? tank.Contents / totalAmount : 0;
+          var share = totalAmount > Epsilon ? tank.Contents / totalAmount : 0;
           tank.Rate = -netRate * share;
         } else if (netRate < 0) {
           var totalSpace = pool.Tanks.Sum(t => t.Capacity - t.Contents);
-          var share = totalSpace > 1e-9 ? (tank.Capacity - tank.Contents) / totalSpace : 0;
+          var share = totalSpace > Epsilon ? (tank.Capacity - tank.Contents) / totalSpace : 0;
           tank.Rate = -netRate * share;
         } else {
           tank.Rate = 0;
