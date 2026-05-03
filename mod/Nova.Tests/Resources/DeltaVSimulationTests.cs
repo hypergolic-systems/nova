@@ -346,6 +346,100 @@ public class DeltaVSimulationTests {
         $"Stage 0 dV must be finite positive, got {s0.DeltaV}");
   }
 
+  // Regression: a starved engine on a mismatched tank used to over-
+  // drain its surviving propellant for one or more iters when another
+  // engine on the same stage was still firing — staging demands are
+  // independent per-resource, so the unstuck demand kept allocating
+  // until that pool also emptied.
+  //
+  // VirtualVessel.Solve runs an iterative starvation pass after each
+  // staging solve: any consumer (Engine / Rcs) whose coupled inputs
+  // weren't all satisfied gets its demands zeroed and the staging
+  // system re-solved. Repeats until stable.
+  [TestMethod]
+  public void StarvedEngineDoesntOverdrainSurvivingPropellant() {
+    // Two engines on isolated sub-trees (up-only decouplers prevent
+    // cross-feed):
+    //   • Engine A: kerolox tank with MISMATCHED ratio — tiny RP-1
+    //     allotment (5L) but huge LOX (95L). Engine wants 2:3, so
+    //     RP-1 runs out long before LOX. After RP-1 empties, the
+    //     engine should starve and stop drawing ANY fuel.
+    //   • Engine B: own normal-ratio kerolox tank, long burn.
+    //
+    // Without the iterative starvation pass, A's LOX demand keeps
+    // allocating after RP-1 runs out (per-resource staging demands
+    // are independent). Engine B is still firing, so dV calc doesn't
+    // break on thrust=0 — and A's LOX over-drains for one iter at
+    // dt = MaxTickDt, potentially draining the entire tank. The
+    // mass-change credit then inflates dV way above physical reality.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+
+      // Engine A branch under an up-only decoupler — stops fuel from
+      // crossfeeding from tank B. Decoupler stays attached for the
+      // burn (no jettison stage).
+      (2u, "decA", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (3u, "tankA", (uint?)2u, 5.0, new List<VirtualComponent> {
+        new TankVolume {
+          Volume = 100, MaxRate = 10000,
+          Tanks = {
+            new Buffer { Resource = Resource.RP1, Capacity = 5, Contents = 5 },
+            new Buffer { Resource = Resource.LiquidOxygen, Capacity = 95, Contents = 95 },
+          },
+        },
+      }),
+      (4u, "engineA", (uint?)3u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 100, isp: 300),
+      }),
+
+      // Engine B branch — symmetric tank under its own up-only decoupler.
+      (5u, "decB", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (6u, "tankB", (uint?)5u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 500, contents: 500),
+      }),
+      (7u, "engineB", (uint?)6u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 100, isp: 300),
+      }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 4, 7 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.AreEqual(1, results.Count, "Stage 0 should produce a result");
+    var s0 = results[0];
+
+    Assert.IsTrue(s0.DeltaV > 0 && !double.IsNaN(s0.DeltaV) && !double.IsInfinity(s0.DeltaV),
+        $"Stage dV must be finite positive, got {s0.DeltaV}");
+
+    // Mass accounting (kg):
+    //   pod 5, decA 0, tankA 5, engineA 5, decB 0, tankB 5, engineB 5
+    //   → dry = 25 kg
+    //   tankA fuel = 5×0.8 + 95×1.2 = 4 + 114 = 118 kg
+    //   tankB fuel = 200×0.8 + 300×1.2 = 160 + 360 = 520 kg
+    //   start = 25 + 118 + 520 = 663 kg
+    //
+    // After the burn, with proper starvation handling:
+    //   • A burns 5 L RP-1 + stoichiometric 7.5 L LOX = 4 + 9 = 13 kg
+    //     consumed. A's tank retains 87.5 L LOX = 105 kg (stranded).
+    //   • B burns out fully = 520 kg consumed. tankB empty.
+    //   • end mass = 25 + 105 + 0 = 130 kg.
+    //
+    // Without the fix, A's stranded LOX over-drains and end mass
+    // collapses toward dry (25 kg) plus whatever B couldn't burn
+    // before its own stranded propellant boundary fires the thrust=0
+    // break. End mass well below 130.
+    Assert.IsTrue(s0.EndMass >= 125,
+        $"A's stranded LOX (~105 kg) must remain in the tank — " +
+        $"over-drain would push end mass below this floor. " +
+        $"Got {s0.EndMass:F1} kg");
+  }
+
   // Regression: in-flight stage activation triggers
   // ExtractParts → RebuildTopology on the remaining VirtualVessel.
   // After that rebuild, DeltaVSimulation must still produce a valid

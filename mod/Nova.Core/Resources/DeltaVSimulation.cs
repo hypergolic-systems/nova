@@ -96,21 +96,18 @@ public class DeltaVSimulation {
     int iterations = 0;
 
     while (iterations++ < MaxIterations) {
-      sim.Solve();
+      SolveWithStarvationIteration(sim);
 
       if (AllTiersSpent(triggerNodes, propellantResources)) break;
 
       var (thrust, massFlow) = ComputeThrustAndFlow(sim);
       if (thrust > Epsilon) { lastThrust = thrust; lastMassFlow = massFlow; }
 
-      // No engine producing thrust → no more dV is reachable, even if
-      // some buffer still has rate (e.g. coupled-input engine where
-      // one propellant emptied but the other keeps draining for a
-      // tick — the staging system's per-resource demands are
-      // independent, so the unstuck propellant continues even after
-      // the engine's effective output collapses to min(Activity)=0).
-      // Without this break the over-drain on the stranded propellant
-      // adds a NaN dV term (0 thrust / 0 massFlow → 0/0 ispEff).
+      // No engine producing thrust → no more dV is reachable. The
+      // starvation iteration above zeros demands for engines that
+      // can't fully fire, so this only catches the degenerate case
+      // where the stage genuinely has no thrust source (no engines
+      // activated, all engines starved, etc.).
       if (thrust <= Epsilon) break;
 
       // dt = horizon to the next staging-buffer event (a tank empties
@@ -122,9 +119,10 @@ public class DeltaVSimulation {
       staging.Tick(dt);
       var massEnd = staging.ActiveNodes().Sum(n => n.Mass());
 
-      // Belt-and-suspenders for the same NaN: if both thrust and
-      // massFlow somehow leak through as zero with a non-trivial mass
-      // change, skip the dV term rather than poison stageDeltaV.
+      // Belt-and-suspenders against div-by-zero: skip the dV term if
+      // thrust and massFlow somehow leak through as zero with a
+      // non-trivial mass change. Shouldn't happen given the thrust
+      // break above, but cheap to guard.
       if (massEnd > Epsilon && massStart > massEnd && massFlow > Epsilon) {
         var ispEff = thrust * 1000 / (G0 * massFlow);
         stageDeltaV += ispEff * G0 * Math.Log(massStart / massEnd);
@@ -143,6 +141,45 @@ public class DeltaVSimulation {
       };
     }
     return null;
+  }
+
+  // Maximum starvation re-solve passes per dV-burn iteration. Each
+  // pass either zeros at least one consumer or terminates, so the
+  // bound is O(consumers) but 8 covers any realistic vessel.
+  private const int MaxStarvationIters = 8;
+
+  // Solve the vessel and iteratively zero the staging demands of any
+  // Engine / Rcs whose coupled inputs weren't fully satisfied. Rerun
+  // staging until stable. Without this, a partially-starved
+  // coupled-input engine would let the unstuck propellants over-drain
+  // their tanks (per-resource staging demands are independent), which
+  // both wastes fuel in the simulation and can credit phantom dV via
+  // the mass-change calc.
+  //
+  // Lives in DeltaVSimulation rather than VirtualVessel so the dV
+  // simulator owns its own solver-iteration policy. The live in-flight
+  // path doesn't need this — engine flameout naturally drives Throttle
+  // to 0 within one frame, so over-drain is bounded by a single
+  // physics tick.
+  private static void SolveWithStarvationIteration(VirtualVessel sim) {
+    sim.Solve();
+    for (int iter = 0; iter < MaxStarvationIters; iter++) {
+      bool anyZeroed = false;
+      foreach (var engine in sim.AllComponents().OfType<Engine>()) {
+        if (engine.IsStarved) {
+          engine.ZeroDemands();
+          anyZeroed = true;
+        }
+      }
+      foreach (var rcs in sim.AllComponents().OfType<Rcs>()) {
+        if (rcs.IsStarved) {
+          rcs.ZeroDemands();
+          anyZeroed = true;
+        }
+      }
+      if (!anyZeroed) return;
+      sim.Systems.Staging.Solve();
+    }
   }
 
   private static bool AllTiersSpent(

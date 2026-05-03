@@ -65,6 +65,31 @@ public class Engine : VirtualComponent {
   // OnPreSolve can update Rate per index without a lookup.
   private List<StagingFlowSystem.Demand> demands;
 
+  internal IReadOnlyList<StagingFlowSystem.Demand> Demands => demands;
+
+  // True when this engine has Throttle > 0 but at least one of its
+  // (non-jettisoned) propellants couldn't be fully satisfied by the
+  // last staging solve. Per-resource demands are independent in
+  // StagingFlowSystem, so a partially-starved coupled-input engine
+  // would otherwise let the unstuck propellants over-drain their
+  // tanks for an iteration. VirtualVessel.Solve runs an outer loop
+  // that zeros starved engines' demands and re-solves until stable.
+  internal bool IsStarved {
+    get {
+      if (demands == null || Throttle <= 1e-12) return false;
+      foreach (var d in demands) {
+        if (d.Node.Jettisoned) continue;
+        if (d.Rate > 1e-12 && d.Satisfied < d.Rate - 1e-9) return true;
+      }
+      return false;
+    }
+  }
+
+  internal void ZeroDemands() {
+    if (demands == null) return;
+    foreach (var d in demands) d.Rate = 0;
+  }
+
   public void Initialize(double thrust, double isp,
       List<(Resource resource, double ratio)> propellants) {
     Thrust = thrust;

@@ -14,6 +14,24 @@ public class Rcs : VirtualComponent {
   // Per-propellant staging demands. Order matches Propellants.
   private List<StagingFlowSystem.Demand> demands;
 
+  internal IReadOnlyList<StagingFlowSystem.Demand> Demands => demands;
+
+  internal bool IsStarved {
+    get {
+      if (demands == null || Throttle <= 1e-12) return false;
+      foreach (var d in demands) {
+        if (d.Node.Jettisoned) continue;
+        if (d.Rate > 1e-12 && d.Satisfied < d.Rate - 1e-9) return true;
+      }
+      return false;
+    }
+  }
+
+  internal void ZeroDemands() {
+    if (demands == null) return;
+    foreach (var d in demands) d.Rate = 0;
+  }
+
   // Min activity across propellants — fraction of requested rate
   // delivered. Maps to the old `device.Satisfaction`.
   public double Satisfaction {
