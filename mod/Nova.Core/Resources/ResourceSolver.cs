@@ -306,6 +306,13 @@ public class ResourceSolver {
                                 .OrderBy(p => (int)p)
                                 .ToList();
 
+    // Phase A: all device priorities (Critical → Low). Pin device
+    // activities. Pool supplies stay free; Phase B redistributes them
+    // fairly subject to the activities pinned here. Importantly, all
+    // priorities run BEFORE any Phase B work — otherwise a high-
+    // priority round's anti-sloshing pin would squeeze the supply
+    // budget for lower-priority devices that haven't been processed
+    // yet, forcing them to zero.
     foreach (var devPri in devicePriorities) {
       var devicesAtPri = nodes.SelectMany(n => n.devices)
         .Where(d => d.priority == devPri
@@ -314,55 +321,48 @@ public class ResourceSolver {
                  && d.Demand > Epsilon)
         .ToList();
 
-      // Phase A: max α for device satisfaction at this priority. Only
-      // device-α-fairness is active (pool fairness is Phase B's job).
-      // Pool supplies are NOT pinned here — Phase B redistributes them
-      // fairly subject to the activities pinned by Phase A.
       if (devicesAtPri.Count > 0) {
         IterateDeviceAlpha(devicesAtPri, pinnedDevices);
       }
+    }
 
-      // Phase B: max β for pool drain fairness, sub-stepped by pool
-      // DrainPriority. Devices are now pinned for this priority; pool
-      // drains follow conservation, but among pools at the same DP that
-      // share a resource, β-maximin enforces proportional drain.
-      //
-      // High-DP pools drain first; if they satisfy demand, low-DP pools
-      // get pinned at zero on a subsequent round (their β-LP returns
-      // β=0 with no slack).
-      var drainPriorities = pools
-        .Where(p => !pinnedPools.Contains(p) && !p.Node.Jettisoned)
-        .Select(p => p.DrainPriority)
-        .Distinct()
-        .OrderByDescending(dp => dp)
+    // Phase B: pool fairness, sub-stepped by pool DrainPriority. All
+    // device activities are now pinned across all priorities; pool
+    // drains follow conservation. Per-DP descending: high-DP pools
+    // drain first; if they satisfy demand, low-DP pools get pinned at
+    // their conservation-required value (typically zero).
+    var drainPriorities = pools
+      .Where(p => !pinnedPools.Contains(p) && !p.Node.Jettisoned)
+      .Select(p => p.DrainPriority)
+      .Distinct()
+      .OrderByDescending(dp => dp)
+      .ToList();
+
+    foreach (var dp in drainPriorities) {
+      var poolsAtDp = pools
+        .Where(p => p.DrainPriority == dp
+                 && !pinnedPools.Contains(p)
+                 && !p.Node.Jettisoned
+                 && p.MaxSupplyRate > Epsilon)
         .ToList();
 
-      foreach (var dp in drainPriorities) {
-        var poolsAtDp = pools
-          .Where(p => p.DrainPriority == dp
-                   && !pinnedPools.Contains(p)
-                   && !p.Node.Jettisoned
-                   && p.MaxSupplyRate > Epsilon)
-          .ToList();
+      if (poolsAtDp.Count == 0) continue;
 
-        if (poolsAtDp.Count == 0) continue;
-
-        // Per-resource β. Conservation is per-(node, resource) — each
-        // resource's flow network is independent (no cross-resource
-        // coupling except through converter devices, whose activities
-        // were already pinned in Phase A). Solving each resource's β-LP
-        // independently means the binding resource (e.g. RP-1 with the
-        // tightest demand/supply ratio) doesn't cap fairness for slack-
-        // ier resources (e.g. LOX with more spare capacity).
-        var byResource = new Dictionary<Resource, List<Pool>>();
-        foreach (var p in poolsAtDp) {
-          if (!byResource.TryGetValue(p.Resource, out var list))
-            byResource[p.Resource] = list = new List<Pool>();
-          list.Add(p);
-        }
-        foreach (var group in byResource.Values) {
-          IteratePoolBeta(group, pinnedPools);
-        }
+      // Per-resource β. Conservation is per-(node, resource) — each
+      // resource's flow network is independent (no cross-resource
+      // coupling except through converter devices, whose activities
+      // were already pinned in Phase A). Solving each resource's β-LP
+      // independently means the binding resource (e.g. RP-1 with the
+      // tightest demand/supply ratio) doesn't cap fairness for slack-
+      // ier resources (e.g. LOX with more spare capacity).
+      var byResource = new Dictionary<Resource, List<Pool>>();
+      foreach (var p in poolsAtDp) {
+        if (!byResource.TryGetValue(p.Resource, out var list))
+          byResource[p.Resource] = list = new List<Pool>();
+        list.Add(p);
+      }
+      foreach (var group in byResource.Values) {
+        IteratePoolBeta(group, pinnedPools);
       }
     }
 
@@ -497,6 +497,21 @@ public class ResourceSolver {
       HashSet<Pool> pinnedPools) {
 
     var pls = new List<Pool>(activePools);
+
+    // Single-pool resource: no inter-pool fairness applies. Skip the
+    // max-β step (which would force supply to MaxSupplyRate, causing
+    // sloshing when conservation only needs less). Just run the
+    // anti-sloshing min-Σ-supply pass and pin the conservation-derived
+    // value. This is what makes "high-priority sides drain first,
+    // central tank stays still" actually work — central tank is the
+    // sole pool of its resource at DP=0, and we want it to drain only
+    // what conservation forces (typically zero, since pinned sides
+    // already feed all engines via up-only edges).
+    if (pls.Count == 1) {
+      AntiSloshSinglePool(pls, pinnedPools);
+      return;
+    }
+
     int maxIter = pls.Count + 1;
 
     for (int iter = 0; iter < maxIter; iter++) {
@@ -524,8 +539,14 @@ public class ResourceSolver {
         c.SetBounds(0, double.PositiveInfinity);
       }
 
-      // Step 1: max β.
+      // Step 1: max β. Force fill = 0 globally so β isn't inflated by
+      // sloshing — a high β would require huge supply, which without
+      // this constraint can be absorbed by fill cycling. Pin all fill
+      // vars to 0; restore their bounds in step 2 so legitimate
+      // production-into-buffer flows (alternator → battery, etc.)
+      // can re-emerge.
       alphaVar.SetBounds(0, 1e6);
+      foreach (var p in pools) p.FillVar.SetBounds(0, 0);
       lpSolver.Maximize(alphaVar);
       var status = lpSolver.Solve();
 
@@ -546,13 +567,13 @@ public class ResourceSolver {
         Log?.Invoke($"[Solver] Phase B β high: β*={betaStar:E2} iter={iter} (suspect unbounded; check tank MaxRate)");
       }
 
-      // Step 2: pin β at β*, min Σ supply over all pools. The sum
-      // includes pinned pools too — they appear as constants and don't
-      // change the optimization but it keeps the objective expression
-      // stable. This step picks the no-sloshing solution at β*.
+      // Step 2: pin β at β*, min DP-weighted Σ supply over all pools.
+      // Restore fill var bounds first (step 1 pinned them to 0). The
+      // weighting drives staging — high-DP pools drain first, low-DP
+      // residual.
       alphaVar.SetBounds(betaStar, betaStar);
-      var minSupplyObj = new LinearExpr();
-      foreach (var p in pools) minSupplyObj += p.SupplyVar;
+      foreach (var p in pools) p.FillVar.SetBounds(0, p.MaxFillRate);
+      var minSupplyObj = BuildDpWeightedSupplyObjective();
       lpSolver.Minimize(minSupplyObj);
       var status2 = lpSolver.Solve();
 
@@ -620,6 +641,60 @@ public class ResourceSolver {
     }
     DeactivateAllAlphaConstraints();
     alphaVar.SetBounds(0, 1e6);
+  }
+
+  // Single-pool variant: no inter-pool fairness; just DP-weighted min
+  // Σ supply (over all pools) so high-DrainPriority pools drain first
+  // and low-DP pools take residual. Used for single-pool resources at
+  // any DrainPriority. The DP-weight (low-DP expensive, high-DP cheap)
+  // is what makes "stage drains before core" work — without it, the
+  // LP picks an arbitrary split among pools whose conservation only
+  // constrains the sum.
+  private void AntiSloshSinglePool(List<Pool> pls, HashSet<Pool> pinnedPools) {
+    DeactivateAllAlphaConstraints();
+    alphaVar.SetBounds(0, 1e6);
+
+    var minSupplyObj = BuildDpWeightedSupplyObjective();
+    lpSolver.Minimize(minSupplyObj);
+    var status = lpSolver.Solve();
+
+    if (status != Solver.ResultStatus.OPTIMAL) {
+      Log?.Invoke($"[Solver] AntiSlosh non-OPTIMAL: status={status} resource={pls[0].Resource.Name}");
+      foreach (var p in pls) {
+        p.SupplyVar.SetBounds(0, 0);
+        foreach (var t in p.Tanks) t.Rate = 0;
+        pinnedPools.Add(p);
+      }
+      return;
+    }
+
+    var poolValues = new Dictionary<Pool, double>(pls.Count);
+    foreach (var p in pls) poolValues[p] = p.SupplyVar.SolutionValue();
+    ExtractResults();
+
+    foreach (var p in pls) {
+      p.SupplyVar.SetBounds(poolValues[p], poolValues[p]);
+      pinnedPools.Add(p);
+    }
+  }
+
+  // Build a DrainPriority-weighted sum-supply objective. Higher-DP
+  // pools get smaller coefficients (cheap to drain); lower-DP pools
+  // get larger coefficients (expensive). LP minimization prefers
+  // cheap → high-DP drains first; low-DP only takes residual. Same
+  // shape as the OLD drain-min phase weights but used here as the
+  // step-2 objective in both the multi-pool β-LP and the single-pool
+  // anti-slosh path.
+  private LinearExpr BuildDpWeightedSupplyObjective() {
+    var maxDP = 0;
+    foreach (var p in pools) if (p.DrainPriority > maxDP) maxDP = p.DrainPriority;
+
+    var obj = new LinearExpr();
+    foreach (var p in pools) {
+      var weight = (maxDP - p.DrainPriority) + 1;
+      obj += p.SupplyVar * weight;
+    }
+    return obj;
   }
 
   // Wide-bound all α-fairness constraints (devices + pools). Called at

@@ -53,10 +53,42 @@ public class VirtualVesselTests {
     };
   }
 
+  // Two-resource tank — kerolox-style 40% RP-1 + 60% LOX volumetric mix.
+  private static TankVolume MakeKeroloxTank(double volume, double maxRate = 10000) {
+    return new TankVolume {
+      Volume = volume,
+      MaxRate = maxRate,
+      Tanks = {
+        new Buffer { Resource = Resource.RP1, Capacity = volume * 0.4, Contents = volume * 0.4 },
+        new Buffer { Resource = Resource.LiquidOxygen, Capacity = volume * 0.6, Contents = volume * 0.6 },
+      },
+    };
+  }
+
+  private static Engine MakeKeroloxEngine(double thrust = 100, double isp = 300) {
+    var engine = new Engine();
+    engine.Initialize(thrust, isp, 0, new List<(Resource, double)> {
+      (Resource.RP1, 2),
+      (Resource.LiquidOxygen, 3),
+    });
+    return engine;
+  }
+
   private static Decoupler MakeDecoupler(int priority = 1, params string[] allowedResources) {
     var d = new Decoupler { Priority = priority };
     foreach (var r in allowedResources)
       d.AllowedResources.Add(Resource.Get(r));
+    return d;
+  }
+
+  // Asparagus-style: allowed resources flow up-only (child → parent).
+  private static Decoupler MakeUpOnlyDecoupler(int priority = 1, params string[] allowedResources) {
+    var d = new Decoupler { Priority = priority };
+    foreach (var r in allowedResources) {
+      var res = Resource.Get(r);
+      d.AllowedResources.Add(res);
+      d.UpOnlyResources.Add(res);
+    }
     return d;
   }
 
@@ -283,6 +315,143 @@ public class VirtualVesselTests {
       .First(t => vessel.GetComponents(2).Contains(t));
 
     Assert.IsTrue(coreTank.Tanks[0].Rate < -0.1, "Core tank should be draining when side tanks are empty");
+  }
+
+  [TestMethod]
+  public void AsparagusStaging_ThreeKeroloxEngines_CenterFedByUpFlow() {
+    // In-game repro: kerolox tanks (RP-1 + LOX in one TankVolume),
+    // 3 engines (center + 2 sides), each with their own kerolox tank.
+    // Up-only decouplers allow both fuels through. Center tank should
+    // not drain while sides have fuel.
+    var partDefs = new[] {
+      (1u, "pod", new uint[] { 2, 4, 6 }),
+      (2u, "coreTank", new uint[] { 3 }),
+      (3u, "centerEngine", Array.Empty<uint>()),
+      (4u, "decouplerL", new uint[] { 5 }),
+      (5u, "sideTankL", new uint[] { 8 }),
+      (6u, "decouplerR", new uint[] { 7 }),
+      (7u, "sideTankR", new uint[] { 9 }),
+      (8u, "sideEngineL", Array.Empty<uint>()),
+      (9u, "sideEngineR", Array.Empty<uint>()),
+    };
+
+    var vessel = new VirtualVessel();
+    vessel.AddPart(1, "pod", 0, new List<VirtualComponent>());
+    vessel.AddPart(2, "coreTank", 0, new List<VirtualComponent> { MakeKeroloxTank(2000) });
+    vessel.AddPart(3, "centerEngine", 0, new List<VirtualComponent> { MakeKeroloxEngine() });
+    vessel.AddPart(4, "decouplerL", 0, new List<VirtualComponent> { MakeUpOnlyDecoupler(1, "RP-1", "Liquid Oxygen") });
+    var sideTankLeft = MakeKeroloxTank(2000);
+    sideTankLeft.Tanks[0].Contents = 657;  // RP-1
+    sideTankLeft.Tanks[1].Contents = 986;  // LOX
+    vessel.AddPart(5, "sideTankL", 0, new List<VirtualComponent> { sideTankLeft });
+    vessel.AddPart(6, "decouplerR", 0, new List<VirtualComponent> { MakeUpOnlyDecoupler(1, "RP-1", "Liquid Oxygen") });
+    var sideTankRight = MakeKeroloxTank(2000);
+    sideTankRight.Tanks[0].Contents = 584;  // RP-1 (asymmetric)
+    sideTankRight.Tanks[1].Contents = 876;  // LOX (asymmetric)
+    vessel.AddPart(7, "sideTankR", 0, new List<VirtualComponent> { sideTankRight });
+    vessel.AddPart(8, "sideEngineL", 0, new List<VirtualComponent> { MakeKeroloxEngine() });
+    vessel.AddPart(9, "sideEngineR", 0, new List<VirtualComponent> { MakeKeroloxEngine() });
+    vessel.UpdatePartTree(BuildParentMap(partDefs));
+    vessel.InitializeSolver(0);
+
+    var coreTank = vessel.AllComponents().OfType<TankVolume>()
+      .First(t => vessel.GetComponents(2).Contains(t));
+    var sideTankL = vessel.AllComponents().OfType<TankVolume>()
+      .First(t => vessel.GetComponents(5).Contains(t));
+    var sideTankR = vessel.AllComponents().OfType<TankVolume>()
+      .First(t => vessel.GetComponents(7).Contains(t));
+    var engines = vessel.AllComponents().OfType<Engine>().ToList();
+
+    // Throttle sequence stresses warm-start. After each solve, check
+    // the asparagus invariant.
+    foreach (var throttle in new[] { 1.0, 0.4, 0.7, 0.2, 1.0, 0.5 }) {
+      foreach (var e in engines) e.Throttle = throttle;
+      vessel.Invalidate();
+      vessel.Solve();
+
+      foreach (var e in engines)
+        Assert.AreEqual(1.0, e.Satisfaction, 0.01,
+          $"throttle={throttle}: engine should be fully satisfied; got {e.Satisfaction}");
+
+      foreach (var b in coreTank.Tanks)
+        Assert.AreEqual(0, b.Rate, 0.01,
+          $"throttle={throttle}: core {b.Resource.Name} should not drain; got {b.Rate}");
+
+      // Asymmetric sides: drain rate should be proportional to current
+      // contents (max-min fairness). drain/amount equal across pools.
+      for (int i = 0; i < sideTankL.Tanks.Count; i++) {
+        var bL = sideTankL.Tanks[i];
+        var bR = sideTankR.Tanks[i];
+        var ratioL = -bL.Rate / bL.Contents;
+        var ratioR = -bR.Rate / bR.Contents;
+        Assert.AreEqual(ratioL, ratioR, 1e-3,
+          $"throttle={throttle}: {bL.Resource.Name} drain/amount must be equal across sides: L={bL.Rate}/{bL.Contents}={ratioL:E3}, R={bR.Rate}/{bR.Contents}={ratioR:E3}");
+      }
+    }
+  }
+
+  [TestMethod]
+  public void AsparagusStaging_ThreeEngines_CenterFedByUpFlow() {
+    // Three engines (center + 2 sides), each on its own tank node.
+    // High-DP side tanks should drain (proportional to amount); the
+    // single low-DP center tank should NOT drain — center engine is
+    // fed by up-flow from the sides via the up-only decoupler edges.
+    //
+    // Solves repeatedly with varying throttle: GLOP's warm-start
+    // re-uses the previous basis, and a basis-arbitrary pick from
+    // an earlier solve can persist into a later one. The asparagus
+    // invariant (core stays still, sides drain in lockstep) must
+    // hold across all of these.
+    var partDefs = new[] {
+      (1u, "pod", new uint[] { 2, 4, 6 }),
+      (2u, "coreTank", new uint[] { 3 }),
+      (3u, "centerEngine", Array.Empty<uint>()),
+      (4u, "decouplerL", new uint[] { 5 }),
+      (5u, "sideTankL", new uint[] { 8 }),
+      (6u, "decouplerR", new uint[] { 7 }),
+      (7u, "sideTankR", new uint[] { 9 }),
+      (8u, "sideEngineL", Array.Empty<uint>()),
+      (9u, "sideEngineR", Array.Empty<uint>()),
+    };
+
+    var vessel = new VirtualVessel();
+    vessel.AddPart(1, "pod", 0, new List<VirtualComponent>());
+    vessel.AddPart(2, "coreTank", 0, new List<VirtualComponent> { MakeTank(100, "RP-1", 100) });
+    vessel.AddPart(3, "centerEngine", 0, new List<VirtualComponent> { MakeEngine(100, 300, ("RP-1", 1)) });
+    vessel.AddPart(4, "decouplerL", 0, new List<VirtualComponent> { MakeDecoupler(1, "RP-1") });
+    vessel.AddPart(5, "sideTankL", 0, new List<VirtualComponent> { MakeTank(100, "RP-1", 100) });
+    vessel.AddPart(6, "decouplerR", 0, new List<VirtualComponent> { MakeDecoupler(1, "RP-1") });
+    vessel.AddPart(7, "sideTankR", 0, new List<VirtualComponent> { MakeTank(100, "RP-1", 100) });
+    vessel.AddPart(8, "sideEngineL", 0, new List<VirtualComponent> { MakeEngine(100, 300, ("RP-1", 1)) });
+    vessel.AddPart(9, "sideEngineR", 0, new List<VirtualComponent> { MakeEngine(100, 300, ("RP-1", 1)) });
+    vessel.UpdatePartTree(BuildParentMap(partDefs));
+    vessel.InitializeSolver(0);
+
+    var coreTank = vessel.AllComponents().OfType<TankVolume>()
+      .First(t => vessel.GetComponents(2).Contains(t));
+    var sideTankL = vessel.AllComponents().OfType<TankVolume>()
+      .First(t => vessel.GetComponents(5).Contains(t));
+    var sideTankR = vessel.AllComponents().OfType<TankVolume>()
+      .First(t => vessel.GetComponents(7).Contains(t));
+    var engines = vessel.AllComponents().OfType<Engine>().ToList();
+
+    // Throttle sequence stresses warm-start. After each solve, check
+    // the asparagus invariant.
+    foreach (var throttle in new[] { 1.0, 0.4, 0.7, 0.2, 1.0, 0.5 }) {
+      foreach (var e in engines) e.Throttle = throttle;
+      vessel.Invalidate();
+      vessel.Solve();
+
+      foreach (var e in engines)
+        Assert.AreEqual(1.0, e.Satisfaction, 0.01,
+          $"throttle={throttle}: engine should be fully satisfied; got {e.Satisfaction}");
+
+      Assert.AreEqual(0, coreTank.Tanks[0].Rate, 0.01,
+        $"throttle={throttle}: core tank should not drain while sides have fuel; got {coreTank.Tanks[0].Rate}");
+
+      Assert.AreEqual(sideTankL.Tanks[0].Rate, sideTankR.Tanks[0].Rate, 0.01,
+        $"throttle={throttle}: symmetric side tanks should drain equally: L={sideTankL.Tanks[0].Rate}, R={sideTankR.Tanks[0].Rate}");
+    }
   }
 
   [TestMethod]
