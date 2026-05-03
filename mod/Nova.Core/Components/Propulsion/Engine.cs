@@ -17,36 +17,20 @@ public class Engine : VirtualComponent {
   public bool Ignited;
   public bool Flameout;
 
-  // Effective throttle achieved this tick — Throttle scaled down by
-  // the worst-case per-propellant satisfaction. When all propellants
-  // are fully reachable: NormalizedOutput == Throttle. When one
-  // propellant is starved (e.g. RP-1 reach empty): the engine effective
-  // output is gated by the bottleneck — NormalizedOutput == Throttle ×
-  // min(d.Activity).
-  //
-  // Note this means non-bottleneck propellants are slightly over-drained
-  // for one tick when a bottleneck arises (we requested at full Throttle
-  // but only delivered min Activity worth). The over-draw self-corrects
-  // as MaxTickDt shrinks toward the bottleneck and we re-solve.
-  public double NormalizedOutput {
-    get {
-      if (demands == null || demands.Count == 0) return 0;
-      double minAct = 1.0;
-      foreach (var d in demands) if (d.Activity < minAct) minAct = d.Activity;
-      return Throttle * minAct;
-    }
-  }
+  // Effective throttle achieved this tick. Equals consumer.Activity,
+  // which the staging system computes as Throttle × min(per-propellant
+  // satisfaction). When all propellants are fully supplied, Activity ==
+  // Throttle and NormalizedOutput == Throttle. When any propellant is
+  // starved, the staging system's coupling pass scales Activity down
+  // and the unstuck propellants stop being allocated — so the engine
+  // doesn't over-drain anything, even when other engines on the same
+  // stage continue to fire.
+  public double NormalizedOutput => consumer?.Activity ?? 0;
 
-  // Min activity across propellants — fraction of *requested* throttle
-  // we actually achieved. Equal to 1.0 when fully satisfied.
-  public double Satisfaction {
-    get {
-      if (demands == null || demands.Count == 0) return 0;
-      double minAct = 1.0;
-      foreach (var d in demands) if (d.Activity < minAct) minAct = d.Activity;
-      return minAct;
-    }
-  }
+  // Fraction of requested Throttle actually achieved (1.0 = fully
+  // supplied; 0 = fully starved). Useful for telemetry that wants
+  // satisfaction independent of the throttle setting.
+  public double Satisfaction => Throttle > 1e-12 ? (consumer?.Activity ?? 0) / Throttle : 0;
 
   public class Propellant {
     public Resource Resource;
@@ -61,34 +45,10 @@ public class Engine : VirtualComponent {
   private double massFlow; // kg/s at full throttle
   private double batchMass; // kg per recipe batch
 
-  // Per-propellant staging demands. Order matches Propellants order so
-  // OnPreSolve can update Rate per index without a lookup.
-  private List<StagingFlowSystem.Demand> demands;
-
-  internal IReadOnlyList<StagingFlowSystem.Demand> Demands => demands;
-
-  // True when this engine has Throttle > 0 but at least one of its
-  // (non-jettisoned) propellants couldn't be fully satisfied by the
-  // last staging solve. Per-resource demands are independent in
-  // StagingFlowSystem, so a partially-starved coupled-input engine
-  // would otherwise let the unstuck propellants over-drain their
-  // tanks for an iteration. VirtualVessel.Solve runs an outer loop
-  // that zeros starved engines' demands and re-solves until stable.
-  internal bool IsStarved {
-    get {
-      if (demands == null || Throttle <= 1e-12) return false;
-      foreach (var d in demands) {
-        if (d.Node.Jettisoned) continue;
-        if (d.Rate > 1e-12 && d.Satisfied < d.Rate - 1e-9) return true;
-      }
-      return false;
-    }
-  }
-
-  internal void ZeroDemands() {
-    if (demands == null) return;
-    foreach (var d in demands) d.Rate = 0;
-  }
+  // Coupled-input consumer registered with the staging system. One
+  // input per propellant; the staging solver couples them natively
+  // (min Activity across inputs gates whether the engine fires at all).
+  internal StagingFlowSystem.Consumer consumer;
 
   public void Initialize(double thrust, double isp,
       List<(Resource resource, double ratio)> propellants) {
@@ -138,22 +98,20 @@ public class Engine : VirtualComponent {
     return clone;
   }
 
-  // The staging node this engine's demands attach to. Set once by
-  // OnBuildSystems and cleared whenever the topology is rebuilt.
-  // Surfaced for telemetry — `NovaEngineTopic` walks reach from here
-  // to compute the engine's fuel pool.
+  // The staging node this engine sits on. Set once by OnBuildSystems
+  // and cleared whenever the topology is rebuilt. Surfaced for
+  // telemetry — `NovaEngineTopic` walks reach from here to compute
+  // the engine's fuel pool.
   public StagingFlowSystem.Node Node { get; private set; }
 
   public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     Node = node;
-    demands = new List<StagingFlowSystem.Demand>(Propellants.Count);
+    consumer = systems.Staging.RegisterConsumer(node);
     foreach (var prop in Propellants)
-      demands.Add(systems.Staging.RegisterDemand(node, prop.Resource));
+      consumer.AddInput(prop.Resource, prop.MaxFlow);
   }
 
   public override void OnPreSolve() {
-    if (demands == null) return;
-    for (int i = 0; i < demands.Count; i++)
-      demands[i].Rate = Throttle * Propellants[i].MaxFlow;
+    if (consumer != null) consumer.Throttle = Throttle;
   }
 }

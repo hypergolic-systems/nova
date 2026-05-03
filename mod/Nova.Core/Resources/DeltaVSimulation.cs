@@ -96,7 +96,7 @@ public class DeltaVSimulation {
     int iterations = 0;
 
     while (iterations++ < MaxIterations) {
-      SolveWithStarvationIteration(sim);
+      sim.Solve();
 
       if (AllTiersSpent(triggerNodes, propellantResources)) break;
 
@@ -143,45 +143,6 @@ public class DeltaVSimulation {
       };
     }
     return null;
-  }
-
-  // Maximum starvation re-solve passes per dV-burn iteration. Each
-  // pass either zeros at least one consumer or terminates, so the
-  // bound is O(consumers) but 8 covers any realistic vessel.
-  private const int MaxStarvationIters = 8;
-
-  // Solve the vessel and iteratively zero the staging demands of any
-  // Engine / Rcs whose coupled inputs weren't fully satisfied. Rerun
-  // staging until stable. Without this, a partially-starved
-  // coupled-input engine would let the unstuck propellants over-drain
-  // their tanks (per-resource staging demands are independent), which
-  // both wastes fuel in the simulation and can credit phantom dV via
-  // the mass-change calc.
-  //
-  // Lives in DeltaVSimulation rather than VirtualVessel so the dV
-  // simulator owns its own solver-iteration policy. The live in-flight
-  // path doesn't need this — engine flameout naturally drives Throttle
-  // to 0 within one frame, so over-drain is bounded by a single
-  // physics tick.
-  private static void SolveWithStarvationIteration(VirtualVessel sim) {
-    sim.Solve();
-    for (int iter = 0; iter < MaxStarvationIters; iter++) {
-      bool anyZeroed = false;
-      foreach (var engine in sim.AllComponents().OfType<Engine>()) {
-        if (engine.IsStarved) {
-          engine.ZeroDemands();
-          anyZeroed = true;
-        }
-      }
-      foreach (var rcs in sim.AllComponents().OfType<Rcs>()) {
-        if (rcs.IsStarved) {
-          rcs.ZeroDemands();
-          anyZeroed = true;
-        }
-      }
-      if (!anyZeroed) return;
-      sim.Systems.Staging.Solve();
-    }
   }
 
   private static bool AllTiersSpent(

@@ -11,40 +11,16 @@ public class Rcs : VirtualComponent {
   public int ThrusterCount; // set by KSP module after counting transforms
   public double Throttle; // 0-1, aggregate from RCS solver
 
-  // Per-propellant staging demands. Order matches Propellants.
-  private List<StagingFlowSystem.Demand> demands;
+  // Coupled-input consumer registered with the staging system. Single
+  // input today (Hydrazine), but the same pattern handles future
+  // bipropellant RCS modules cleanly.
+  internal StagingFlowSystem.Consumer consumer;
 
-  internal IReadOnlyList<StagingFlowSystem.Demand> Demands => demands;
+  // Fraction of requested rate actually delivered (1.0 = full supply).
+  public double Satisfaction => Throttle > 1e-12 ? (consumer?.Activity ?? 0) / Throttle : 0;
 
-  internal bool IsStarved {
-    get {
-      if (demands == null || Throttle <= 1e-12) return false;
-      foreach (var d in demands) {
-        if (d.Node.Jettisoned) continue;
-        if (d.Rate > 1e-12 && d.Satisfied < d.Rate - 1e-9) return true;
-      }
-      return false;
-    }
-  }
-
-  internal void ZeroDemands() {
-    if (demands == null) return;
-    foreach (var d in demands) d.Rate = 0;
-  }
-
-  // Min activity across propellants — fraction of requested rate
-  // delivered. Maps to the old `device.Satisfaction`.
-  public double Satisfaction {
-    get {
-      if (demands == null || demands.Count == 0) return 0;
-      double minAct = 1.0;
-      foreach (var d in demands) if (d.Activity < minAct) minAct = d.Activity;
-      return minAct;
-    }
-  }
-
-  // Effective throttle achieved this tick (Throttle × Satisfaction).
-  public double NormalizedOutput => Throttle * Satisfaction;
+  // Effective throttle achieved this tick.
+  public double NormalizedOutput => consumer?.Activity ?? 0;
 
   public class Propellant {
     public Resource Resource;
@@ -97,14 +73,12 @@ public class Rcs : VirtualComponent {
       }
     }
 
-    demands = new List<StagingFlowSystem.Demand>(Propellants.Count);
+    consumer = systems.Staging.RegisterConsumer(node);
     foreach (var prop in Propellants)
-      demands.Add(systems.Staging.RegisterDemand(node, prop.Resource));
+      consumer.AddInput(prop.Resource, prop.MaxFlow);
   }
 
   public override void OnPreSolve() {
-    if (demands == null) return;
-    for (int i = 0; i < demands.Count; i++)
-      demands[i].Rate = Throttle * Propellants[i].MaxFlow;
+    if (consumer != null) consumer.Throttle = Throttle;
   }
 }

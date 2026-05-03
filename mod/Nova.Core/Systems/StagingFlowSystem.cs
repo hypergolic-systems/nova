@@ -125,22 +125,65 @@ public class StagingFlowSystem : BackgroundSystem {
     public HashSet<Resource> UpOnlyResources = new();
   }
 
-  // A consumer's request for one Topological resource at one node.
-  // Caller mutates `Rate` per tick before Solve; reads `Satisfied`
-  // after. `Activity = Satisfied / Rate ∈ [0, 1]`.
-  public class Demand {
+  // A consumer of Topological resources at one node. May have one or
+  // more coupled inputs (e.g. an engine wants RP-1 AND LOX in fixed
+  // ratios; if either is starved, the engine doesn't fire and consumes
+  // neither). Caller sets `Throttle` per tick (0..1, fraction of max
+  // capacity to attempt). After Solve, `Activity` reports the achieved
+  // fraction — equal to Throttle when fully supplied, less when
+  // bottlenecked, 0 when any input is fully starved.
+  //
+  // The solver's iterative coupling pass enforces the "all inputs or
+  // none" semantic natively: after each per-resource water-fill, any
+  // consumer with min-input-achievement < 1 gets its Activity scaled
+  // down by minAch, and the next pass re-runs at the lower rates.
+  // Converges to a fixed point in O(consumers) iterations.
+  public class Consumer {
+    public Node Node;
+
+    // 0..1. What fraction of max capacity to draw this tick. Set by
+    // caller before each Solve.
+    public double Throttle;
+
+    // 0..1, ≤ Throttle post-Solve. The achieved fraction after the
+    // staging system's coupling pass. Engine / Rcs / FuelCell-refill
+    // map their per-component "NormalizedOutput" / "Satisfaction"
+    // directly to this.
+    public double Activity { get; internal set; }
+
+    // Per-input declaration — order doesn't matter; coupling pulls
+    // the bottleneck across all of them.
+    internal List<(Resource Resource, double MaxRate)> Inputs = new();
+    // Per-iter water-fill output: how much rate this input actually
+    // got allocated. Indices parallel to Inputs.
+    internal List<double> Allocated = new();
+    // Demand objects fed to the per-resource water-fill — one per
+    // input. Rate gets reset each coupling iter to Activity × MaxRate.
+    internal List<Demand> InternalDemands = new();
+
+    public void AddInput(Resource resource, double maxRate) {
+      Inputs.Add((resource, maxRate));
+      Allocated.Add(0);
+      InternalDemands.Add(new Demand { Node = Node, Resource = resource });
+    }
+  }
+
+  // Internal water-fill unit. One per consumer-input. Rate is set
+  // per coupling-iter from `consumer.Activity × input.MaxRate`;
+  // Satisfied is the water-fill output. Not part of the public API
+  // anymore — callers use Consumer.
+  internal class Demand {
     public Node Node;
     public Resource Resource;
     public double Rate;
     public double Satisfied;
-    public double Activity => Rate > Epsilon ? Satisfied / Rate : 0;
   }
 
   // ── State ──────────────────────────────────────────────────────────
 
   private List<Node> nodes = new();
   private List<Edge> edges = new();
-  private List<Demand> demands = new();
+  private List<Consumer> consumers = new();
   private long nextNodeId;
   private readonly SimClock clock;
 
@@ -183,18 +226,29 @@ public class StagingFlowSystem : BackgroundSystem {
     foreach (var n in nodes) if (!n.Jettisoned) yield return n;
   }
 
-  // ── Demand registration ────────────────────────────────────────────
+  // ── Consumer registration ─────────────────────────────────────────
 
-  public Demand RegisterDemand(Node node, Resource resource, double rate = 0) {
-    var d = new Demand { Node = node, Resource = resource, Rate = rate };
-    demands.Add(d);
-    return d;
+  public Consumer RegisterConsumer(Node node) {
+    var c = new Consumer { Node = node };
+    consumers.Add(c);
+    return c;
   }
 
-  public void RemoveDemand(Demand d) => demands.Remove(d);
-  public void ClearDemands() => demands.Clear();
+  // Single-resource shorthand. Returns a Consumer with one input;
+  // existing tests / call sites that just want "this node demands X
+  // of resource R" stay terse. Activity reads back the same
+  // satisfaction fraction the old per-Demand .Activity reported.
+  public Consumer RegisterDemand(Node node, Resource resource, double rate) {
+    var c = RegisterConsumer(node);
+    c.AddInput(resource, rate);
+    c.Throttle = 1;
+    return c;
+  }
 
-  public IEnumerable<Demand> Demands => demands;
+  public void RemoveConsumer(Consumer c) => consumers.Remove(c);
+  public void ClearConsumers() => consumers.Clear();
+
+  public IEnumerable<Consumer> Consumers => consumers;
 
   // ── Reach ──────────────────────────────────────────────────────────
 
@@ -239,35 +293,90 @@ public class StagingFlowSystem : BackgroundSystem {
   // ── BackgroundSystem implementation ────────────────────────────────
 
   public override void Solve() {
-    // Re-baseline every buffer at the current clock UT, then zero
-    // its rate. The Rate setter would auto-rebaseline too, but
-    // doing it once via Refresh is clearer and avoids re-reading
-    // ContentsAt for the same buffer in the per-resource solve below.
+    // Re-baseline every buffer at the current clock UT once, before
+    // any iteration. Subsequent water-fill passes within Solve don't
+    // re-Refresh — clock hasn't moved, BaselineContents is stable.
     foreach (var n in nodes) {
       foreach (var b in n.Buffers) {
         b.Refresh(clock.UT);
-        b.Rate = 0;
       }
     }
-    foreach (var d in demands)
-      d.Satisfied = 0;
 
-    // Active demands: Topological resource, non-zero rate, node not
-    // jettisoned. Process resources separately — different resources
-    // never share pools, so they decompose trivially.
-    var activeDemands = demands.Where(d =>
-        d.Rate > Epsilon
-        && d.Resource.Domain == ResourceDomain.Topological
-        && !d.Node.Jettisoned)
-      .ToList();
-    if (activeDemands.Count == 0) return;
+    // Initial Activity guess: each consumer at full Throttle.
+    // Jettisoned consumers stay at 0 (they're gone from active flow).
+    foreach (var c in consumers)
+      c.Activity = c.Node.Jettisoned ? 0 : c.Throttle;
 
-    // Drain priorities, descending. We loop over the union of all
-    // distinct DPs across non-jettisoned nodes that have any buffer of
-    // any active resource — each DP round considers only pools at that
-    // level.
+    // Iterate water-fill + coupling check. Each pass either tightens
+    // at least one consumer's Activity (anyScaled = true) or
+    // terminates. O(consumers) iterations max; tight cap as a safety.
+    for (int iter = 0; iter < MaxCouplingIters; iter++) {
+      RunWaterFillPass();
+
+      // Coupling: each consumer's effective Activity is bottlenecked
+      // by its worst-supplied input. Scale Activity down to that
+      // floor and re-iterate so the unstuck inputs don't over-allocate.
+      bool anyScaled = false;
+      foreach (var c in consumers) {
+        if (c.Activity <= Epsilon) continue;
+        double minAch = 1.0;
+        for (int i = 0; i < c.Inputs.Count; i++) {
+          var requested = c.Activity * c.Inputs[i].MaxRate;
+          if (requested <= Epsilon) continue;
+          var ach = c.Allocated[i] / requested;
+          if (ach < minAch) minAch = ach;
+        }
+        if (minAch < 1.0 - Epsilon) {
+          c.Activity *= minAch;
+          anyScaled = true;
+        }
+      }
+      if (!anyScaled) break;
+    }
+
+    needsSolve = false;
+  }
+
+  // Coupling-iteration cap. Each pass either tightens a consumer's
+  // Activity or terminates, so the loop is bounded by the number of
+  // consumers in practice; 8 is a hard ceiling for runaway-iteration
+  // diagnostics.
+  private const int MaxCouplingIters = 8;
+
+  // One water-fill pass: zero buffer rates + per-input allocation,
+  // sync each consumer's per-input demand rate from its current
+  // Activity, then run the per-(DP, resource, component) water-fill.
+  // Per-input output (Allocated[i]) is what the coupling check reads.
+  private void RunWaterFillPass() {
+    // Zero buffer rates. The Rate setter rebaselines, but elapsed=0
+    // since clock hasn't moved within Solve, so it's a no-op for
+    // BaselineContents. Just assigns _rate = 0.
+    foreach (var n in nodes)
+      foreach (var b in n.Buffers) b.Rate = 0;
+
+    // Sync demand rates from each consumer's current Activity, and
+    // reset per-input allocation.
+    foreach (var c in consumers) {
+      for (int i = 0; i < c.Inputs.Count; i++) {
+        c.InternalDemands[i].Rate = c.Activity * c.Inputs[i].MaxRate;
+        c.InternalDemands[i].Satisfied = 0;
+        c.Allocated[i] = 0;
+      }
+    }
+
+    // Build the active-demand list and run per-(DP, resource) solves.
+    var activeDemands = new List<Demand>();
     var demandResources = new HashSet<Resource>();
-    foreach (var d in activeDemands) demandResources.Add(d.Resource);
+    foreach (var c in consumers) {
+      if (c.Node.Jettisoned) continue;
+      foreach (var d in c.InternalDemands) {
+        if (d.Rate <= Epsilon) continue;
+        if (d.Resource.Domain != ResourceDomain.Topological) continue;
+        activeDemands.Add(d);
+        demandResources.Add(d.Resource);
+      }
+    }
+    if (activeDemands.Count == 0) return;
 
     var dpLevels = nodes
       .Where(n => !n.Jettisoned && n.Buffers.Any(b => demandResources.Contains(b.Resource)))
@@ -282,7 +391,11 @@ public class StagingFlowSystem : BackgroundSystem {
       }
     }
 
-    needsSolve = false;
+    // Map demand.Satisfied back to per-consumer Allocated[i].
+    foreach (var c in consumers) {
+      for (int i = 0; i < c.Inputs.Count; i++)
+        c.Allocated[i] = c.InternalDemands[i].Satisfied;
+    }
   }
 
   // Solve one (resource, drain-priority) round. Decompose demands by
