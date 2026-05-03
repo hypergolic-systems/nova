@@ -464,8 +464,7 @@ public class VirtualVessel {
       foreach (var component in AllComponents())
         component.OnPreSolve();
 
-      systems.Staging.Solve();
-      systems.Process.Solve();
+      systems.Solve();
 
       DistributeSolarPanelCurrentRates();
       DistributeFuelCellState();
@@ -513,7 +512,7 @@ public class VirtualVessel {
         Log?.Invoke($"Tick() exceeded {MaxTickIterations} iterations, forcing advance. simTime={simulationTime} target={targetTime} nextExpiry={nextExpiry}");
         // Force-advance: bump both simulationTime and the shared
         // clock so Contents lerps reflect the target time.
-        systems.Clock.UT += targetTime - simulationTime;
+        systems.AdvanceClock(targetTime - simulationTime);
         simulationTime = targetTime;
         break;
       }
@@ -539,7 +538,7 @@ public class VirtualVessel {
 
       var dt = nextStop - simulationTime;
       if (dt > 0) {
-        AdvanceClock(dt);
+        systems.AdvanceClock(dt);
         IntegrateFuelCellManifolds(dt);
         IntegrateReactionWheelBuffers(dt);  // refreshes per-wheel ValidUntil
         simulationTime = nextStop;
@@ -565,15 +564,6 @@ public class VirtualVessel {
     }
   }
 
-  // Advance the shared simulation clock by deltaT. Systems are
-  // computation-event-driven — they don't have per-tick work, so
-  // there's nothing to call here beyond the clock advance. Buffers
-  // lerp Contents lazily against the clock; the runner's nextExpiry
-  // guarantees we don't step past a state change without re-solving.
-  private void AdvanceClock(double deltaT) {
-    if (deltaT <= 0) return;
-    systems.Clock.UT += deltaT;
-  }
 
   private void UpdateShadowState() {
     if (Context == null) return;
@@ -590,20 +580,17 @@ public class VirtualVessel {
   }
 
   // Next forecasted state-change time, in absolute simulationTime
-  // coordinates. Combines each system's bubbled-up `MaxTickDt`
-  // (the system encapsulates its own internal forecasts —
-  // orchestrator doesn't peek inside) with component-level
-  // ValidUntils (science slice rollovers, fuel-cell refill flip,
-  // anything component-owned that isn't a system concern).
+  // coordinates. Combines the systems' bubbled-up `MaxTickDt` (the
+  // VesselSystems orchestrator owns the cross-system min) with
+  // component-level ValidUntils (science slice rollovers, fuel-
+  // cell refill flip, anything component-owned that isn't a system
+  // concern).
   private double ComputeNextExpiry(double now) {
     var earliest = double.PositiveInfinity;
 
-    var stagingDt = systems.Staging.MaxTickDt();
-    if (!double.IsPositiveInfinity(stagingDt))
-      earliest = Math.Min(earliest, now + stagingDt);
-    var processDt = systems.Process.MaxTickDt();
-    if (!double.IsPositiveInfinity(processDt))
-      earliest = Math.Min(earliest, now + processDt);
+    var systemsDt = systems.MaxTickDt();
+    if (!double.IsPositiveInfinity(systemsDt))
+      earliest = now + systemsDt;
 
     foreach (var cmp in AllComponents())
       if (cmp.ValidUntil < earliest)
@@ -676,8 +663,7 @@ public class VirtualVessel {
   public void Solve() {
     foreach (var cmp in AllComponents())
       cmp.OnPreSolve();
-    systems.Staging.Solve();
-    systems.Process.Solve();
+    systems.Solve();
   }
 
   public void UpdatePartTree(Dictionary<uint, uint?> parentMap) {
