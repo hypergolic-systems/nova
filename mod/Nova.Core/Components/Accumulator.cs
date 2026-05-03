@@ -12,10 +12,11 @@ namespace Nova.Core.Components;
 //   • ReactionWheel.Buffer    — energy reserve (Process-refilled).
 //
 // The Accumulator is self-contained: it holds an abstract quantity
-// (Capacity + lerp state), owns a refill device on either Process or
-// Staging with hysteresis on/off control, and exposes a single TapRate
-// setter for the drain side. Owners stop carrying boilerplate around
-// device construction, hysteresis flips, or forecast math.
+// (Capacity + lerp state), owns a unified refill Device with
+// hysteresis on/off control (the Device routes to whichever solver
+// matches the inputs' domain), and exposes a single TapRate setter
+// for the drain side. Owners stop carrying boilerplate around device
+// construction, hysteresis flips, or forecast math.
 //
 // Lerp:
 //   Contents(t) = clamp(BaselineContents + Rate × (t - BaselineUT), 0, Capacity)
@@ -24,7 +25,7 @@ namespace Nova.Core.Components;
 // Hysteresis: refill flips ON when FillFraction ≤ RefillOnFraction
 // (default 10%), OFF when FillFraction ≥ RefillOffFraction (default
 // 100%). The Accumulator pushes the resulting on/off into the
-// underlying device's Demand (Process) or Throttle (Staging).
+// refill Device's Demand each OnPreSolve.
 //
 // ValidUntil is the absolute UT of the next forecasted hysteresis flip;
 // the owning component bubbles it up via cmp.ValidUntil so the Tick
