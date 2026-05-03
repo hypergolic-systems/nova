@@ -571,6 +571,42 @@ export const NovaScienceTopic = (partId: string): Topic<NovaScienceFrame, NovaSc
 export const NovaStorageTopic = (partId: string): Topic<NovaStorageFrame> =>
   topic<NovaStorageFrame>(`NovaStorage/${partId}`);
 
+// ---------- Virtual scene ---------------------------------------
+
+// Nova's virtual-scene topic. KSP's real `LoadedScene` (FLIGHT,
+// SPACECENTER, EDITOR, …) is unaffected; the virtual scene is a
+// UI-side concept the Hud router prefers when non-empty. Today the
+// only producer is the R&D building click (sets "RND"); future
+// stock-replacement views (Mission Control, Tracking Station, …) plug
+// into the same topic by setting their own scene names.
+//
+// Wire format: [virtualScene: string]
+//   "" — no override; Hud falls back to KSP's real scene
+//   string — Nova scene the Hud should route to (e.g. "RND")
+export type NovaSceneFrame = [virtualScene: string];
+
+export interface NovaSceneState {
+  /** Empty string when no virtual scene is active. */
+  virtualScene: string;
+}
+
+/**
+ * Inbound ops the UI can fire at the NovaScene topic. Keep in sync
+ * with `NovaSceneTopic.HandleOp` in mod/Nova/Telemetry.
+ */
+export interface NovaSceneOps {
+  /** Set the virtual scene. Pass `""` to clear (i.e. exit the Nova
+   *  view back to whatever real KSP scene is loaded). */
+  setScene(name: string): void;
+}
+
+export const NovaSceneTopic: Topic<NovaSceneFrame, NovaSceneOps> =
+  topic<NovaSceneFrame, NovaSceneOps>('NovaScene');
+
+export function decodeNovaScene(f: NovaSceneFrame): NovaSceneState {
+  return { virtualScene: f[0] };
+}
+
 // ---------- Decoders -------------------------------------------
 
 // Stock parts repeat their category in the title ("OX-STAT Photovoltaic

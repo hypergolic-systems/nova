@@ -47,6 +47,10 @@ public class NovaTelemetryAddon : MonoBehaviour {
           host.AddComponent<NovaSubscriptionManager>();
           NovaLog.Log("Telemetry subscription manager attached to Dragonglass host");
         }
+        if (host.GetComponent<NovaSceneTopic>() == null) {
+          host.AddComponent<NovaSceneTopic>();
+          NovaLog.Log("NovaScene topic attached to Dragonglass host");
+        }
         yield break;
       }
       yield return null;
