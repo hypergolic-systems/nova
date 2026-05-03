@@ -176,6 +176,13 @@ public class ResourceSolver {
 
   // ── State ────────────────────────────────────────────────────────────
 
+  // Optional diagnostic logger. NovaVesselModule wires this through
+  // VirtualVessel — same sink as the rest of the engine. Used only on
+  // anomalous events (non-OPTIMAL LP solves, suspicious α/β magnitudes,
+  // iteration caps reached, slow solves) so it doesn't flood under
+  // normal operation.
+  public Action<string> Log;
+
   private List<Node> nodes = new();
   private List<Edge> edges = new();
   private Dictionary<Resource, double> drainCosts = new();
@@ -274,10 +281,14 @@ public class ResourceSolver {
   // ── Solve ────────────────────────────────────────────────────────────
 
   public void Solve() {
+    var solveStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    var solveTickFreq = System.Diagnostics.Stopwatch.Frequency;
+
     if (!topologyFinalized) {
       FinalizeTopology();
       BuildLP();
       topologyFinalized = true;
+      Log?.Invoke($"[Solver] BuildLP: nodes={nodes.Count} pools={pools.Count} flowVars={flowVars.Count} conservationEntries={conservationEntries.Count}");
     }
 
     ResetPerTickBounds();
@@ -339,6 +350,11 @@ public class ResourceSolver {
         IteratePoolBeta(poolsAtDp, pinnedPools);
       }
     }
+
+    var solveMs = (System.Diagnostics.Stopwatch.GetTimestamp() - solveStart) * 1000.0 / solveTickFreq;
+    if (solveMs > 50) {
+      Log?.Invoke($"[Solver] slow Solve: {solveMs:F1}ms (nodes={nodes.Count} pools={pools.Count})");
+    }
   }
 
   // Phase A: maximize device-side α. Iteratively pin devices that hit
@@ -379,6 +395,7 @@ public class ResourceSolver {
       var status = lpSolver.Solve();
 
       if (status != Solver.ResultStatus.OPTIMAL) {
+        Log?.Invoke($"[Solver] Phase A non-OPTIMAL: status={status} iter={iter} active devices={devs.Count}");
         foreach (var d in devs) {
           d.Var.SetBounds(0, 0);
           d.Activity = 0;
@@ -389,6 +406,9 @@ public class ResourceSolver {
       }
 
       var alphaStar = alphaVar.SolutionValue();
+      if (alphaStar > 1e5) {
+        Log?.Invoke($"[Solver] Phase A α high: α*={alphaStar:E2} iter={iter} (suspect unbounded)");
+      }
       var devValues = new Dictionary<Device, double>(devs.Count);
       foreach (var d in devs) devValues[d] = d.Var.SolutionValue();
 
@@ -433,6 +453,7 @@ public class ResourceSolver {
     }
 
     // Iteration cap fallback.
+    Log?.Invoke($"[Solver] Phase A iteration cap reached: maxIter={maxIter} remaining devices={devs.Count}");
     foreach (var d in devs) {
       d.Var.SetBounds(d.Activity, d.Activity);
       pinnedDevices.Add(d);
@@ -494,6 +515,7 @@ public class ResourceSolver {
       var status = lpSolver.Solve();
 
       if (status != Solver.ResultStatus.OPTIMAL) {
+        Log?.Invoke($"[Solver] Phase B step 1 non-OPTIMAL: status={status} iter={iter} active pools={pls.Count}");
         foreach (var p in pls) {
           p.SupplyVar.SetBounds(0, 0);
           foreach (var t in p.Tanks) t.Rate = 0;
@@ -505,6 +527,9 @@ public class ResourceSolver {
       }
 
       var betaStar = alphaVar.SolutionValue();
+      if (betaStar > 1e5) {
+        Log?.Invoke($"[Solver] Phase B β high: β*={betaStar:E2} iter={iter} (suspect unbounded; check tank MaxRate)");
+      }
 
       // Step 2: pin β at β*, min Σ supply over all pools. The sum
       // includes pinned pools too — they appear as constants and don't
@@ -520,6 +545,7 @@ public class ResourceSolver {
         // Anti-sloshing infeasible (shouldn't happen if max β was
         // OPTIMAL — same feasible region with one variable pinned).
         // Fail-safe: pin everyone at zero.
+        Log?.Invoke($"[Solver] Phase B step 2 non-OPTIMAL: status={status2} iter={iter} β*={betaStar:F3}");
         foreach (var p in pls) {
           p.SupplyVar.SetBounds(0, 0);
           foreach (var t in p.Tanks) t.Rate = 0;
@@ -569,6 +595,7 @@ public class ResourceSolver {
     }
 
     // Iteration cap fallback.
+    Log?.Invoke($"[Solver] Phase B iteration cap reached: maxIter={maxIter} remaining pools={pls.Count}");
     foreach (var p in pls) {
       double sup = 0;
       foreach (var t in p.Tanks) sup -= t.Rate;

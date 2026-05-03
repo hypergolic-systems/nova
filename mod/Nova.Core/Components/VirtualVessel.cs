@@ -80,7 +80,7 @@ public class VirtualVessel {
   }
 
   public void InitializeSolver(double time) {
-    solver = new ResourceSolver();
+    solver = new ResourceSolver { Log = Log };
 
     if (partTree.Count == 0)
       throw new System.InvalidOperationException("Cannot initialize solver: part tree is empty. Was UpdatePartTree called?");
