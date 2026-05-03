@@ -8,28 +8,35 @@ using Nova.Core.Utils;
 
 namespace Nova.Core.Components.Propulsion;
 
+// A volumetric tank part. One TankVolume may hold multiple resources
+// in a fixed mix (e.g. kerolox = 60% LOx + 40% RP-1 by volume), with
+// the part-level pipe capacity (`MaxRate`, L/s shared in/out)
+// proportioned across the constituent buffers by capacity fraction:
+//
+//   buffer.MaxRateIn = buffer.MaxRateOut = MaxRate × (Capacity / Volume)
+//
+// The proportioning happens at solver-build time; pre-build, the
+// individual `Tanks[i].MaxRateIn / MaxRateOut` are 0 — they're config
+// holders (Resource, Capacity, optional initial Contents) only.
+//
+// MaxRate is required in the part config; no defaults in code. This is
+// the LP-hygiene contract: every buffer that participates in the LP
+// must have a finite, sensible flow cap (see docs/lp_hygiene.md).
 public class TankVolume : VirtualComponent {
-  // Default tank rate cap (L/s) used when a config doesn't specify
-  // an explicit MaxRateIn / MaxRateOut. Sized at the LP-hygiene
-  // envelope upper edge — well above any real engine flow rate, so
-  // tank rate caps don't bind in practice, while staying safely
-  // bounded for GLOP's pivot numerics. See docs/lp_hygiene.md.
-  public const double DefaultMaxRate = 10000;
-
   public double Volume;
+  public double MaxRate;
   public List<Buffer> Tanks = new();
 
   public TankVolume() {}
 
   public TankVolume(TankVolumeStructure structure) {
     Volume = structure.Volume;
+    MaxRate = structure.MaxRate;
     foreach (var t in structure.Tanks) {
       Tanks.Add(new Buffer {
         Resource = Resource.Get(t.Resource),
         Capacity = t.Capacity,
         Contents = t.Capacity, // default: full
-        MaxRateOut = t.MaxRateOut > 0 ? t.MaxRateOut : DefaultMaxRate,
-        MaxRateIn = t.MaxRateIn > 0 ? t.MaxRateIn : DefaultMaxRate,
       });
     }
   }
@@ -38,25 +45,22 @@ public class TankVolume : VirtualComponent {
     if (ps.TankVolume == null) return;
     var s = ps.TankVolume;
     Volume = s.Volume;
+    MaxRate = s.MaxRate;
     Tanks.Clear();
     foreach (var t in s.Tanks) {
       Tanks.Add(new Buffer {
         Resource = Resource.Get(t.Resource),
         Capacity = t.Capacity,
         Contents = t.Capacity,
-        MaxRateOut = t.MaxRateOut > 0 ? t.MaxRateOut : DefaultMaxRate,
-        MaxRateIn = t.MaxRateIn > 0 ? t.MaxRateIn : DefaultMaxRate,
       });
     }
   }
 
   public override void SaveStructure(PartStructure ps) {
-    var s = new TankVolumeStructure { Volume = Volume };
+    var s = new TankVolumeStructure { Volume = Volume, MaxRate = MaxRate };
     s.Tanks.AddRange(Tanks.Select(t => new TankStructure {
       Resource = t.Resource.Name,
       Capacity = t.Capacity,
-      MaxRateOut = t.MaxRateOut,
-      MaxRateIn = t.MaxRateIn,
     }));
     ps.TankVolume = s;
   }
@@ -74,13 +78,11 @@ public class TankVolume : VirtualComponent {
   }
 
   public override VirtualComponent Clone() {
-    var clone = new TankVolume { Volume = Volume };
+    var clone = new TankVolume { Volume = Volume, MaxRate = MaxRate };
     clone.Tanks = Tanks.Select(t => new Buffer {
       Resource = t.Resource,
       Capacity = t.Capacity,
       Contents = t.Contents,
-      MaxRateOut = t.MaxRateOut,
-      MaxRateIn = t.MaxRateIn,
     }).ToList();
     return clone;
   }
@@ -99,7 +101,11 @@ public class TankVolume : VirtualComponent {
     for (int i = 0; i < Tanks.Count; i++) {
       var tank = Tanks[i];
       var buf = node.AddBuffer(tank.Resource, tank.Capacity);
-      buf.FlowLimits(tank.MaxRateIn, tank.MaxRateOut);
+      // Proportion the part's pipe capacity by this tank's volume share.
+      // Empty tanks (Volume = 0) shouldn't happen in valid configs;
+      // guard with a zero rate to avoid division-by-zero.
+      var rate = Volume > 0 ? MaxRate * (tank.Capacity / Volume) : 0;
+      buf.FlowLimits(rate, rate);
       buf.Contents = tank.Contents;
       Tanks[i] = buf;
     }

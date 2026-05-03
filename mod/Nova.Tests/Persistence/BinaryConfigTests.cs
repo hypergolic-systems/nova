@@ -66,8 +66,9 @@ public class ProtobufTests {
   public void TankVolumeStructure_RoundTrip() {
     var structure = new TankVolumeStructure {
       Volume = 2080,
+      MaxRate = 100,
       Tanks = {
-        new TankStructure { Resource = "RP-1", Capacity = 1560, MaxRateOut = 50, MaxRateIn = 100 },
+        new TankStructure { Resource = "RP-1", Capacity = 1560 },
         new TankStructure { Resource = "Liquid Oxygen", Capacity = 520 },
       },
     };
@@ -78,11 +79,10 @@ public class ProtobufTests {
     var loaded = Serializer.Deserialize<TankVolumeStructure>(ms);
 
     Assert.AreEqual(2080, loaded.Volume);
+    Assert.AreEqual(100, loaded.MaxRate);
     Assert.AreEqual(2, loaded.Tanks.Count);
     Assert.AreEqual("RP-1", loaded.Tanks[0].Resource);
     Assert.AreEqual(1560, loaded.Tanks[0].Capacity);
-    Assert.AreEqual(50, loaded.Tanks[0].MaxRateOut);
-    Assert.AreEqual(100, loaded.Tanks[0].MaxRateIn);
     Assert.AreEqual("Liquid Oxygen", loaded.Tanks[1].Resource);
     Assert.AreEqual(520, loaded.Tanks[1].Capacity);
   }

@@ -6,8 +6,10 @@ namespace Nova.Core.Components.Propulsion;
 
 // Presets for the editor's "Set Tank Config" right-click action.
 // Each Build callback turns a target tank Volume (litres) into a
-// fresh Buffer list, default-full, infinite flow rates — same shape
-// ComponentFactory.CreateTankVolume produces from a prefab MODULE.
+// fresh Buffer list, default-full. Per-buffer rate caps are derived
+// at solver-build time from the parent TankVolume.MaxRate proportioned
+// by capacity share — these preset buffers carry only Resource +
+// Capacity + Contents.
 //
 // Mix ratios: chosen volumetrically so that with Nova's resource
 // densities (Resource.cs: LH2=0.07, LOx=1.2, RP-1=0.8 kg/L) the
@@ -50,7 +52,5 @@ public static class TankPresets {
       Resource = resource,
       Capacity = capacity,
       Contents = capacity,
-      MaxRateIn = TankVolume.DefaultMaxRate,
-      MaxRateOut = TankVolume.DefaultMaxRate,
     };
 }

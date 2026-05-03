@@ -16,8 +16,9 @@ public class ComponentMappingTests {
   public void TankVolume_ConstructFromStructure() {
     var structure = new TankVolumeStructure {
       Volume = 2080,
+      MaxRate = 100,
       Tanks = {
-        new TankStructure { Resource = "RP-1", Capacity = 1560, MaxRateOut = 50, MaxRateIn = 100 },
+        new TankStructure { Resource = "RP-1", Capacity = 1560 },
         new TankStructure { Resource = "Liquid Oxygen", Capacity = 520 },
       },
     };
@@ -25,20 +26,22 @@ public class ComponentMappingTests {
     var tank = new TankVolume(structure);
 
     Assert.AreEqual(2080, tank.Volume);
+    Assert.AreEqual(100, tank.MaxRate);
     Assert.AreEqual(2, tank.Tanks.Count);
     Assert.AreEqual("RP-1", tank.Tanks[0].Resource.Name);
     Assert.AreEqual(1560, tank.Tanks[0].Capacity);
     Assert.AreEqual(1560, tank.Tanks[0].Contents);  // defaults full
-    Assert.AreEqual(50, tank.Tanks[0].MaxRateOut);
-    Assert.AreEqual(100, tank.Tanks[0].MaxRateIn);
     Assert.AreEqual("Liquid Oxygen", tank.Tanks[1].Resource.Name);
-    Assert.AreEqual(TankVolume.DefaultMaxRate, tank.Tanks[1].MaxRateOut);
+    // Per-buffer rates aren't set pre-OnBuildSolver — proportioning
+    // happens at solver-build time from the part-level MaxRate.
+    Assert.AreEqual(0, tank.Tanks[0].MaxRateOut);
+    Assert.AreEqual(0, tank.Tanks[1].MaxRateOut);
   }
 
   [TestMethod]
   public void TankVolume_SaveStructure_WritesToPartStructure() {
-    var tank = new TankVolume { Volume = 600 };
-    tank.Tanks.Add(new Buffer { Resource = Resource.RP1, Capacity = 400, MaxRateOut = 50, MaxRateIn = 100 });
+    var tank = new TankVolume { Volume = 600, MaxRate = 75 };
+    tank.Tanks.Add(new Buffer { Resource = Resource.RP1, Capacity = 400 });
     tank.Tanks.Add(new Buffer { Resource = Resource.LiquidOxygen, Capacity = 200 });
 
     var ps = new PartStructure();
@@ -46,10 +49,10 @@ public class ComponentMappingTests {
 
     Assert.IsNotNull(ps.TankVolume);
     Assert.AreEqual(600, ps.TankVolume.Volume);
+    Assert.AreEqual(75, ps.TankVolume.MaxRate);
     Assert.AreEqual(2, ps.TankVolume.Tanks.Count);
     Assert.AreEqual("RP-1", ps.TankVolume.Tanks[0].Resource);
     Assert.AreEqual(400, ps.TankVolume.Tanks[0].Capacity);
-    Assert.AreEqual(50, ps.TankVolume.Tanks[0].MaxRateOut);
   }
 
   [TestMethod]

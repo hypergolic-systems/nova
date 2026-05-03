@@ -37,12 +37,11 @@ public class RcsTests {
   private static TankVolume MakeTank(double volume, string resource, double capacity) {
     return new TankVolume {
       Volume = volume,
+      MaxRate = 10000,
       Tanks = { new Buffer {
         Resource = Resource.Get(resource),
         Capacity = capacity,
         Contents = capacity,
-        MaxRateIn = double.PositiveInfinity,
-        MaxRateOut = double.PositiveInfinity,
       }}
     };
   }

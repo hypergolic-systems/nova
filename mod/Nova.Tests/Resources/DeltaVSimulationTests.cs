@@ -26,13 +26,12 @@ public class DeltaVSimulationTests {
   private static TankVolume MakeTank(Resource resource, double capacity) {
     return new TankVolume {
       Volume = capacity,
+      MaxRate = 10000,
       Tanks = {
         new Buffer {
           Resource = resource,
           Capacity = capacity,
           Contents = capacity,
-          MaxRateIn = double.PositiveInfinity,
-          MaxRateOut = double.PositiveInfinity,
         }
       }
     };

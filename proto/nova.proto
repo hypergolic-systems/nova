@@ -122,13 +122,12 @@ message Symmetry {
 message TankVolumeStructure {
   double volume = 1;
   repeated TankStructure tanks = 2;
+  double max_rate = 3;            // shared in/out cap, proportioned across tanks
 }
 
 message TankStructure {
   string resource = 1;
   double capacity = 2;
-  double max_rate_out = 3;
-  double max_rate_in = 4;
 }
 
 message BatteryStructure {

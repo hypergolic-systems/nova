@@ -44,12 +44,11 @@ public class VirtualVesselTests {
     if (contents < 0) contents = capacity;
     return new TankVolume {
       Volume = volume,
+      MaxRate = 10000,
       Tanks = { new Buffer {
         Resource = Resource.Get(resource),
         Capacity = capacity,
         Contents = contents,
-        MaxRateIn = double.PositiveInfinity,
-        MaxRateOut = double.PositiveInfinity,
       }}
     };
   }

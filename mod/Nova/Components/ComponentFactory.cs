@@ -118,7 +118,12 @@ public static class ComponentFactory {
   }
 
   public static TankVolume CreateTankVolume(ConfigNode node) {
-    var tank = new TankVolume { Volume = double.Parse(node.GetValue("volume")) };
+    var maxRateValue = node.GetValue("maxRate")
+      ?? throw new System.ArgumentException("NovaTankModule: 'maxRate' is required (L/s, shared in/out at the part level).");
+    var tank = new TankVolume {
+      Volume = double.Parse(node.GetValue("volume")),
+      MaxRate = double.Parse(maxRateValue),
+    };
     foreach (var tankNode in node.GetNodes("TANK")) {
       var capacity = double.Parse(tankNode.GetValue("capacity"));
       tank.Tanks.Add(new Buffer {
@@ -126,10 +131,6 @@ public static class ComponentFactory {
         Capacity = capacity,
         Contents = tankNode.GetValue("value") != null
           ? double.Parse(tankNode.GetValue("value")) : capacity,
-        MaxRateOut = tankNode.GetValue("maxRateOut") != null
-          ? double.Parse(tankNode.GetValue("maxRateOut")) : double.PositiveInfinity,
-        MaxRateIn = tankNode.GetValue("maxRateIn") != null
-          ? double.Parse(tankNode.GetValue("maxRateIn")) : double.PositiveInfinity,
       });
     }
     return tank;

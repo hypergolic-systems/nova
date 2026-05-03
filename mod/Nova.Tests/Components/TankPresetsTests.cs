@@ -86,12 +86,15 @@ public class TankPresetsTests {
   }
 
   [TestMethod]
-  public void All_Presets_DefaultFull_WithEnvelopeFlow() {
+  public void All_Presets_DefaultFull_NoBufferRates() {
+    // Preset buffers carry only Resource + Capacity + Contents. Per-
+    // buffer rate caps are derived at solver-build time from the
+    // parent TankVolume.MaxRate (proportioned by capacity share).
     foreach (var p in TankPresets.All) {
       foreach (var b in p.Build(1000)) {
         Assert.AreEqual(b.Capacity, b.Contents, $"{p.Id} contents != capacity");
-        Assert.AreEqual(TankVolume.DefaultMaxRate, b.MaxRateIn, $"{p.Id} MaxRateIn");
-        Assert.AreEqual(TankVolume.DefaultMaxRate, b.MaxRateOut, $"{p.Id} MaxRateOut");
+        Assert.AreEqual(0, b.MaxRateIn, $"{p.Id} MaxRateIn should be 0 pre-build");
+        Assert.AreEqual(0, b.MaxRateOut, $"{p.Id} MaxRateOut should be 0 pre-build");
       }
     }
   }
