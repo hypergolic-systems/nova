@@ -245,4 +245,46 @@ public class DeltaVSimulationTests {
     Assert.IsTrue(results.Count >= 2,
       $"Should have at least 2 stages (side jettison despite battery crossfeed), got {results.Count}");
   }
+
+  // Regression: in-flight stage activation triggers
+  // ExtractParts → RebuildTopology on the remaining VirtualVessel.
+  // After that rebuild, DeltaVSimulation must still produce a valid
+  // result for whatever stages remain — otherwise the dV display
+  // empties out the moment the player presses space.
+  [TestMethod]
+  public void DvSurvivesPostStageRebuild() {
+    // 2-stage rocket: pod + upper-tank + upper-engine on one branch,
+    // decoupler + lower-tank + lower-engine on the booster branch.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "upperTank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 50) }),
+      (3u, "upperEngine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      (4u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> { MakeDecoupler(1, (Resource.RP1, "up")) }),
+      (5u, "lowerTank", (uint?)4u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (6u, "lowerEngine", (uint?)5u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    // Simulate the in-flight stage-1 firing: KSP separates the booster
+    // (decoupler + lower tank + lower engine) into a new vessel. Nova's
+    // HandleVesselSplit calls ExtractParts then RebuildTopology.
+    var boosterIds = new HashSet<uint> { 4u, 5u, 6u };
+    vessel.ExtractParts(boosterIds);
+    var newParentMap = new Dictionary<uint, uint?> {
+      { 1u, null }, { 2u, 1u }, { 3u, 2u },
+    };
+    vessel.UpdatePartTree(newParentMap);
+    vessel.InitializeSolver(0);
+
+    // Remaining stages: only Stage 0 (the upper).
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 3 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.AreEqual(1, results.Count,
+        "Stage 0 should still produce a dV result post-rebuild");
+    Assert.IsTrue(results[0].DeltaV > 0,
+        $"Stage 0 dV should be positive, got {results[0].DeltaV}");
+    Assert.AreEqual(0, results[0].InverseStageIndex);
+  }
 }
