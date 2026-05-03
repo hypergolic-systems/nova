@@ -1,8 +1,8 @@
 # LP hygiene — keeping the resource solver well-conditioned
 
-Nova's resource flow is solved as a linear program (`Nova.Core/Resources/ResourceSolver.cs`) every physics tick. GLOP — OR-Tools' simplex implementation — handles the LP, with simplex warm-starting between ticks so the per-tick cost is small. This document defines the numerical contract Nova components must respect to keep GLOP in its working envelope.
+Nova's resource flow is solved as a linear program (`Nova.Core/Resources/ResourceSolver.cs`). GLOP — OR-Tools' simplex implementation — handles the LP, with simplex warm-starting between solves so per-solve cost stays small. The solver runs event-driven (on `Invalidate()`, on buffer/device expiry, on topology rebuild) rather than every physics tick, but a busy frame can fire several solves: the new architecture is an **iterative max-min α/β-LP** that does multiple LP solves per `Solve()` call (Phase A device fairness + Phase B per-drain-priority pool fairness, each with bottleneck-pinning iteration). This document defines the numerical contract Nova components must respect to keep GLOP in its working envelope.
 
-The penalty for violating the contract is real and observable: GLOP returns `MPSOLVER_ABNORMAL`, the LP basis is corrupted, simplex cold-starts on subsequent ticks, and the physics budget blows out at the 50 Hz cadence.
+The penalty for violating the contract is real and observable: GLOP returns `MPSOLVER_ABNORMAL`, the LP basis is corrupted, simplex cold-starts on subsequent solves, and a complex vessel can chain enough re-solves to spike the physics budget noticeably.
 
 ## Working envelope
 
@@ -96,7 +96,8 @@ with `C` the chosen C-rate (typically 0.5–2). For Z-100 (3.6 MJ) at 1C → 1 0
 - **Don't put inputs and outputs at vastly different scales on a single hybrid `Device`.** GLOP's column scaler can't fix a column whose entries span 10⁷. Split into input + output devices linked by a parent constraint (and accept the asymmetry — see `FuelCell.cs` for the worked example) or use the buffer pattern to bring everything to one scale.
 - **Don't rely on `±∞` for `MaxRateIn`/`MaxRateOut`.** GLOP tolerates them but they make the simplex's pivot numerics worse and can leak into ABNORMAL on adjacent constraints. Pick a finite cap (10× the worst plausible flow is fine).
 - **Don't mix component-internal rates into LP coefficients.** If a fuel cell consumes 5×10⁻⁴ L/s reactant per kW of EC, that 5×10⁻⁴ does not belong in any conservation row — that's what the buffer pattern is for.
-- **Don't trust drain-min results without checking status.** GLOP's drain-min phase has weak gradients (`Epsilon × supply_rate` ~ 10⁻¹⁰ for tiny pools) and routinely returns ABNORMAL on degenerate vessels. The priority-loop solution is the load-bearing one; drain-min is a tie-break refinement. The solver already extracts before pin-bound mutation and only re-extracts on drain-min OPTIMAL.
+- **Don't read `Variable.SolutionValue()` after a bound mutation without re-solving.** GLOP invalidates its basis on any `SetBounds` / `SetCoefficient` call; subsequent `SolutionValue()` reads return 0 until the next `Solve()`. The solver works around this by snapshotting values into local maps immediately after each successful solve and calling `ExtractResults` (which writes through to `Device.Activity` / `Buffer.Rate`) *before* any pinning mutation. Component code that drives the solver shouldn't need to worry about this, but anyone touching the Phase A / Phase B iteration loop must.
+- **Don't put unnormalized `Buffer.Contents` into LP coefficients.** The fairness phase puts `amount / maxAmount_r` (per-resource normalized, clamped at `FairnessFloor = 0.1`) into the pool-α constraint coefficient — keeping it in `[0.1, 1]` regardless of pool magnitude. Without normalization, a 144 MJ battery against a litre-scale tank would yield coefficients around 1e-8, well below GLOP's tolerance. The clamp costs the very smallest pools a slightly looser fair share, but nothing breaks the envelope.
 
 ## Diagnostics
 
@@ -107,9 +108,18 @@ When you suspect a numerical problem:
 3. **Check `Device.Activity` after solve.** If it's 0 when Demand is positive and the LP should be feasible, the priority-extract path failed — inspect the priority loop's `Solve()` result status.
 4. **Check buffer flow bounds.** A buffer with `MaxRateIn = 10` left from the legacy Battery default cripples high-power flow paths silently — the LP solves fine but produces tiny Activities because the buffer can't sink the output.
 
+## Solve flow at a glance
+
+For each device priority `P` (Critical → High → Low):
+
+1. **Phase A** — `max α + ε·Σ activity` with `activity[d] ≥ α × Demand[d]` for active devices at `P`. The α term is the max-min fairness target; the ε-weighted sum fills slack deterministically (so a supply-blocked device doesn't drag fairness to zero for its peers). Iterates: devices at their physical UB get pinned, residual α is re-solved.
+2. **Phase B** (per drain priority `DP`, descending) — `max β` with `supply[p] ≥ β × normalized_amount[p]` for active pools at `DP`. Pools at `MaxSupplyRate` get pinned and excluded; conservation-bound pools all bind at the same β (lockstep drain). The pool-α coefficient is normalized per-resource and floored at `FairnessFloor = 0.1` to stay in envelope.
+
+After all priorities: `Device.Activity` and `Buffer.Rate` reflect the final LP solution (written through by `ExtractResults` after each successful solve, before any bound mutation).
+
 ## Reference
 
-- `mod/Nova.Core/Resources/ResourceSolver.cs` — LP construction, per-tick reset, priority maximize, drain-min.
+- `mod/Nova.Core/Resources/ResourceSolver.cs` — LP construction, per-tick reset, iterative max-min α/β-LP (Phase A device fairness, Phase B per-drain-priority pool fairness), bottleneck-pinning iteration.
 - `mod/Nova.Core/Components/VirtualVessel.cs` — pre/post-solve orchestration (`UpdateSolarDeviceDemand`, `UpdateFuelCellDevices`, `DistributeFuelCellState`).
 - `mod/Nova.Core/Resources/Resource.cs` — unit convention.
 - `mod/Nova.Core/Components/Electrical/FuelCell.cs` — worked example of the split input/output device pattern (until we add the buffer).
