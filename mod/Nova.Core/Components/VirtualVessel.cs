@@ -616,47 +616,6 @@ public class VirtualVessel {
   }
 
   /// <summary>
-  /// Capture current buffer values as a flat array. Order is deterministic
-  /// (parts sorted by ID, components in order, tanks in order).
-  /// </summary>
-  public double[] CaptureBufferSnapshot() {
-    var values = new List<double>();
-    foreach (var partId in parts.Keys.OrderBy(k => k)) {
-      foreach (var cmp in parts[partId].components) {
-        if (cmp is TankVolume tank)
-          foreach (var t in tank.Tanks)
-            values.Add(t.Contents);
-      }
-    }
-    return values.ToArray();
-  }
-
-  /// <summary>
-  /// Apply a buffer snapshot and reset simulation state (engine throttle,
-  /// jettison flags) so the vessel is ready for a fresh simulation run.
-  /// </summary>
-  public void ApplyBufferSnapshot(double[] values, double time) {
-    int idx = 0;
-    foreach (var partId in parts.Keys.OrderBy(k => k)) {
-      foreach (var cmp in parts[partId].components) {
-        if (cmp is TankVolume tank) {
-          foreach (var t in tank.Tanks)
-            t.Contents = values[idx++];
-        } else if (cmp is Engine engine) {
-          engine.Throttle = 0;
-        } else if (cmp is Rcs rcs) {
-          rcs.Throttle = 0;
-        }
-      }
-    }
-    foreach (var node in systems.Staging.Nodes)
-      node.Jettisoned = false;
-    simulationTime = time;
-    systems.Clock.UT = time;
-    needsSolve = true;
-  }
-
-  /// <summary>
   /// Run OnPreSolve on all components and solve the resource systems.
   /// Used by DeltaVSimulation on cloned vessels.
   /// </summary>
