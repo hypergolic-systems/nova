@@ -3,8 +3,7 @@ using System.Linq;
 using Nova.Core.Persistence;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
-using Nova.Core.Flight;
-using Nova.Core.Utils;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Propulsion;
 
@@ -97,7 +96,7 @@ public class TankVolume : VirtualComponent {
     foreach (var t in newTanks) Tanks.Add(t);
   }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     for (int i = 0; i < Tanks.Count; i++) {
       var tank = Tanks[i];
       var buf = node.AddBuffer(tank.Resource, tank.Capacity);

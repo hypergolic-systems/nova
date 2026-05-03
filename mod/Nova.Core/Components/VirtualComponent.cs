@@ -1,6 +1,7 @@
 using System;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components;
 
@@ -37,7 +38,15 @@ public class VirtualComponent {
   public virtual void Save(PartState state) {}
   public virtual void Load(PartState state) {}
 
-  public virtual void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {}
+  // Register this component's per-tick footprint with the vessel-level
+  // systems. Called once at vessel build time. `node` is the Staging
+  // node this component lives on (parts under the same decoupler share
+  // a node). Topological-resource components (Engine, Rcs, FuelCell
+  // refill, TankVolume) wire into `systems.Staging` via the node;
+  // Uniform-resource components (Light, Battery, Solar, Command,
+  // Thermometer, FuelCell production, ReactionWheel refill) wire into
+  // `systems.Process`.
+  public virtual void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {}
 
   public virtual void OnPreSolve() {}
 

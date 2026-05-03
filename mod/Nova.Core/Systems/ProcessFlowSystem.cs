@@ -166,6 +166,11 @@ public class ProcessFlowSystem : BackgroundSystem {
       fillSnapshot[pair.Key] = pair.Value.SolutionValue();
   }
 
+  // Relative-dt horizon over THIS system's buffers only. Per-device
+  // ValidUntils are absolute times (e.g. solar shadow transition UT,
+  // fuel-cell SoC threshold crossing) and the runner combines them
+  // with this dt at vessel scope — keeps absolute / relative bookkeeping
+  // separate.
   public override double MaxTickDt() {
     double earliest = double.PositiveInfinity;
     foreach (var pair in buffersByResource) {
@@ -178,9 +183,6 @@ public class ProcessFlowSystem : BackgroundSystem {
           if (t < earliest) earliest = t;
         }
       }
-    }
-    foreach (var d in devices) {
-      if (d.ValidUntil < earliest) earliest = d.ValidUntil;
     }
     return earliest;
   }

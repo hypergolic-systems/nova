@@ -8,30 +8,29 @@ using Nova.Core.Components.Propulsion;
 using Nova.Core.Components.Structural;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
-using Nova.Core.Utils;
+using Nova.Core.Systems;
 namespace Nova.Core.Components;
 
 public class VirtualVessel {
   private Dictionary<uint, Part> parts = new();
   private Dictionary<uint, uint?> partTree = new();
   private Dictionary<uint, double> partDryMasses = new();
-  private ResourceSolver solver;
+  private VesselSystems systems;
   private bool needsSolve = true;
   private double simulationTime;
   private double nextExpiry = double.PositiveInfinity;
 
-  // Monotonic count of LP solves. Useful for tests asserting that a
-  // particular event (e.g. wheel-buffer crossing) DID or DIDN'T trigger
-  // a re-solve, and for production debug logs that want to observe
-  // solve cadence without instrumenting DoSolve directly.
+  // Monotonic count of solves (staging + process round). Useful for
+  // tests asserting that a particular event (e.g. wheel-buffer crossing)
+  // DID or DIDN'T trigger a re-solve.
   public int SolveCount { get; private set; }
 
-  // Vessel-level solar aggregation. One Device on the root node sums
-  // every panel's ChargeRate as its topology output coefficient; per-tick
-  // Demand caps the LP variable so output tops out at the SolarOptimizer
-  // result (sunlit-and-deployed-aware). See ComputeSolarRates +
+  // Vessel-level solar aggregation. One Process Device sums every
+  // panel's ChargeRate as its output coefficient; per-tick Demand caps
+  // the LP variable so output tops out at the SolarOptimizer result
+  // (sunlit-and-deployed-aware). See ComputeSolarRates +
   // UpdateSolarDeviceDemand.
-  private ResourceSolver.Device solarDevice;
+  private ProcessFlowSystem.Device solarDevice;
   private double totalChargeRate;
   private double cachedOptimalRate;
   private bool vesselSunlit = true;
@@ -44,7 +43,7 @@ public class VirtualVessel {
 
   public Action<string> Log;
 
-  public ResourceSolver Solver => solver;
+  public VesselSystems Systems => systems;
 
   public IEnumerable<VirtualComponent> GetComponents(uint persistentId) {
     if (!parts.TryGetValue(persistentId, out var part)) {
@@ -80,7 +79,7 @@ public class VirtualVessel {
   }
 
   public void InitializeSolver(double time) {
-    solver = new ResourceSolver { Log = Log };
+    systems = new VesselSystems();
 
     if (partTree.Count == 0)
       throw new System.InvalidOperationException("Cannot initialize solver: part tree is empty. Was UpdatePartTree called?");
@@ -89,7 +88,7 @@ public class VirtualVessel {
     if (!partTree.ContainsKey(root.Key))
       throw new System.InvalidOperationException("Cannot initialize solver: no root part found in part tree.");
 
-    var rootNode = solver.AddNode();
+    var rootNode = systems.Staging.AddNode();
     WalkPartTree(rootNode, root.Key);
 
     BuildSolarDevice(rootNode);
@@ -99,9 +98,10 @@ public class VirtualVessel {
   }
 
   // Sum every panel's rated ChargeRate and create one aggregate producer
-  // Device on the root node. Per-tick Demand (set by UpdateSolarDeviceDemand)
-  // gates the LP variable to the SolarOptimizer-computed optimal rate.
-  private void BuildSolarDevice(ResourceSolver.Node rootNode) {
+  // Device on the Process system. Per-tick Demand (set by
+  // UpdateSolarDeviceDemand) gates the LP variable to the SolarOptimizer-
+  // computed optimal rate.
+  private void BuildSolarDevice(StagingFlowSystem.Node rootNode) {
     totalChargeRate = 0;
     foreach (var panel in AllComponents().OfType<SolarPanel>())
       totalChargeRate += panel.ChargeRate;
@@ -111,17 +111,18 @@ public class VirtualVessel {
       return;
     }
 
-    solarDevice = rootNode.AddDevice(ResourceSolver.Priority.Low);
+    solarDevice = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
     solarDevice.AddOutput(Resource.ElectricCharge, totalChargeRate);
     solarDevice.Demand = 0;  // populated per-tick via UpdateSolarDeviceDemand
   }
 
   /// <summary>
   /// Walk the full KSP part tree. Every part ID is visited (including
-  /// non-HGS parts). HGS components are attached to the current solver
-  /// node. Decoupler components create a child node.
+  /// non-HGS parts). HGS components register on the systems via the
+  /// current staging node. Decoupler / DockingPort components create a
+  /// child staging node.
   /// </summary>
-  private void WalkPartTree(ResourceSolver.Node solverNode, uint partId) {
+  private void WalkPartTree(StagingFlowSystem.Node stagingNode, uint partId) {
     parts.TryGetValue(partId, out var partEntry);
     var partDryMass = partDryMasses.TryGetValue(partId, out var mass) ? mass : 0;
 
@@ -129,31 +130,31 @@ public class VirtualVessel {
       foreach (var cmp in partEntry.components) cmp.Vessel = this;
       var decoupler = partEntry.components.OfType<Decoupler>().FirstOrDefault();
       if (decoupler != null) {
-        var childNode = solver.AddNode();
-        childNode.id = (long)partId;
+        var childNode = systems.Staging.AddNode();
+        childNode.Id = (long)partId;
         childNode.DrainPriority = decoupler.Priority;
-        solver.AddEdge(solverNode, childNode, decoupler.AllowedResources, decoupler.UpOnlyResources);
-        solverNode = childNode;
+        systems.Staging.AddEdge(stagingNode, childNode, decoupler.AllowedResources, decoupler.UpOnlyResources);
+        stagingNode = childNode;
       }
 
       var dockingPort = partEntry.components.OfType<DockingPort>().FirstOrDefault();
       if (dockingPort != null) {
-        var childNode = solver.AddNode();
-        childNode.id = (long)partId;
+        var childNode = systems.Staging.AddNode();
+        childNode.Id = (long)partId;
         childNode.DrainPriority = dockingPort.Priority;
         var allowed = dockingPort.AllowedResources.Count == 0 ? null : dockingPort.AllowedResources;
-        solver.AddEdge(solverNode, childNode, allowed, dockingPort.UpOnlyResources);
-        solverNode = childNode;
+        systems.Staging.AddEdge(stagingNode, childNode, allowed, dockingPort.UpOnlyResources);
+        stagingNode = childNode;
       }
 
       foreach (var cmp in partEntry.components)
-        cmp.OnBuildSolver(solver, solverNode);
+        cmp.OnBuildSystems(systems, stagingNode);
     }
 
-    solverNode.DryMass += partDryMass;
+    stagingNode.DryMass += partDryMass;
 
     foreach (var child in partTree.Where(p => p.Value == partId))
-      WalkPartTree(solverNode, child.Key);
+      WalkPartTree(stagingNode, child.Key);
   }
 
   public IEnumerable<uint> AllPartIds() {
@@ -228,22 +229,18 @@ public class VirtualVessel {
   private const double FuelCellOnSocThreshold  = 0.20;
   private const double FuelCellOffSocThreshold = 0.80;
 
-  // Manifold refill hysteresis. The refill device pulls reactant from
-  // main tanks at envelope-friendly rates (~0.1 L/s) and tops up the
-  // component-internal manifold; production drains the manifold off-LP
-  // at the µL/s reactant rate. Refill kicks on when either manifold
-  // dips below 10% of capacity and turns off when both reach 100%.
+  // Manifold refill hysteresis. The refill demands pull reactant from
+  // main tanks at envelope-friendly rates (~0.1466 mix-L/s) and top up
+  // the component-internal manifold; production drains the manifold
+  // off-LP at the µL/s reactant rate. Refill kicks on when the manifold
+  // dips below 10% and turns off at 100%.
   private const double FuelCellRefillOnThreshold  = 0.10;
   private const double FuelCellRefillOffThreshold = 1.00;
 
   // Pre-solve: aggregate vessel-wide battery SoC and apply hysteresis
   // to each FuelCell's IsActive (production) and RefillActive (manifold
-  // top-up) flags. Sets Demand on both devices for the upcoming solve.
-  // The valid-until forecasts are intentionally NOT computed here —
-  // Activity at this point is from the previous solve, and the demand
-  // changes we just made will shift things the moment Solve runs. The
-  // post-solve sibling DistributeFuelCellState reads the freshly
-  // converged Activities instead.
+  // top-up) flags. Sets Demand on the production device + refill demand
+  // rates (via FuelCell.OnPreSolve) for the upcoming solve.
   //
   // The "no batteries" branch keeps the cell on continuously — without
   // a SoC signal there's no reason to throttle.
@@ -260,7 +257,7 @@ public class VirtualVessel {
     double soc = noBatteries ? 0 : contents / capacity;
 
     foreach (var fc in fuelCells) {
-      if (fc.production == null || fc.refill == null) continue;
+      if (fc.production == null) continue;
 
       // Production hysteresis (SoC band).
       if (noBatteries) {
@@ -280,25 +277,22 @@ public class VirtualVessel {
       }
 
       fc.production.Demand = (fc.IsActive && !fc.Manifold.IsEmpty) ? 1.0 : 0.0;
-      fc.refill.Demand     = fc.RefillActive ? 1.0 : 0.0;
+      // Refill demand rates set by FuelCell.OnPreSolve based on RefillActive.
     }
   }
 
   // Post-solve: compute valid-until forecasts for each fuel cell using
-  // the *converged* Activities. Setting Device.ValidUntil tells
-  // ComputeNextExpiry when the LP needs re-evaluation.
+  // the *converged* Activities. Production-side ValidUntil lives on the
+  // Process device; refill-side lives on the component (no per-demand
+  // ValidUntil — it's a coupled-pair forecast).
   //
   // Production flips on:
   //   • SoC reaches a hysteresis threshold
   //   • manifold runs dry (production was active, can't continue)
   //
   // Refill flips on:
-  //   • either manifold drops below 10% (turn ON)
-  //   • both manifolds reach capacity (turn OFF)
-  //
-  // ValidUntilSeconds is the production-side forecast — the user-facing
-  // "when will the on/off badge change". Refill cycles are an internal
-  // implementation detail and don't surface in the dashboard number.
+  //   • manifold drops below 10% (turn ON)
+  //   • manifold reaches 100% (turn OFF)
   private void DistributeFuelCellState() {
     var fuelCells = AllComponents().OfType<FuelCell>().ToList();
     if (fuelCells.Count == 0) return;
@@ -312,11 +306,11 @@ public class VirtualVessel {
     bool noBatteries = capacity < 1e-9;
 
     foreach (var fc in fuelCells) {
-      if (fc.production == null || fc.refill == null) continue;
+      if (fc.production == null) continue;
 
       // -------- Production ValidUntil --------
 
-      // SoC threshold flip (existing logic).
+      // SoC threshold flip.
       double dtSocFlip = double.PositiveInfinity;
       if (!noBatteries && Math.Abs(batteryRate) > 1e-9) {
         if (fc.IsActive && batteryRate > 0) {
@@ -331,11 +325,11 @@ public class VirtualVessel {
       // Manifold-empty time (production gated off when fuel runs out).
       // Net drain rate in mix-L/s; refill is so much faster than
       // production reactant draw (~200×) that this only matters when
-      // the main tank is empty and refill.Activity is forced to 0.
+      // the main tank is empty and refill is forced to 0.
       double dtMfdEmpty = double.PositiveInfinity;
       if (fc.production.Activity > 1e-9) {
         double netDrain = fc.production.Activity * fc.ProductionDrainRate
-                        - fc.refill.Activity     * fc.RefillRate;
+                        - fc.RefillActivity      * fc.RefillRate;
         if (netDrain > 1e-12 && fc.Manifold.Contents > 0)
           dtMfdEmpty = fc.Manifold.Contents / netDrain;
       }
@@ -346,16 +340,20 @@ public class VirtualVessel {
         ? double.PositiveInfinity
         : simulationTime + dtProdFlip;
 
-      // -------- Refill ValidUntil --------
+      // -------- Refill ValidUntil → on FuelCell.ValidUntil --------
 
-      double netFill = fc.refill.Activity     * fc.RefillRate
+      double netFill = fc.RefillActivity      * fc.RefillRate
                      - fc.production.Activity * fc.ProductionDrainRate;
       double dtRefillFlip = fc.RefillActive
         ? fc.Manifold.TimeToFraction(FuelCellRefillOffThreshold, netFill)
         : fc.Manifold.TimeToFraction(FuelCellRefillOnThreshold, netFill);
-      fc.refill.ValidUntil = double.IsPositiveInfinity(dtRefillFlip)
+
+      // Single component-level ValidUntil for the runner; min of the
+      // two flip times so whichever comes first triggers the resolve.
+      double dtCmp = Math.Min(dtProdFlip, dtRefillFlip);
+      fc.ValidUntil = double.IsPositiveInfinity(dtCmp)
         ? double.PositiveInfinity
-        : simulationTime + dtRefillFlip;
+        : simulationTime + dtCmp;
     }
   }
 
@@ -369,20 +367,20 @@ public class VirtualVessel {
   private void IntegrateFuelCellManifolds(double deltaT) {
     if (deltaT <= 0) return;
     foreach (var fc in AllComponents().OfType<FuelCell>()) {
-      if (fc.production == null || fc.refill == null) continue;
-      double netRate = fc.refill.Activity     * fc.RefillRate
+      if (fc.production == null) continue;
+      double netRate = fc.RefillActivity      * fc.RefillRate
                      - fc.production.Activity * fc.ProductionDrainRate;
       fc.Manifold.Integrate(netRate, deltaT);
     }
   }
 
-  // Drain/fill reaction-wheel accumulators off-LP. Drain comes from
+  // Drain/fill reaction-wheel accumulators off-system. Drain comes from
   // live intensity (sum of |throttles| set this frame by SolveAttitude);
   // refill comes from the LP-solved refill device's previous Activity.
-  // The hysteresis flip itself happens in ReactionWheel.OnPreSolve
-  // (mirrors UpdateFuelCellDevices); this method just integrates the
-  // buffer and refreshes the per-wheel ValidUntil forecast so the Tick
-  // scheduler steps to the right next event.
+  // The hysteresis flip itself happens in ReactionWheel.OnPreSolve;
+  // this method just integrates the buffer and refreshes the per-wheel
+  // ValidUntil forecast so the Tick scheduler steps to the right next
+  // event.
   private void IntegrateReactionWheelBuffers(double deltaT) {
     if (deltaT <= 0) return;
 
@@ -417,10 +415,6 @@ public class VirtualVessel {
   //   2. After IntegrateReactionWheelBuffers — buffer state advances.
   //   3. End of DoSolve — refill.Activity changes when the LP solves
   //      with a flipped Demand.
-  // Together these guarantee `nextExpiry` reflects the true time of
-  // the next hysteresis flip, so the Tick loop can step there directly
-  // (matters for long-interval catch-up; loaded vessels at 50 Hz would
-  // be fine without it, but the refresh is cheap).
   private void UpdateReactionWheelForecasts() {
     foreach (var w in AllComponents().OfType<ReactionWheel>())
       UpdateReactionWheelForecast(w);
@@ -452,14 +446,10 @@ public class VirtualVessel {
   // legitimately land within FP precision of the current simulationTime
   // (e.g. a wheel-buffer forecast where slack/rate < ulp(simTime) makes
   // `simulationTime + dt == simulationTime` exactly). Without a floor,
-  // `nextStop - simulationTime` is then 0, no integration runs, the
-  // OnPreSolve check sees a frac that's still strictly below threshold,
-  // and the loop spins on the same time point until MaxTickIterations
-  // forces it through. 1 µs is well above representable-time precision
-  // even at multi-year simTime, and small enough to be physically
-  // unobservable. The integration over MinTickStep also overshoots any
-  // sub-precision gap to the threshold (rate × 1 µs ≫ ulp), so the
-  // accumulator clamps to capacity and the next solve flips cleanly.
+  // `nextStop - simulationTime` is then 0, no integration runs, and the
+  // loop spins on the same time point until MaxTickIterations forces it
+  // through. 1 µs is well above representable-time precision even at
+  // multi-year simTime, and small enough to be physically unobservable.
   private const double MinTickStep = 1e-6;
 
   private void DoSolve() {
@@ -470,7 +460,10 @@ public class VirtualVessel {
       UpdateFuelCellDevices();
       foreach (var component in AllComponents())
         component.OnPreSolve();
-      solver.Solve();
+
+      systems.Staging.Solve();
+      systems.Process.Solve();
+
       DistributeSolarPanelCurrentRates();
       DistributeFuelCellState();
       // Wheel forecasts depend on the freshly-solved refill.Activity —
@@ -502,7 +495,7 @@ public class VirtualVessel {
   }
 
   public void Tick(double targetTime) {
-    if (solver == null) return;
+    if (systems == null) return;
 
     // SolveAttitude (NovaVesselModule.FixedUpdate, runs before this
     // Tick) may have changed wheel intensity since the last solve —
@@ -535,8 +528,6 @@ public class VirtualVessel {
         simulationTime = nextStop;
         // Don't recompute nextExpiry here — keep the cached value so
         // the expiry check below can fire for the event we just hit.
-        // The post-DoSolve refresh + Tick-start refresh keep the cache
-        // current at the actual decision points.
       }
 
       // Fire any component whose ValidUntil has elapsed (slice rollover,
@@ -555,10 +546,14 @@ public class VirtualVessel {
     }
   }
 
+  // Advance every system's buffers (Topological tanks via Staging,
+  // Uniform batteries via Process) by deltaT. Per BackgroundSystem
+  // contract, current rates remain valid for this dt window — the
+  // runner's nextExpiry guarantees we don't step past a state change.
   private void IntegrateBuffers(double deltaT) {
     if (deltaT <= 0) return;
-    foreach (var node in solver.AllNodes())
-      node.IntegrateBuffers(deltaT);
+    systems.Staging.Tick(deltaT);
+    systems.Process.Tick(deltaT);
   }
 
   private void UpdateShadowState() {
@@ -575,17 +570,27 @@ public class VirtualVessel {
     }
   }
 
+  // Combine relative-dt horizons from each system with absolute
+  // ValidUntils on devices and components. Returns the next event
+  // time in absolute simulationTime coordinates.
   private double ComputeNextExpiry(double now) {
     var earliest = double.PositiveInfinity;
-    foreach (var node in solver.AllNodes()) {
-      earliest = Math.Min(earliest, now + node.TimeToNextExpiry());
-      foreach (var device in node.Devices)
-        if (device.ValidUntil < earliest)
-          earliest = device.ValidUntil;
-    }
-    // Component-level expiries (e.g. science slice rollovers). Default
-    // VirtualComponent.ValidUntil is +Infinity, so any non-event-driven
-    // component contributes nothing to this min.
+
+    var stagingDt = systems.Staging.MaxTickDt();
+    if (!double.IsPositiveInfinity(stagingDt))
+      earliest = Math.Min(earliest, now + stagingDt);
+    var processDt = systems.Process.MaxTickDt();
+    if (!double.IsPositiveInfinity(processDt))
+      earliest = Math.Min(earliest, now + processDt);
+
+    // Process devices may carry per-device forecasts (solar shadow,
+    // fuel-cell production flip, reaction-wheel refill flip).
+    foreach (var d in systems.Process.Devices)
+      if (d.ValidUntil < earliest)
+        earliest = d.ValidUntil;
+
+    // Component-level expiries (science slice rollovers, fuel-cell
+    // refill flip — anything outside the per-device forecast).
     foreach (var cmp in AllComponents())
       if (cmp.ValidUntil < earliest)
         earliest = cmp.ValidUntil;
@@ -643,20 +648,21 @@ public class VirtualVessel {
         }
       }
     }
-    foreach (var node in solver.AllNodes())
+    foreach (var node in systems.Staging.Nodes)
       node.Jettisoned = false;
     simulationTime = time;
     needsSolve = true;
   }
 
   /// <summary>
-  /// Run OnPreSolve on all components and solve the resource system.
+  /// Run OnPreSolve on all components and solve the resource systems.
   /// Used by DeltaVSimulation on cloned vessels.
   /// </summary>
   public void Solve() {
     foreach (var cmp in AllComponents())
       cmp.OnPreSolve();
-    solver.Solve();
+    systems.Staging.Solve();
+    systems.Process.Solve();
   }
 
   public void UpdatePartTree(Dictionary<uint, uint?> parentMap) {
@@ -665,7 +671,7 @@ public class VirtualVessel {
 
   /// <summary>
   /// Create an independent deep copy of this vessel. Components are cloned
-  /// via their Clone() methods. The clone has its own solver.
+  /// via their Clone() methods. The clone has its own systems.
   /// </summary>
   public VirtualVessel Clone(double time) {
     var clone = new VirtualVessel();

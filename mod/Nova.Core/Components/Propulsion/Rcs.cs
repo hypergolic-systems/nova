@@ -1,8 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Nova.Core.Resources;
-using Nova.Core.Flight;
-using Nova.Core.Utils;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Propulsion;
 
@@ -12,10 +11,22 @@ public class Rcs : VirtualComponent {
   public int ThrusterCount; // set by KSP module after counting transforms
   public double Throttle; // 0-1, aggregate from RCS solver
 
-  private ResourceSolver.Device device;
+  // Per-propellant staging demands. Order matches Propellants.
+  private List<StagingFlowSystem.Demand> demands;
 
-  public double Satisfaction => device != null ? device.Satisfaction : 0;
-  public double NormalizedOutput => device != null ? device.Activity : 0;
+  // Min activity across propellants — fraction of requested rate
+  // delivered. Maps to the old `device.Satisfaction`.
+  public double Satisfaction {
+    get {
+      if (demands == null || demands.Count == 0) return 0;
+      double minAct = 1.0;
+      foreach (var d in demands) if (d.Activity < minAct) minAct = d.Activity;
+      return minAct;
+    }
+  }
+
+  // Effective throttle achieved this tick (Throttle × Satisfaction).
+  public double NormalizedOutput => Throttle * Satisfaction;
 
   public class Propellant {
     public Resource Resource;
@@ -56,24 +67,26 @@ public class Rcs : VirtualComponent {
     return clone;
   }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     if (ThrusterCount > 0 && Isp > 0) {
       var maxThrust = ThrusterPower * ThrusterCount;
-      var massFlow = maxThrust * 1000 / (Isp * G0);
+      var totalMassFlow = maxThrust * 1000 / (Isp * G0);
       var batchMass = Propellants.Sum(p => p.Ratio * p.Resource.Density);
       if (batchMass > 0) {
-        var maxBatchRate = massFlow / batchMass;
+        var maxBatchRate = totalMassFlow / batchMass;
         foreach (var prop in Propellants)
           prop.MaxFlow = maxBatchRate * prop.Ratio;
       }
     }
 
-    device = node.AddDevice(ResourceSolver.Priority.Low);
+    demands = new List<StagingFlowSystem.Demand>(Propellants.Count);
     foreach (var prop in Propellants)
-      device.AddInput(prop.Resource, prop.MaxFlow);
+      demands.Add(systems.Staging.RegisterDemand(node, prop.Resource));
   }
 
   public override void OnPreSolve() {
-    if (device != null)
-      device.Demand = Throttle;
-  }}
+    if (demands == null) return;
+    for (int i = 0; i < demands.Count; i++)
+      demands[i].Rate = Throttle * Propellants[i].MaxFlow;
+  }
+}

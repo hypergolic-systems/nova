@@ -1,5 +1,6 @@
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Electrical;
 
@@ -59,8 +60,23 @@ public class FuelCell : VirtualComponent {
   // Combined volumetric production drain at full activity (mix-L/s).
   public double ProductionDrainRate => Lh2Rate + LoxRate;
 
-  internal ResourceSolver.Device refill;
-  internal ResourceSolver.Device production;
+  // Refill is two coupled staging demands (LH₂ + LOx). Effective refill
+  // is bottleneck-limited: min(d.Activity) × RefillRate.
+  internal StagingFlowSystem.Demand refillLh2;
+  internal StagingFlowSystem.Demand refillLox;
+  internal ProcessFlowSystem.Device production;
+
+  // Min-activity across the refill demands — fraction of requested mix
+  // refill rate that's actually deliverable. Old code looked at
+  // refill.Activity; the equivalent here is min over per-resource demands.
+  public double RefillActivity {
+    get {
+      if (refillLh2 == null || refillLox == null) return 0;
+      var a = refillLh2.Activity;
+      var b = refillLox.Activity;
+      return a < b ? a : b;
+    }
+  }
 
   public override VirtualComponent Clone() {
     return new FuelCell {
@@ -76,17 +92,26 @@ public class FuelCell : VirtualComponent {
     };
   }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
-    refill = node.AddDevice(ResourceSolver.Priority.Low);
-    // The two LP inputs scale in lockstep via the device's single Activity.
-    // Together they consume RefillRate mix-L/s split by Lh2Frac / LoxFrac.
-    refill.AddInput(Resource.LiquidHydrogen, RefillRate * Lh2Frac);
-    refill.AddInput(Resource.LiquidOxygen,   RefillRate * LoxFrac);
-    refill.Demand = RefillActive ? 1.0 : 0.0;
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
+    // Refill: two staging demands at fixed mix-proportions. They scale
+    // in lockstep via OnPreSolve (Rate flips to RefillRate × Frac when
+    // active, 0 otherwise) — a single bottleneck pins the manifold's
+    // effective fill via min(Activity).
+    refillLh2 = systems.Staging.RegisterDemand(node, Resource.LiquidHydrogen);
+    refillLox = systems.Staging.RegisterDemand(node, Resource.LiquidOxygen);
 
-    production = node.AddDevice(ResourceSolver.Priority.Low);
+    // Production: vessel-wide EC producer. Activity is gated each tick
+    // by the orchestrator (IsActive + manifold-non-empty).
+    production = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
     production.AddOutput(Resource.ElectricCharge, EcOutput);
     production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
+  }
+
+  public override void OnPreSolve() {
+    if (refillLh2 == null || refillLox == null) return;
+    var rate = RefillActive ? RefillRate : 0;
+    refillLh2.Rate = rate * Lh2Frac;
+    refillLox.Rate = rate * LoxFrac;
   }
 
   public override void Save(PartState state) {

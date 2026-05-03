@@ -1,6 +1,7 @@
 using System;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Propulsion;
 
@@ -65,7 +66,7 @@ public class ReactionWheel : VirtualComponent {
   public double CurrentDrain;     // W into the motor this tick (drained from buffer + bus)
   public double CurrentRefill;    // W from the EC bus this tick (refill device's actual delivery)
 
-  internal ResourceSolver.Device refill;
+  internal ProcessFlowSystem.Device refill;
 
   // Public read-only access to the refill device's ValidUntil — handy
   // for tests asserting forecast behaviour and for telemetry that wants
@@ -89,7 +90,7 @@ public class ReactionWheel : VirtualComponent {
     };
   }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     Buffer ??= new Accumulator {
       Capacity = BufferCapacityJoules,
       Contents = BufferCapacityJoules,  // fresh spawn primes to full
@@ -100,11 +101,11 @@ public class ReactionWheel : VirtualComponent {
     if (Buffer.Contents > Buffer.Capacity) Buffer.Contents = Buffer.Capacity;
 
     // Priority.Low — matches FuelCell.refill. Wheel refill is
-    // opportunistic top-up of an off-LP buffer; if the bus is bound
-    // (e.g. battery MaxRateOut < refill+other consumers) we'd rather
-    // throttle refill and keep avionics/lights powered than the
-    // other way round. Buffer covers wheel work in the meantime.
-    refill = node.AddDevice(ResourceSolver.Priority.Low);
+    // opportunistic top-up of an off-system buffer; if the EC bus is
+    // bound we'd rather throttle refill and keep avionics/lights
+    // powered than the other way round. Buffer covers wheel work in
+    // the meantime.
+    refill = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
     refill.AddInput(Resource.ElectricCharge, RefillRateWatts);
     refill.Demand = RefillActive ? 1.0 : 0.0;
   }

@@ -53,11 +53,16 @@ public class StagingFlowSystem : BackgroundSystem {
 
   public class Node {
     internal long id;
-    public long Id => id;
+    public long Id { get => id; internal set => id = value; }
     public int DrainPriority;
     public bool Jettisoned;
     public double DryMass;
     public List<Buffer> Buffers = new();
+
+    // Children-via-edges. Populated by StagingFlowSystem.AddEdge so
+    // walkers can recurse the subtree (e.g. decoupler-driven jettison
+    // marks every node below the decoupler).
+    internal List<Node> children = new();
 
     public Buffer AddBuffer(Resource resource, double capacity) {
       var b = new Buffer {
@@ -67,6 +72,44 @@ public class StagingFlowSystem : BackgroundSystem {
       };
       Buffers.Add(b);
       return b;
+    }
+
+    // Self + all descendants reachable by walking child links transitively.
+    public IEnumerable<Node> AllSubtreeNodes() {
+      yield return this;
+      foreach (var c in children)
+        foreach (var n in c.AllSubtreeNodes())
+          yield return n;
+    }
+
+    // Total mass = dry + Σ buffer mass (Density × Contents).
+    public double Mass() {
+      double m = DryMass;
+      foreach (var b in Buffers)
+        m += b.Contents * b.Resource.Density;
+      return m;
+    }
+
+    // Time to the next event affecting this node's buffers (a buffer
+    // empties or fills). +∞ when no rate is moving things.
+    public double TimeToNextExpiry() {
+      double earliest = double.PositiveInfinity;
+      foreach (var b in Buffers) {
+        if (b.Rate < 0 && b.Contents > Epsilon) {
+          var t = b.Contents / -b.Rate;
+          if (t < earliest) earliest = t;
+        } else if (b.Rate > 0 && b.Contents < b.Capacity - Epsilon) {
+          var t = (b.Capacity - b.Contents) / b.Rate;
+          if (t < earliest) earliest = t;
+        }
+      }
+      return earliest;
+    }
+
+    // Integrate every buffer on this node by dt. Used when callers
+    // want node-scoped integration (e.g. DeltaV's per-tier sims).
+    public void IntegrateBuffers(double dt) {
+      foreach (var b in Buffers) b.Integrate(dt);
     }
   }
 
@@ -115,10 +158,16 @@ public class StagingFlowSystem : BackgroundSystem {
       UpOnlyResources = upOnlyResources ?? new HashSet<Resource>(),
     };
     edges.Add(e);
+    a.children.Add(b);
     return e;
   }
 
   public IEnumerable<Node> Nodes => nodes;
+
+  // All non-jettisoned nodes. The active set for mass / drain / etc.
+  public IEnumerable<Node> ActiveNodes() {
+    foreach (var n in nodes) if (!n.Jettisoned) yield return n;
+  }
 
   // ── Demand registration ────────────────────────────────────────────
 
@@ -134,6 +183,16 @@ public class StagingFlowSystem : BackgroundSystem {
   public IEnumerable<Demand> Demands => demands;
 
   // ── Reach ──────────────────────────────────────────────────────────
+
+  // All buffers of `resource` on nodes reachable from `from`. Used by
+  // telemetry to compute an engine's per-propellant fuel pool.
+  public List<Buffer> ReachableBuffers(Node from, Resource resource) {
+    var result = new List<Buffer>();
+    foreach (var n in ReachableNodes(from, resource))
+      foreach (var b in n.Buffers)
+        if (ReferenceEquals(b.Resource, resource)) result.Add(b);
+    return result;
+  }
 
   // Walk edges from `from`, respecting AllowedResources and UpOnly-
   // Resources. Returns all reachable, non-jettisoned nodes (including

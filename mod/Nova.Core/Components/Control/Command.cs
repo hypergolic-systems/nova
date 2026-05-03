@@ -1,4 +1,5 @@
 using Nova.Core.Resources;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Control;
 
@@ -24,8 +25,8 @@ public class Command : VirtualComponent {
 
   public bool TestLoadActive;   // runtime; reset to false on each build
 
-  internal ResourceSolver.Device idleDevice;
-  internal ResourceSolver.Device testLoadDevice;
+  internal ProcessFlowSystem.Device idleDevice;
+  internal ProcessFlowSystem.Device testLoadDevice;
 
   public double IdleActivity => idleDevice != null ? idleDevice.Activity : 0;
   public double TestLoadActivity => testLoadDevice != null ? testLoadDevice.Activity : 0;
@@ -38,13 +39,13 @@ public class Command : VirtualComponent {
     };
   }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     if (IdleDraw > 0) {
       // Avionics baseline runs at Priority.High — without flight
       // computer power the vessel loses control authority, so the LP
       // satisfies it ahead of opportunistic loads (wheel-buffer
       // refill, lights, etc.) when the bus is contended.
-      idleDevice = node.AddDevice(ResourceSolver.Priority.High);
+      idleDevice = systems.Process.AddDevice(ProcessFlowSystem.Priority.High);
       idleDevice.AddInput(Resource.ElectricCharge, IdleDraw);
       idleDevice.Demand = 1.0;
     }
@@ -52,7 +53,7 @@ public class Command : VirtualComponent {
       // Test load is a debug bus-exerciser, NOT a real avionics
       // dependency — keep it at Low so it competes with refills and
       // lights, the loads it's actually meant to stress-test.
-      testLoadDevice = node.AddDevice(ResourceSolver.Priority.Low);
+      testLoadDevice = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
       testLoadDevice.AddInput(Resource.ElectricCharge, TestLoadRate);
       testLoadDevice.Demand = TestLoadActive ? 1.0 : 0.0;
     }

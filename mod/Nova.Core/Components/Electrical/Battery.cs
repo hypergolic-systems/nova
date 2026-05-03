@@ -1,8 +1,7 @@
 using Nova.Core.Persistence;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
-using Nova.Core.Flight;
-using Nova.Core.Utils;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Electrical;
 
@@ -53,10 +52,7 @@ public class Battery : VirtualComponent {
     };
   }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
-    var buf = node.AddBuffer(Resource.ElectricCharge, Buffer.Capacity);
-    buf.FlowLimits(Buffer.MaxRateIn, Buffer.MaxRateOut);
-    buf.Contents = Buffer.Contents;
-    Buffer = buf;
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
+    systems.Process.AddBuffer(Buffer);
   }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Nova.Core.Components;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Resources;
 
@@ -34,7 +35,7 @@ public class DeltaVSimulation {
   }
 
   private static List<StageResult> RunInternal(VirtualVessel sim, List<StageDefinition> stages) {
-    var solver = sim.Solver;
+    var staging = sim.Systems.Staging;
     var results = new List<StageResult>();
 
     var propellantResources = new HashSet<Resource>();
@@ -47,9 +48,9 @@ public class DeltaVSimulation {
 
       // Jettison this stage's decoupler tiers.
       foreach (var partId in stageDef.DecouplerPartIds) {
-        var node = solver.AllNodes().FirstOrDefault(n => n.id == (long)partId);
+        var node = staging.Nodes.FirstOrDefault(n => n.Id == (long)partId);
         if (node != null)
-          foreach (var n in node.AllNodes())
+          foreach (var n in node.AllSubtreeNodes())
             n.Jettisoned = true;
       }
 
@@ -60,20 +61,20 @@ public class DeltaVSimulation {
       }
 
       // Trigger: next stage's decoupler tiers are spent.
-      var triggerNodes = new HashSet<ResourceSolver.Node>();
+      var triggerNodes = new HashSet<StagingFlowSystem.Node>();
       var nextDecouplerStage = stages.Skip(i + 1).FirstOrDefault(s => s.DecouplerPartIds.Count > 0);
       if (nextDecouplerStage != null) {
         foreach (var partId in nextDecouplerStage.DecouplerPartIds) {
-          var node = solver.AllNodes().FirstOrDefault(n => n.id == (long)partId);
+          var node = staging.Nodes.FirstOrDefault(n => n.Id == (long)partId);
           if (node != null)
-            foreach (var n in node.AllNodes().Where(x => !x.Jettisoned))
+            foreach (var n in node.AllSubtreeNodes().Where(x => !x.Jettisoned))
               triggerNodes.Add(n);
         }
       } else {
-        triggerNodes = new HashSet<ResourceSolver.Node>(solver.ActiveNodes());
+        triggerNodes = new HashSet<StagingFlowSystem.Node>(staging.ActiveNodes());
       }
 
-      var stageResult = Burn(sim, solver, propellantResources, triggerNodes);
+      var stageResult = Burn(sim, staging, propellantResources, triggerNodes);
       if (stageResult != null) {
         stageResult.InverseStageIndex = stageDef.InverseStageIndex;
         results.Add(stageResult);
@@ -85,12 +86,12 @@ public class DeltaVSimulation {
 
   private static StageResult Burn(
       VirtualVessel sim,
-      ResourceSolver solver,
+      StagingFlowSystem staging,
       HashSet<Resource> propellantResources,
-      HashSet<ResourceSolver.Node> triggerNodes) {
+      HashSet<StagingFlowSystem.Node> triggerNodes) {
 
     double stageDeltaV = 0, stageBurnTime = 0;
-    double stageStartMass = solver.ActiveNodes().Sum(n => n.Mass());
+    double stageStartMass = staging.ActiveNodes().Sum(n => n.Mass());
     double lastThrust = 0, lastMassFlow = 0;
     int iterations = 0;
 
@@ -103,13 +104,14 @@ public class DeltaVSimulation {
       var (thrust, massFlow) = ComputeThrustAndFlow(sim);
       if (thrust > Epsilon) { lastThrust = thrust; lastMassFlow = massFlow; }
 
-      var dt = solver.ActiveNodes().Min(n => n.TimeToNextExpiry());
+      // dt = horizon to the next staging-buffer event (a tank empties
+      // or fills). Bounds the "rates valid for" window.
+      var dt = staging.MaxTickDt();
       if (dt <= 0 || double.IsPositiveInfinity(dt)) break;
 
-      var massStart = solver.ActiveNodes().Sum(n => n.Mass());
-      foreach (var node in solver.ActiveNodes())
-        node.IntegrateBuffers(dt);
-      var massEnd = solver.ActiveNodes().Sum(n => n.Mass());
+      var massStart = staging.ActiveNodes().Sum(n => n.Mass());
+      staging.Tick(dt);
+      var massEnd = staging.ActiveNodes().Sum(n => n.Mass());
 
       if (massEnd > Epsilon && massStart > massEnd) {
         var ispEff = thrust * 1000 / (G0 * massFlow);
@@ -122,7 +124,7 @@ public class DeltaVSimulation {
       return new StageResult {
         DeltaV = stageDeltaV,
         StartMass = stageStartMass,
-        EndMass = solver.ActiveNodes().Sum(n => n.Mass()),
+        EndMass = staging.ActiveNodes().Sum(n => n.Mass()),
         Thrust = lastThrust,
         Isp = lastMassFlow > Epsilon ? lastThrust * 1000 / (G0 * lastMassFlow) : 0,
         BurnTime = stageBurnTime,
@@ -132,19 +134,15 @@ public class DeltaVSimulation {
   }
 
   private static bool AllTiersSpent(
-      HashSet<ResourceSolver.Node> tierNodes,
+      HashSet<StagingFlowSystem.Node> tierNodes,
       HashSet<Resource> propellantResources) {
 
+    // "Spent" = no propellant buffer on any tier node is currently
+    // flowing. Engines that can't be supplied report Activity = 0 and
+    // their buffer rates collapse to zero too — captured by the same
+    // check.
     foreach (var node in tierNodes) {
       if (node.Jettisoned) continue;
-
-      // Check if any device on this node has activity.
-      foreach (var device in node.Devices) {
-        if (device.Activity > Epsilon)
-          return false;
-      }
-
-      // Check if any propellant buffer is flowing.
       foreach (var buffer in node.Buffers) {
         if (!propellantResources.Contains(buffer.Resource)) continue;
         if (Math.Abs(buffer.Rate) > Epsilon)

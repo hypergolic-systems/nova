@@ -1,9 +1,7 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nova.Core.Resources;
-using Nova.Core.Flight;
-using Nova.Core.Utils;
+using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Propulsion;
 
@@ -19,8 +17,36 @@ public class Engine : VirtualComponent {
   public bool Ignited;
   public bool Flameout;
 
-  public double Satisfaction => device != null ? device.Satisfaction : 0;
-  public double NormalizedOutput => device != null ? device.Activity : 0;
+  // Effective throttle achieved this tick — Throttle scaled down by
+  // the worst-case per-propellant satisfaction. When all propellants
+  // are fully reachable: NormalizedOutput == Throttle. When one
+  // propellant is starved (e.g. RP-1 reach empty): the engine effective
+  // output is gated by the bottleneck — NormalizedOutput == Throttle ×
+  // min(d.Activity).
+  //
+  // Note this means non-bottleneck propellants are slightly over-drained
+  // for one tick when a bottleneck arises (we requested at full Throttle
+  // but only delivered min Activity worth). The over-draw self-corrects
+  // as MaxTickDt shrinks toward the bottleneck and we re-solve.
+  public double NormalizedOutput {
+    get {
+      if (demands == null || demands.Count == 0) return 0;
+      double minAct = 1.0;
+      foreach (var d in demands) if (d.Activity < minAct) minAct = d.Activity;
+      return Throttle * minAct;
+    }
+  }
+
+  // Min activity across propellants — fraction of *requested* throttle
+  // we actually achieved. Equal to 1.0 when fully satisfied.
+  public double Satisfaction {
+    get {
+      if (demands == null || demands.Count == 0) return 0;
+      double minAct = 1.0;
+      foreach (var d in demands) if (d.Activity < minAct) minAct = d.Activity;
+      return minAct;
+    }
+  }
 
   public class Propellant {
     public Resource Resource;
@@ -35,7 +61,9 @@ public class Engine : VirtualComponent {
   private double massFlow; // kg/s at full throttle
   private double batchMass; // kg per recipe batch
 
-  private ResourceSolver.Device device;
+  // Per-propellant staging demands. Order matches Propellants order so
+  // OnPreSolve can update Rate per index without a lookup.
+  private List<StagingFlowSystem.Demand> demands;
 
   public void Initialize(double thrust, double isp,
       List<(Resource resource, double ratio)> propellants) {
@@ -85,22 +113,22 @@ public class Engine : VirtualComponent {
     return clone;
   }
 
-  // The solver node this engine's device sits on. Set once by
-  // `OnBuildSolver` and cleared whenever the topology is rebuilt
-  // (the next OnBuildSolver call will replace it with the fresh
-  // node). Surfaced for telemetry — `NovaEngineTopic` walks reach
-  // from here to compute the engine's fuel pool.
-  public ResourceSolver.Node Node { get; private set; }
+  // The staging node this engine's demands attach to. Set once by
+  // OnBuildSystems and cleared whenever the topology is rebuilt.
+  // Surfaced for telemetry — `NovaEngineTopic` walks reach from here
+  // to compute the engine's fuel pool.
+  public StagingFlowSystem.Node Node { get; private set; }
 
-  public override void OnBuildSolver(ResourceSolver solver, ResourceSolver.Node node) {
+  public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
     Node = node;
-    device = node.AddDevice(ResourceSolver.Priority.Low);
+    demands = new List<StagingFlowSystem.Demand>(Propellants.Count);
     foreach (var prop in Propellants)
-      device.AddInput(prop.Resource, prop.MaxFlow);
+      demands.Add(systems.Staging.RegisterDemand(node, prop.Resource));
   }
 
   public override void OnPreSolve() {
-    if (device != null)
-      device.Demand = Throttle;
+    if (demands == null) return;
+    for (int i = 0; i < demands.Count; i++)
+      demands[i].Rate = Throttle * Propellants[i].MaxFlow;
   }
 }

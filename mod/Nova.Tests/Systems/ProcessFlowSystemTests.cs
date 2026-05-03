@@ -275,21 +275,11 @@ public class ProcessFlowSystemTests {
     Assert.AreEqual(10.0, sys.MaxTickDt(), 0.001);
   }
 
-  [TestMethod]
-  public void MaxTickDt_DeviceValidUntil_TightensHorizon() {
-    var sys = new ProcessFlowSystem();
-    var bat = Battery(100, 100);
-    sys.AddBuffer(bat);
-
-    var consumer = sys.AddDevice(ProcessFlowSystem.Priority.Low);
-    consumer.AddInput(Resource.ElectricCharge, 10);
-    consumer.Demand = 1.0;
-    consumer.ValidUntil = 3.0;
-
-    sys.Solve();
-
-    Assert.AreEqual(3.0, sys.MaxTickDt(), 0.001);
-  }
+  // Device.ValidUntil is an absolute-time forecast (not a relative
+  // dt), and the runner combines it with system-level dt at vessel
+  // scope. So MaxTickDt is a buffer-only horizon — exercised by the
+  // BatteryEmpties / BatteryFills tests above. There's no in-system
+  // assertion left for ValidUntil.
 
   [TestMethod]
   public void Tick_IntegratesBufferRate() {

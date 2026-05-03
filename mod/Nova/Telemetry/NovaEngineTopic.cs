@@ -3,6 +3,7 @@ using Dragonglass.Telemetry.Topics;
 using Nova.Components;
 using Nova.Core.Components.Propulsion;
 using Nova.Core.Resources;
+using Nova.Core.Systems;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -10,19 +11,19 @@ namespace Nova.Telemetry;
 // Nova's engine-topic override. Subclass of DG's EngineTopic — wire
 // shape and Name are inherited unchanged, the only override is the
 // data source. Where the stock topic samples ModuleEngines + walks
-// `Part.crossfeedPartSet`, this reads from Nova's own LP solver:
+// `Part.crossfeedPartSet`, this reads from Nova's own systems:
 //
 //   - Per-engine state (throttle, Isp, thrust, ignition, flameout)
 //     comes from the `Engine` virtual component.
 //   - Fuel-pool reach + propellant aggregation use
-//     `ResourceSolver.ReachableNodes` / `ReachableBuffers` from the
-//     engine's solver node — same connectivity the LP enforces, so
-//     the HUD's fuel-group readout matches what the DV simulation
+//     `StagingFlowSystem.ReachableNodes` / `ReachableBuffers` from
+//     the engine's staging node — same connectivity water-fill uses,
+//     so the HUD's fuel-group readout matches what the DV simulation
 //     would compute if you isolated this engine and let it drain.
 //
 // Stock `crossfeedPartSet` is dead in Nova (we patch out
 // `Vessel.BuildCrossfeedPartSets`). The signature on the wire uses
-// solver node IDs rather than part flightIDs — opaque strings the
+// staging node IDs rather than part flightIDs — opaque strings the
 // HUD's `groupEngines` only consumes as a grouping key.
 //
 // Like the base topic we maintain a structural cache rebuilt on KSP
@@ -150,8 +151,8 @@ public sealed class NovaEngineTopic : EngineTopic {
     if (v == null || v.parts == null) return;
 
     var vm = v.FindVesselModuleImplementing<NovaVesselModule>();
-    var solver = vm?.Virtual?.Solver;
-    if (solver == null) {
+    var staging = vm?.Virtual?.Systems?.Staging;
+    if (staging == null) {
       // VirtualVessel hasn't been built yet (early in vessel load).
       // Mark dirty so we retry next frame.
       _structureDirty = true;
@@ -175,14 +176,14 @@ public sealed class NovaEngineTopic : EngineTopic {
 
       var es = new EngineEntry { Part = p, Engine = engine };
 
-      // Fuel-pool reach: union of reachable solver nodes across this
+      // Fuel-pool reach: union of reachable staging nodes across this
       // engine's propellants. Using node IDs (rather than part IDs)
       // sidesteps the node↔parts mapping — the HUD only consumes this
       // list as an opaque grouping signature, and node identity is
-      // exactly what defines the LP-visible fuel pool.
-      var reachedNodes = new HashSet<ResourceSolver.Node>();
+      // exactly what defines the visible fuel pool.
+      var reachedNodes = new HashSet<StagingFlowSystem.Node>();
       foreach (var prop in engine.Propellants) {
-        foreach (var n in solver.ReachableNodes(engine.Node, prop.Resource))
+        foreach (var n in staging.ReachableNodes(engine.Node, prop.Resource))
           reachedNodes.Add(n);
       }
       var nodeIds = new List<long>(reachedNodes.Count);
@@ -198,7 +199,7 @@ public sealed class NovaEngineTopic : EngineTopic {
           Name = prop.Resource.Name,
           Abbreviation = prop.Resource.Abbreviation,
         };
-        pe.Buffers.AddRange(solver.ReachableBuffers(engine.Node, prop.Resource));
+        pe.Buffers.AddRange(staging.ReachableBuffers(engine.Node, prop.Resource));
         es.Propellants.Add(pe);
       }
 
