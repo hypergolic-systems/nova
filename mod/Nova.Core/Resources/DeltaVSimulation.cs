@@ -116,7 +116,9 @@ public class DeltaVSimulation {
       if (dt <= 0 || double.IsPositiveInfinity(dt)) break;
 
       var massStart = staging.ActiveNodes().Sum(n => n.Mass());
-      staging.Tick(dt);
+      // Advance the cloned vessel's clock — buffer Contents lerps
+      // forward against the new UT. No per-buffer mutation needed.
+      sim.Systems.Clock.UT += dt;
       var massEnd = staging.ActiveNodes().Sum(n => n.Mass());
 
       // Belt-and-suspenders against div-by-zero: skip the dV term if

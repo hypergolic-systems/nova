@@ -92,6 +92,14 @@ public class ProcessFlowSystem : BackgroundSystem {
   private Dictionary<Resource, Constraint> conservationByResource = new();
   private Dictionary<Device, Constraint> deviceAlpha = new();
 
+  private readonly SimClock clock;
+
+  public SimClock Clock => clock;
+
+  public ProcessFlowSystem(SimClock clock = null) {
+    this.clock = clock ?? new SimClock();
+  }
+
   // ── Public construction ────────────────────────────────────────────
 
   public Device AddDevice(Priority priority) {
@@ -108,6 +116,12 @@ public class ProcessFlowSystem : BackgroundSystem {
     if (buffer.Resource.Domain != ResourceDomain.Uniform) throw new ArgumentException(
         $"ProcessFlowSystem only accepts Uniform resources; got {buffer.Resource.Name} " +
         $"({buffer.Resource.Domain}). Topological resources belong on StagingFlowSystem.");
+    // Adopt this system's clock so Contents lerps against the same UT
+    // as the staging-side buffers. Battery / others construct their
+    // own Buffer with BaselineContents pre-set; we just need to wire
+    // the clock + baseline UT.
+    buffer.Clock = clock;
+    if (buffer.BaselineUT == 0) buffer.BaselineUT = clock.UT;
     if (!buffersByResource.TryGetValue(buffer.Resource, out var list))
       buffersByResource[buffer.Resource] = list = new List<Buffer>();
     list.Add(buffer);
@@ -122,6 +136,14 @@ public class ProcessFlowSystem : BackgroundSystem {
       BuildLP();
       topologyFinalized = true;
     }
+
+    // Re-baseline every buffer at the current clock UT before
+    // mutating rates. The Rate setter would auto-rebaseline too,
+    // but doing it here once means subsequent reads in the LP
+    // (Contents > Epsilon checks, etc.) see a stable BaselineContents
+    // matching the LP's "now".
+    foreach (var pair in buffersByResource)
+      foreach (var b in pair.Value) b.Refresh(clock.UT);
 
     ResetPerTickBounds();
 
@@ -185,11 +207,12 @@ public class ProcessFlowSystem : BackgroundSystem {
     double earliest = double.PositiveInfinity;
     foreach (var pair in buffersByResource) {
       foreach (var b in pair.Value) {
-        if (b.Rate < -Epsilon && b.Contents > Epsilon) {
-          var t = b.Contents / -b.Rate;
+        var contents = b.Contents;
+        if (b.Rate < -Epsilon && contents > Epsilon) {
+          var t = contents / -b.Rate;
           if (t < earliest) earliest = t;
-        } else if (b.Rate > Epsilon && b.Contents < b.Capacity - Epsilon) {
-          var t = (b.Capacity - b.Contents) / b.Rate;
+        } else if (b.Rate > Epsilon && contents < b.Capacity - Epsilon) {
+          var t = (b.Capacity - contents) / b.Rate;
           if (t < earliest) earliest = t;
         }
       }
@@ -197,10 +220,10 @@ public class ProcessFlowSystem : BackgroundSystem {
     return earliest;
   }
 
+  // Lerp-based buffers don't need per-tick mutation — Contents is
+  // computed lazily from baseline + Rate × elapsed against the
+  // shared clock. The clock advance is VirtualVessel's job.
   public override void Tick(double dt) {
-    foreach (var pair in buffersByResource)
-      foreach (var b in pair.Value)
-        b.Integrate(dt);
   }
 
   // ── LP construction (one-shot, on first Solve) ─────────────────────

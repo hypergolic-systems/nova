@@ -282,7 +282,7 @@ public class ProcessFlowSystemTests {
   // assertion left for ValidUntil.
 
   [TestMethod]
-  public void Tick_IntegratesBufferRate() {
+  public void ClockAdvance_LerpsContents() {
     var sys = new ProcessFlowSystem();
     var bat = Battery(100, 100);
     sys.AddBuffer(bat);
@@ -292,7 +292,8 @@ public class ProcessFlowSystemTests {
     consumer.Demand = 1.0;
 
     sys.Solve();
-    sys.Tick(2.0);
+    // Lerp-based: advance clock, Contents reads back-derived value.
+    sys.Clock.UT += 2.0;
 
     Assert.AreEqual(80, bat.Contents, 0.5);
   }

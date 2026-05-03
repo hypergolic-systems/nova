@@ -11,6 +11,12 @@ namespace Nova.Core.Systems;
 // reactive logic, ThermalSystem for heat) means a new field here and
 // inclusion in `All`.
 public class VesselSystems {
+  // Per-vessel simulation clock. Shared by every Buffer the systems
+  // own — lerp-based Contents reads from here. VirtualVessel.Tick
+  // advances this; DeltaVSimulation drives a cloned vessel's clock
+  // independently of the game UT.
+  public SimClock Clock { get; }
+
   public StagingFlowSystem Staging { get; }
   public ProcessFlowSystem Process { get; }
 
@@ -20,8 +26,9 @@ public class VesselSystems {
   public IEnumerable<BackgroundSystem> All { get; }
 
   public VesselSystems() {
-    Staging = new StagingFlowSystem();
-    Process = new ProcessFlowSystem();
+    Clock = new SimClock();
+    Staging = new StagingFlowSystem(Clock);
+    Process = new ProcessFlowSystem(Clock);
     All = new BackgroundSystem[] { Staging, Process };
   }
 }

@@ -325,7 +325,7 @@ public class StagingFlowSystemTests {
   // ── Tick ────────────────────────────────────────────────────────
 
   [TestMethod]
-  public void Tick_IntegratesRatesIntoContents() {
+  public void ClockAdvance_LerpsContents() {
     var sys = new StagingFlowSystem();
     var node = sys.AddNode();
     var t = node.AddBuffer(Resource.RP1, 1000);
@@ -334,7 +334,9 @@ public class StagingFlowSystemTests {
     sys.RegisterDemand(node, Resource.RP1, 30);
     sys.Solve();
 
-    sys.Tick(2.0);
+    // Buffer doesn't integrate per-tick — Contents lerps from
+    // baseline + Rate × elapsed. Advance the clock directly.
+    sys.Clock.UT += 2.0;
     Assert.AreEqual(940, t.Contents, 0.001);
   }
 

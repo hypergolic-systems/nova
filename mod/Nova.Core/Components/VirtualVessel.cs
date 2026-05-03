@@ -80,6 +80,9 @@ public class VirtualVessel {
 
   public void InitializeSolver(double time) {
     systems = new VesselSystems();
+    // Anchor the clock at the initial UT so Contents lerps reference
+    // a sensible baseline even before the first Solve.
+    systems.Clock.UT = time;
 
     if (partTree.Count == 0)
       throw new System.InvalidOperationException("Cannot initialize solver: part tree is empty. Was UpdatePartTree called?");
@@ -509,6 +512,9 @@ public class VirtualVessel {
     while (simulationTime < targetTime) {
       if (++iterations > MaxTickIterations) {
         Log?.Invoke($"Tick() exceeded {MaxTickIterations} iterations, forcing advance. simTime={simulationTime} target={targetTime} nextExpiry={nextExpiry}");
+        // Force-advance: bump both simulationTime and the shared
+        // clock so Contents lerps reflect the target time.
+        systems.Clock.UT += targetTime - simulationTime;
         simulationTime = targetTime;
         break;
       }
@@ -546,14 +552,20 @@ public class VirtualVessel {
     }
   }
 
-  // Advance every system's buffers (Topological tanks via Staging,
-  // Uniform batteries via Process) by deltaT. Per BackgroundSystem
-  // contract, current rates remain valid for this dt window — the
-  // runner's nextExpiry guarantees we don't step past a state change.
+  // Advance the shared simulation clock by deltaT. Buffers don't need
+  // per-tick mutation — Contents lerps from baseline + Rate × elapsed
+  // against the clock at read time. Current rates are valid for this
+  // dt window; the runner's nextExpiry guarantees we don't step past
+  // a state change without re-solving.
+  //
+  // System.Tick(dt) hooks are also called — they're no-ops for the
+  // current Staging/Process pair but reserved for future systems
+  // (e.g. a thermal system tracking heat-energy diffusion) that
+  // might need their own per-tick advance work.
   private void IntegrateBuffers(double deltaT) {
     if (deltaT <= 0) return;
-    systems.Staging.Tick(deltaT);
-    systems.Process.Tick(deltaT);
+    systems.Clock.UT += deltaT;
+    foreach (var sys in systems.All) sys.Tick(deltaT);
   }
 
   private void UpdateShadowState() {
@@ -651,6 +663,7 @@ public class VirtualVessel {
     foreach (var node in systems.Staging.Nodes)
       node.Jettisoned = false;
     simulationTime = time;
+    systems.Clock.UT = time;
     needsSolve = true;
   }
 

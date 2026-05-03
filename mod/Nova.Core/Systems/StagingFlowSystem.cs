@@ -64,11 +64,17 @@ public class StagingFlowSystem : BackgroundSystem {
     // marks every node below the decoupler).
     internal List<Node> children = new();
 
+    // Shared with the owning system; passed down to every buffer
+    // created here so lerp reads see the vessel's current sim UT.
+    internal SimClock Clock;
+
     public Buffer AddBuffer(Resource resource, double capacity) {
       var b = new Buffer {
         Resource = resource,
         Capacity = capacity,
-        Contents = capacity,
+        Clock = Clock,
+        BaselineContents = capacity,
+        BaselineUT = Clock?.UT ?? 0,
       };
       Buffers.Add(b);
       return b;
@@ -82,7 +88,7 @@ public class StagingFlowSystem : BackgroundSystem {
           yield return n;
     }
 
-    // Total mass = dry + Σ buffer mass (Density × Contents).
+    // Total mass = dry + Σ buffer mass (Density × Contents-at-now).
     public double Mass() {
       double m = DryMass;
       foreach (var b in Buffers)
@@ -91,25 +97,22 @@ public class StagingFlowSystem : BackgroundSystem {
     }
 
     // Time to the next event affecting this node's buffers (a buffer
-    // empties or fills). +∞ when no rate is moving things.
+    // empties or fills). +∞ when no rate is moving things. Reads
+    // Contents at current clock UT — i.e., already accounts for any
+    // lerp drift since the last solve.
     public double TimeToNextExpiry() {
       double earliest = double.PositiveInfinity;
       foreach (var b in Buffers) {
-        if (b.Rate < 0 && b.Contents > Epsilon) {
-          var t = b.Contents / -b.Rate;
+        var contents = b.Contents;
+        if (b.Rate < 0 && contents > Epsilon) {
+          var t = contents / -b.Rate;
           if (t < earliest) earliest = t;
-        } else if (b.Rate > 0 && b.Contents < b.Capacity - Epsilon) {
-          var t = (b.Capacity - b.Contents) / b.Rate;
+        } else if (b.Rate > 0 && contents < b.Capacity - Epsilon) {
+          var t = (b.Capacity - contents) / b.Rate;
           if (t < earliest) earliest = t;
         }
       }
       return earliest;
-    }
-
-    // Integrate every buffer on this node by dt. Used when callers
-    // want node-scoped integration (e.g. DeltaV's per-tier sims).
-    public void IntegrateBuffers(double dt) {
-      foreach (var b in Buffers) b.Integrate(dt);
     }
   }
 
@@ -139,11 +142,22 @@ public class StagingFlowSystem : BackgroundSystem {
   private List<Edge> edges = new();
   private List<Demand> demands = new();
   private long nextNodeId;
+  private readonly SimClock clock;
+
+  // Exposed so callers (including tests) can advance the simulation
+  // clock directly. VirtualVessel and DeltaVSimulation drive this
+  // through their own loops; tests construct a standalone system and
+  // step the clock to drive Contents lerps.
+  public SimClock Clock => clock;
+
+  public StagingFlowSystem(SimClock clock = null) {
+    this.clock = clock ?? new SimClock();
+  }
 
   // ── Node / edge construction ───────────────────────────────────────
 
   public Node AddNode() {
-    var n = new Node { id = nextNodeId++ };
+    var n = new Node { id = nextNodeId++, Clock = clock };
     nodes.Add(n);
     return n;
   }
@@ -225,10 +239,16 @@ public class StagingFlowSystem : BackgroundSystem {
   // ── BackgroundSystem implementation ────────────────────────────────
 
   public override void Solve() {
-    // Reset all buffer rates and demand satisfactions.
-    foreach (var n in nodes)
-      foreach (var b in n.Buffers)
+    // Re-baseline every buffer at the current clock UT, then zero
+    // its rate. The Rate setter would auto-rebaseline too, but
+    // doing it once via Refresh is clearer and avoids re-reading
+    // ContentsAt for the same buffer in the per-resource solve below.
+    foreach (var n in nodes) {
+      foreach (var b in n.Buffers) {
+        b.Refresh(clock.UT);
         b.Rate = 0;
+      }
+    }
     foreach (var d in demands)
       d.Satisfied = 0;
 
@@ -452,11 +472,12 @@ public class StagingFlowSystem : BackgroundSystem {
       if (n.Jettisoned) continue;
       foreach (var b in n.Buffers) {
         if (b.Resource.Domain != ResourceDomain.Topological) continue;
-        if (b.Rate < -Epsilon && b.Contents > Epsilon) {
-          var t = b.Contents / -b.Rate;
+        var contents = b.Contents;
+        if (b.Rate < -Epsilon && contents > Epsilon) {
+          var t = contents / -b.Rate;
           if (t < earliest) earliest = t;
-        } else if (b.Rate > Epsilon && b.Contents < b.Capacity - Epsilon) {
-          var t = (b.Capacity - b.Contents) / b.Rate;
+        } else if (b.Rate > Epsilon && contents < b.Capacity - Epsilon) {
+          var t = (b.Capacity - contents) / b.Rate;
           if (t < earliest) earliest = t;
         }
       }
@@ -464,13 +485,11 @@ public class StagingFlowSystem : BackgroundSystem {
     return earliest;
   }
 
+  // Buffers are lerp-based now — Contents lazily computes from
+  // baseline + Rate × elapsed. This Tick exists to satisfy the
+  // BackgroundSystem contract; the actual time advancement is the
+  // shared clock's job (driven by VirtualVessel.Tick or
+  // DeltaVSimulation). No per-tick buffer mutation needed.
   public override void Tick(double dt) {
-    foreach (var n in nodes) {
-      if (n.Jettisoned) continue;
-      foreach (var b in n.Buffers) {
-        if (b.Resource.Domain != ResourceDomain.Topological) continue;
-        b.Integrate(dt);
-      }
-    }
   }
 }
