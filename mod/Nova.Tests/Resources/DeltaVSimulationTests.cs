@@ -64,6 +64,37 @@ public class DeltaVSimulationTests {
     return vv;
   }
 
+  // Kerolox tank: RP-1 + LOX at 2:3 volumetric proportions, matching
+  // engine stoichiometry. `contents` is total mix volume; split the
+  // same way as capacity.
+  private static TankVolume MakeKeroloxTank(double volume, double contents) {
+    return new TankVolume {
+      Volume = volume,
+      MaxRate = 10000,
+      Tanks = {
+        new Buffer {
+          Resource = Resource.RP1,
+          Capacity = volume * 0.4,
+          Contents = contents * 0.4,
+        },
+        new Buffer {
+          Resource = Resource.LiquidOxygen,
+          Capacity = volume * 0.6,
+          Contents = contents * 0.6,
+        },
+      },
+    };
+  }
+
+  private static Engine MakeKeroloxEngine(double thrust, double isp) {
+    var engine = new Engine();
+    engine.Initialize(thrust, isp, new List<(Resource, double)> {
+      (Resource.RP1, 2),
+      (Resource.LiquidOxygen, 3),
+    });
+    return engine;
+  }
+
   private const double G0 = 9.80665;
 
   [TestMethod]
@@ -244,6 +275,75 @@ public class DeltaVSimulationTests {
 
     Assert.IsTrue(results.Count >= 2,
       $"Should have at least 2 stages (side jettison despite battery crossfeed), got {results.Count}");
+  }
+
+  // Regression: a stage where the previous burn left propellant in
+  // a state where one resource on a coupled engine is exhausted but
+  // the other is not. Per-resource staging demands are independent,
+  // so the unstuck resource can keep draining for one tick after the
+  // engine's effective output (Throttle × min(Activity)) collapses
+  // to 0. Without a guard, ComputeThrustAndFlow returns thrust=0 +
+  // massFlow=0 while mass still changes, ispEff = 0/0 = NaN, and
+  // stageDeltaV poisons. The resulting Burn returns null and the
+  // staging UI shows that stage as empty.
+  //
+  // User-reported repro: a 3-engine asparagus where Stage 1 fires
+  // engines and Stage 0 jettisons the side boosters. Stage 0's burn
+  // (central engine on the central tank) was producing NaN dV → null
+  // → empty staging row.
+  [TestMethod]
+  public void AsparagusJettisonStage_ProducesFiniteDvNotNaN() {
+    // Layout matches Flow I: 3 engines on stage 1, 2 side decouplers
+    // on stage 0. After stage 1 burns out the side boosters, stage 0
+    // jettisons them and the central engine continues on the central
+    // tank.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "centralTank", (uint?)1u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 100, contents: 100),
+      }),
+      (3u, "centralEngine", (uint?)2u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 215, isp: 320),
+      }),
+      (4u, "decouplerL", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (5u, "sideTankL", (uint?)4u, 2.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 100, contents: 100),
+      }),
+      (6u, "sideEngineL", (uint?)5u, 3.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 240, isp: 310),
+      }),
+      (7u, "decouplerR", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (8u, "sideTankR", (uint?)7u, 2.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 100, contents: 100),
+      }),
+      (9u, "sideEngineR", (uint?)8u, 3.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 240, isp: 310),
+      }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 1, EnginePartIds = new() { 3, 6, 9 } },
+      new() { InverseStageIndex = 0, DecouplerPartIds = new() { 4, 7 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    // Stage 1 should produce a positive dV (3 engines burning sides).
+    var s1 = results.FirstOrDefault(r => r.InverseStageIndex == 1);
+    Assert.IsNotNull(s1, "Stage 1 should produce a result");
+    Assert.IsTrue(s1.DeltaV > 0 && !double.IsNaN(s1.DeltaV) && !double.IsInfinity(s1.DeltaV),
+        $"Stage 1 dV must be finite positive, got {s1.DeltaV}");
+
+    // Stage 0 — central engine continues on central tank after side
+    // jettison — must also produce finite dV. The bug had this come
+    // back as null (NaN poisoned stageDeltaV and `> Epsilon` failed).
+    var s0 = results.FirstOrDefault(r => r.InverseStageIndex == 0);
+    Assert.IsNotNull(s0, "Stage 0 should produce a result (central engine on central tank)");
+    Assert.IsTrue(s0.DeltaV > 0 && !double.IsNaN(s0.DeltaV) && !double.IsInfinity(s0.DeltaV),
+        $"Stage 0 dV must be finite positive, got {s0.DeltaV}");
   }
 
   // Regression: in-flight stage activation triggers

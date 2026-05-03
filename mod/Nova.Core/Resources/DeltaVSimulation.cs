@@ -98,11 +98,20 @@ public class DeltaVSimulation {
     while (iterations++ < MaxIterations) {
       sim.Solve();
 
-      if (AllTiersSpent(triggerNodes, propellantResources))
-        break;
+      if (AllTiersSpent(triggerNodes, propellantResources)) break;
 
       var (thrust, massFlow) = ComputeThrustAndFlow(sim);
       if (thrust > Epsilon) { lastThrust = thrust; lastMassFlow = massFlow; }
+
+      // No engine producing thrust → no more dV is reachable, even if
+      // some buffer still has rate (e.g. coupled-input engine where
+      // one propellant emptied but the other keeps draining for a
+      // tick — the staging system's per-resource demands are
+      // independent, so the unstuck propellant continues even after
+      // the engine's effective output collapses to min(Activity)=0).
+      // Without this break the over-drain on the stranded propellant
+      // adds a NaN dV term (0 thrust / 0 massFlow → 0/0 ispEff).
+      if (thrust <= Epsilon) break;
 
       // dt = horizon to the next staging-buffer event (a tank empties
       // or fills). Bounds the "rates valid for" window.
@@ -113,7 +122,10 @@ public class DeltaVSimulation {
       staging.Tick(dt);
       var massEnd = staging.ActiveNodes().Sum(n => n.Mass());
 
-      if (massEnd > Epsilon && massStart > massEnd) {
+      // Belt-and-suspenders for the same NaN: if both thrust and
+      // massFlow somehow leak through as zero with a non-trivial mass
+      // change, skip the dV term rather than poison stageDeltaV.
+      if (massEnd > Epsilon && massStart > massEnd && massFlow > Epsilon) {
         var ispEff = thrust * 1000 / (G0 * massFlow);
         stageDeltaV += ispEff * G0 * Math.Log(massStart / massEnd);
       }
