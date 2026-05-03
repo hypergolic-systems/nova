@@ -2,7 +2,7 @@
 
 Nova's resource flow is solved by two systems (see `PLAN.md` for the architectural rationale):
 
-- **`StagingFlowSystem`** — water-fill on vessel topology. Topological resources (RP-1, LOX, LH₂, Hydrazine, Xenon). Not an LP. No envelope concerns; just arithmetic over the connectivity graph.
+- **`StagingFlowSystem`** — water-fill on vessel topology. Topological resources (RP-1, LOX, LH₂, Hydrazine, Xenon). Not an LP. **Immune to dynamic-range issues by construction:** the algorithm is proportional allocation + saturation clipping over a connectivity graph — sums, divides, and comparisons in IEEE 754, no matrix, no basis, no coefficient tolerance to violate. A 100 L/s engine and a 10⁻⁵ L/s trickle-feeder coexist on the same topology without preconditioning. This document is not about staging.
 - **`ProcessFlowSystem`** — slim LP via OR-Tools GLOP. Uniform resources (ElectricCharge today; O₂, CO₂, H₂O, food, waste, heat tomorrow). This document is about its numerical contract.
 
 GLOP — OR-Tools' simplex implementation — handles the LP, with simplex warm-starting between solves so per-solve cost stays small. The solver runs event-driven (on `Invalidate()`, on buffer/device expiry, on topology rebuild) rather than every physics tick, but a busy frame can fire several solves: each `Solve()` call iterates max-min α-LP rounds across device priorities (Critical → High → Low) plus a final lex-2 cleanup that minimizes Σ supply + Σ fill to suppress LP-cycling artefacts.
@@ -78,7 +78,7 @@ main tank   ──refill──►   manifold   ──drain (off-LP)──►   c
                               stop  at >100%
 ```
 
-The refill rate is the LP-visible quantity and lives at envelope-friendly scale (~0.1–10 L/s or W). The component-internal consumption can be anything — micro-flows for fuel cells, burst flows for wheel torque commands — and the LP never sees it.
+The refill rate is the *solver-visible* quantity. When the refill flows through Process (e.g. a wheel pulling EC), it must live at envelope-friendly scale (~0.1–10 W). When the refill flows through Staging (e.g. a fuel cell pulling LH₂/LOx), the envelope doesn't apply at all — water-fill is dynamic-range-immune; the refill can be picked for whatever physical rate makes sense. Either way, the component-internal consumption can be anything — micro-flows for fuel cells, burst flows for wheel torque — and the *LP* never sees it.
 
 Cost: each buffered component carries persistent buffer state (saved to `PartState`) and small amounts of control logic on the standard `OnPreSolve` / `OnPostSolve` / `OnTickBegin` hooks. The `Accumulator` itself owns the refill `Device` + hysteresis bands, so component code reduces to "set TapRate, read Contents".
 
