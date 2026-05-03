@@ -378,4 +378,41 @@ public class ReactionWheelTests {
 
     Assert.AreEqual(0, w.CurrentDrain, 1e-6);
   }
+
+  // Regression: a saved vessel that loaded with RefillActive=true and
+  // a buffer just shy of capacity used to get stuck at refill=full
+  // forever — the LP solved with refill.Activity=1, integration clamped
+  // the buffer at capacity (silently absorbing the over-fill), and the
+  // forecast `TimeToFraction(1.0, +rate)` returned +∞ because slack hit
+  // exactly zero. With +∞ on every wheel, ComputeNextExpiry never
+  // scheduled a re-solve, and OnPreSolve never got to flip RefillActive
+  // off. Net symptom: phantom 175 W steady-state draw on idle command
+  // pods, draining the battery for no torque.
+  //
+  // Fix: TimeToFraction returns 0 when slack==0 with non-zero netRate,
+  // forcing an immediate re-solve so OnPreSolve fires.
+  [TestMethod]
+  public void Idle_LoadedWithRefillActive_FlipsOffShortly() {
+    // Buffer just shy of capacity (sub-1% slack) + RefillActive=true,
+    // mirroring a save state captured between a refill kicking on and
+    // the manifold reaching 100%.
+    var w = MakeWheel(bufferContents: Capacity * 0.997, refillActive: true);
+    w.ThrottlePitch = 0;
+    w.ThrottleRoll = 0;
+    w.ThrottleYaw = 0;
+    var vessel = BuildVessel(w, MakeBattery(1e6, 5e5));
+
+    // First Tick primes the LP solve (Tick integrates before solving,
+    // so the very first iteration runs with stale zero rates). Second
+    // Tick exercises the actual buffer-fills-clamps-resolves cycle.
+    vessel.Tick(0.001);
+    vessel.Tick(1.0);
+
+    Assert.IsFalse(w.RefillActive,
+        "Buffer should reach capacity and OnPreSolve should flip RefillActive off — without the TimeToFraction(slack=0)→0 fix this stayed true forever");
+    Assert.AreEqual(0, w.CurrentRefill, 1e-6,
+        "After flip, refill device should report zero bus draw");
+    Assert.AreEqual(Capacity, w.Buffer.Contents, 1e-6,
+        "Buffer should be at capacity (clamp absorbed any over-fill)");
+  }
 }

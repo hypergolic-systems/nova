@@ -38,12 +38,21 @@ public class Accumulator {
   // Time for Contents to reach `targetFrac × Capacity` given a signed
   // netRate. +∞ when the rate doesn't move toward the target — the
   // caller usually pairs that with PositiveInfinity ValidUntil.
+  //
+  // Edge case worth its own line: when Contents is already AT the
+  // target and netRate keeps pushing past, we return 0 (not +∞).
+  // This happens whenever Buffer.Integrate clamps at capacity (or
+  // floor) — the clamp absorbs the over-fill silently, so without
+  // the 0-return the runner sees no upcoming event, never re-solves,
+  // and the hysteresis flip in OnPreSolve never fires. The 0 forecast
+  // forces an immediate re-solve so OnPreSolve gets to do its job.
   public double TimeToFraction(double targetFrac, double netRate) {
     if (Capacity <= 0) return double.PositiveInfinity;
     double target = targetFrac * Capacity;
     double slack = target - Contents;
     if (slack > 0 && netRate > 1e-12) return slack / netRate;
     if (slack < 0 && netRate < -1e-12) return slack / netRate;
+    if (Math.Abs(slack) < 1e-12 && Math.Abs(netRate) > 1e-12) return 0;
     return double.PositiveInfinity;
   }
 }

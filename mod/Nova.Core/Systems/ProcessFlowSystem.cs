@@ -125,6 +125,16 @@ public class ProcessFlowSystem : BackgroundSystem {
 
     ResetPerTickBounds();
 
+    // Stale-Activity prophylactic. The priority loop only touches
+    // devices with Demand > Epsilon; a device that just flipped from
+    // active → inactive (Demand 1 → 0) would otherwise keep its
+    // last-solve Activity from a prior cycle. Reaction-wheel hysteresis
+    // hit this in flight: refill device flipped off (Demand=0) but
+    // Activity stayed at 1.0, IntegrateReactionWheelBuffers read 1.0 ×
+    // RefillRateWatts as a phantom bus draw forever, draining the
+    // battery for no torque.
+    foreach (var d in devices) d.Activity = 0;
+
     supplySnapshot.Clear();
     fillSnapshot.Clear();
 
