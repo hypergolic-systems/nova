@@ -645,18 +645,11 @@
                         class="pwr__row-rate-max">/{fcr.mMag}</span><em>{fcr.unit}</em>
                     </span>
                   </div>
-                  <div class="pwr__row-line pwr__row-line--gauge pwr__fc-gauges">
+                  <div class="pwr__row-line pwr__row-line--gauge">
                     <span class="pwr__fc-gauge"
                           class:pwr__fc-gauge--refilling={fc.refillActive}
-                          title="LH₂ manifold">
-                      <span class="pwr__fc-gauge-label">H</span>
-                      <SegmentGauge fraction={fc.lh2ManifoldFraction} />
-                    </span>
-                    <span class="pwr__fc-gauge"
-                          class:pwr__fc-gauge--refilling={fc.refillActive}
-                          title="LOx manifold">
-                      <span class="pwr__fc-gauge-label">O</span>
-                      <SegmentGauge fraction={fc.loxManifoldFraction} />
+                          title="Fuel-cell manifold (LH₂ + LOx mix)">
+                      <SegmentGauge fraction={fc.manifoldFraction} />
                     </span>
                   </div>
                 </div>
@@ -1179,37 +1172,21 @@
     color: var(--fg-dim);
     border-color: var(--line);
   }
-  .pwr__fc-gauges {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  /* Each gauge wrapper takes equal slack so the two manifolds split
-     the row width evenly regardless of label width. */
+  /* Single mix-manifold gauge spans the full row width. */
   .pwr__fc-gauge {
-    flex: 1 1 0;
+    flex: 1 1 auto;
     display: flex;
     align-items: center;
-    gap: 5px;
     min-width: 0;
-  }
-  .pwr__fc-gauge-label {
-    flex: 0 0 auto;
-    font-family: var(--font-display);
-    font-size: 8px;
-    color: var(--fg-mute);
-    letter-spacing: 0.14em;
   }
   .pwr__fc-gauge :global(.sg) {
     flex: 1 1 auto;
   }
-  /* While refill is filling the manifold, brighten the label so the
-     two states (passive at-rest, actively refilling from main tanks)
-     are distinguishable at a glance without colour-coding the gauge
-     itself (the gauge fill already encodes fill fraction). */
-  .pwr__fc-gauge--refilling .pwr__fc-gauge-label {
-    color: var(--accent);
-    text-shadow: 0 0 3px var(--accent-glow);
+  /* While refill is filling the manifold, brighten the gauge with a
+     soft accent glow — the gauge fill already encodes fraction; the
+     glow is the "actively refilling from main tanks" cue. */
+  .pwr__fc-gauge--refilling :global(.sg) {
+    filter: drop-shadow(0 0 2px var(--accent-glow));
   }
 
   /* Empty leading slot used by flat consumer rows so their icons sit

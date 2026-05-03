@@ -50,7 +50,7 @@ namespace Nova.Telemetry;
 //   ["L", currentRate]                                              Light
 //   ["T", volume]                                                   TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
-//          lh2ManifoldFraction, loxManifoldFraction, refillActive]   FuelCell
+//          manifoldFraction, refillActive]                             FuelCell
 //   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
@@ -365,8 +365,7 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, fuelCell.EcOutput, ref f);
         WriteBit(sb, fuelCell.IsActive, ref f);
         WriteNum(sb, fuelCell.ValidUntilSeconds, ref f);
-        WriteNum(sb, fuelCell.Lh2Manifold.FillFraction, ref f);
-        WriteNum(sb, fuelCell.LoxManifold.FillFraction, ref f);
+        WriteNum(sb, fuelCell.Manifold.FillFraction, ref f);
         WriteBit(sb, fuelCell.RefillActive, ref f);
         JsonWriter.End(sb, ']');
         return true;

@@ -271,18 +271,15 @@ public class VirtualVessel {
         fc.IsActive = true;
       }
 
-      // Refill hysteresis (manifold fill band). Trip on the lower
-      // manifold; turn off only when both reach capacity, so a single
-      // device with a ratio-locked LH₂/LOx draw fills both in lockstep.
-      double minFrac = Math.Min(fc.Lh2Manifold.FillFraction, fc.LoxManifold.FillFraction);
-      if (fc.RefillActive && minFrac >= FuelCellRefillOffThreshold) {
+      // Refill hysteresis. Single mix-manifold; one fraction reading.
+      double frac = fc.Manifold.FillFraction;
+      if (fc.RefillActive && frac >= FuelCellRefillOffThreshold) {
         fc.RefillActive = false;
-      } else if (!fc.RefillActive && minFrac < FuelCellRefillOnThreshold) {
+      } else if (!fc.RefillActive && frac < FuelCellRefillOnThreshold) {
         fc.RefillActive = true;
       }
 
-      bool hasFuel = !fc.Lh2Manifold.IsEmpty && !fc.LoxManifold.IsEmpty;
-      fc.production.Demand = (fc.IsActive && hasFuel) ? 1.0 : 0.0;
+      fc.production.Demand = (fc.IsActive && !fc.Manifold.IsEmpty) ? 1.0 : 0.0;
       fc.refill.Demand     = fc.RefillActive ? 1.0 : 0.0;
     }
   }
@@ -332,19 +329,15 @@ public class VirtualVessel {
       }
 
       // Manifold-empty time (production gated off when fuel runs out).
-      // Net drain rate accounts for parallel refill — refill is so much
-      // faster than reactant draw (200×) that this term only matters
-      // when the main tank is empty and refill.Activity is forced to 0.
+      // Net drain rate in mix-L/s; refill is so much faster than
+      // production reactant draw (~200×) that this only matters when
+      // the main tank is empty and refill.Activity is forced to 0.
       double dtMfdEmpty = double.PositiveInfinity;
       if (fc.production.Activity > 1e-9) {
-        double netDrainLh2 = fc.production.Activity * fc.Lh2Rate
-                           - fc.refill.Activity     * fc.RefillRateLh2;
-        double netDrainLox = fc.production.Activity * fc.LoxRate
-                           - fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate);
-        if (netDrainLh2 > 1e-12 && fc.Lh2Manifold.Contents > 0)
-          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.Lh2Manifold.Contents / netDrainLh2);
-        if (netDrainLox > 1e-12 && fc.LoxManifold.Contents > 0)
-          dtMfdEmpty = Math.Min(dtMfdEmpty, fc.LoxManifold.Contents / netDrainLox);
+        double netDrain = fc.production.Activity * fc.ProductionDrainRate
+                        - fc.refill.Activity     * fc.RefillRate;
+        if (netDrain > 1e-12 && fc.Manifold.Contents > 0)
+          dtMfdEmpty = fc.Manifold.Contents / netDrain;
       }
 
       double dtProdFlip = Math.Min(dtSocFlip, dtMfdEmpty);
@@ -355,23 +348,11 @@ public class VirtualVessel {
 
       // -------- Refill ValidUntil --------
 
-      double netFillLh2 = fc.refill.Activity     * fc.RefillRateLh2
-                        - fc.production.Activity * fc.Lh2Rate;
-      double netFillLox = fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate)
-                        - fc.production.Activity * fc.LoxRate;
-
-      double dtRefillFlip = double.PositiveInfinity;
-      if (fc.RefillActive) {
-        // Flip OFF when *both* manifolds reach 100% — wait for the slower.
-        double dtLh2 = fc.Lh2Manifold.TimeToFraction(FuelCellRefillOffThreshold, netFillLh2);
-        double dtLox = fc.LoxManifold.TimeToFraction(FuelCellRefillOffThreshold, netFillLox);
-        dtRefillFlip = Math.Max(dtLh2, dtLox);
-      } else {
-        // Flip ON when *either* drops below 10% — earliest wins.
-        double dtLh2 = fc.Lh2Manifold.TimeToFraction(FuelCellRefillOnThreshold, netFillLh2);
-        double dtLox = fc.LoxManifold.TimeToFraction(FuelCellRefillOnThreshold, netFillLox);
-        dtRefillFlip = Math.Min(dtLh2, dtLox);
-      }
+      double netFill = fc.refill.Activity     * fc.RefillRate
+                     - fc.production.Activity * fc.ProductionDrainRate;
+      double dtRefillFlip = fc.RefillActive
+        ? fc.Manifold.TimeToFraction(FuelCellRefillOffThreshold, netFill)
+        : fc.Manifold.TimeToFraction(FuelCellRefillOnThreshold, netFill);
       fc.refill.ValidUntil = double.IsPositiveInfinity(dtRefillFlip)
         ? double.PositiveInfinity
         : simulationTime + dtRefillFlip;
@@ -389,13 +370,9 @@ public class VirtualVessel {
     if (deltaT <= 0) return;
     foreach (var fc in AllComponents().OfType<FuelCell>()) {
       if (fc.production == null || fc.refill == null) continue;
-      double drainLh2 = fc.production.Activity * fc.Lh2Rate;
-      double drainLox = fc.production.Activity * fc.LoxRate;
-      double fillLh2  = fc.refill.Activity     * fc.RefillRateLh2;
-      double fillLox  = fc.refill.Activity     * fc.RefillRateLh2 * (fc.LoxRate / fc.Lh2Rate);
-
-      fc.Lh2Manifold.Integrate(fillLh2 - drainLh2, deltaT);
-      fc.LoxManifold.Integrate(fillLox - drainLox, deltaT);
+      double netRate = fc.refill.Activity     * fc.RefillRate
+                     - fc.production.Activity * fc.ProductionDrainRate;
+      fc.Manifold.Integrate(netRate, deltaT);
     }
   }
 

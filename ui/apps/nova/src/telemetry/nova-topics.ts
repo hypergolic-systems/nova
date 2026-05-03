@@ -56,8 +56,7 @@ export type NovaFuelCellFrame = [
   maxOutput: number,
   isActive: 0 | 1,
   validUntilSec: number,
-  lh2ManifoldFraction: number,
-  loxManifoldFraction: number,
+  manifoldFraction: number,
   refillActive: 0 | 1,
 ];
 
@@ -434,14 +433,12 @@ export interface FuelCellState {
    *  of SoC threshold crossing and manifold-empty event. `Infinity`
    *  when no transition is reachable. */
   validUntilSec: number;
-  /** Internal LH₂ manifold fill, 0..1. Production drains the manifold
-   *  off-LP at the reactant rate; refill tops it up at envelope-
-   *  friendly L/s. See `docs/lp_hygiene.md`. */
-  lh2ManifoldFraction: number;
-  /** Internal LOx manifold fill, 0..1. */
-  loxManifoldFraction: number;
-  /** Refill device hysteresis state: ON when either manifold dips
-   *  below 10%, OFF when both reach 100%. */
+  /** Internal mix-volume manifold fill, 0..1 (LH₂ + LOx combined).
+   *  Production drains the manifold off-LP at the combined reactant
+   *  rate; refill tops it up at envelope-friendly mix-L/s. See
+   *  `docs/lp_hygiene.md`. */
+  manifoldFraction: number;
+  /** Refill device hysteresis state: ON below 10%, OFF at 100%. */
   refillActive: boolean;
 }
 
@@ -671,9 +668,8 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           maxOutput: c[2],
           isActive: c[3] === 1,
           validUntilSec: c[4],
-          lh2ManifoldFraction: c[5],
-          loxManifoldFraction: c[6],
-          refillActive: c[7] === 1,
+          manifoldFraction: c[5],
+          refillActive: c[6] === 1,
         });
         break;
     }

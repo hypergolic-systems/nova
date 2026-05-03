@@ -281,11 +281,10 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
     }
 
     if let Some(fc) = state.and_then(|s| s.fuel_cell.as_ref()) {
-        let lh2 = fc.lh2_manifold.as_ref().map(|m| m.contents).unwrap_or(0.0);
-        let lox = fc.lox_manifold.as_ref().map(|m| m.contents).unwrap_or(0.0);
+        let mix = fc.manifold.as_ref().map(|m| m.contents).unwrap_or(0.0);
         println!(
-            "{p2}FuelCell: lh2={:.4}L, lox={:.4}L (active={}, refill={})",
-            lh2, lox, fc.is_active, fc.refill_active
+            "{p2}FuelCell: manifold={:.4}L mix (active={}, refill={})",
+            mix, fc.is_active, fc.refill_active
         );
     }
 

@@ -189,8 +189,10 @@ message AccumulatorState {
 message FuelCellState {
   bool              is_active     = 1;
   bool              refill_active = 2;
-  AccumulatorState lh2_manifold  = 3;
-  AccumulatorState lox_manifold  = 4;
+  // Single mix-volume manifold (LH₂ + LOx combined). Volumetric
+  // proportions live on the FuelCell component, derived from
+  // lh2Rate / loxRate at full production.
+  AccumulatorState manifold      = 3;
 }
 
 message ReactionWheelState {
