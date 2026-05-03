@@ -589,9 +589,12 @@ public class VirtualVessel {
     }
   }
 
-  // Combine relative-dt horizons from each system with absolute
-  // ValidUntils on devices and components. Returns the next event
-  // time in absolute simulationTime coordinates.
+  // Next forecasted state-change time, in absolute simulationTime
+  // coordinates. Combines each system's bubbled-up `MaxTickDt`
+  // (the system encapsulates its own internal forecasts —
+  // orchestrator doesn't peek inside) with component-level
+  // ValidUntils (science slice rollovers, fuel-cell refill flip,
+  // anything component-owned that isn't a system concern).
   private double ComputeNextExpiry(double now) {
     var earliest = double.PositiveInfinity;
 
@@ -602,14 +605,6 @@ public class VirtualVessel {
     if (!double.IsPositiveInfinity(processDt))
       earliest = Math.Min(earliest, now + processDt);
 
-    // Process devices may carry per-device forecasts (solar shadow,
-    // fuel-cell production flip, reaction-wheel refill flip).
-    foreach (var d in systems.Process.Devices)
-      if (d.ValidUntil < earliest)
-        earliest = d.ValidUntil;
-
-    // Component-level expiries (science slice rollovers, fuel-cell
-    // refill flip — anything outside the per-device forecast).
     foreach (var cmp in AllComponents())
       if (cmp.ValidUntil < earliest)
         earliest = cmp.ValidUntil;
