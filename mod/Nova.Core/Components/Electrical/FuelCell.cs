@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
 using Nova.Core.Systems;
@@ -20,18 +22,24 @@ namespace Nova.Core.Components.Electrical;
 // Production drains the manifold at µL/s outside the LP, so conservation
 // never sees those rates. See `docs/lp_hygiene.md` for the design rationale.
 //
-// Auto-controlled by VirtualVessel.UpdateFuelCellDevices (production
-// hysteresis) and the same orchestrator's refill hysteresis:
+// Self-orchestrated via the OnPreSolve / OnPostSolve / OnAdvance hooks:
 //   - Production ON  when vessel-wide battery SoC <  20% (or no batteries)
 //                OFF when vessel-wide battery SoC >  80%
 //   - Refill     ON  when manifold fill < 10%
 //                OFF when manifold reaches 100%
 //
 // `IsActive`, `RefillActive`, and the manifold contents persist across
-// save/load via FuelCellState. `ValidUntilSeconds` is the orchestrator's
+// save/load via FuelCellState. `ValidUntilSeconds` is OnPostSolve's
 // forecast for the production device's next state flip — the soonest of
 // SoC threshold crossing or manifold-empty event.
 public class FuelCell : VirtualComponent {
+  // Hysteresis bands. Production tracks vessel-wide battery SoC;
+  // refill tracks the component-internal manifold fraction.
+  private const double SocOnThreshold     = 0.20;
+  private const double SocOffThreshold    = 0.80;
+  private const double RefillOnThreshold  = 0.10;
+  private const double RefillOffThreshold = 1.00;
+
   // Config (from prefab MODULE — populated by ComponentFactory.CreateFuelCell).
   public double Lh2Rate;             // L/s of LH₂ at full production
   public double LoxRate;             // L/s of LOx at full production
@@ -100,8 +108,113 @@ public class FuelCell : VirtualComponent {
     production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
   }
 
+  // Pre-solve: aggregate vessel-wide battery SoC, apply production
+  // hysteresis (IsActive) and refill hysteresis (RefillActive), then push
+  // the resulting Demand/Throttle into the LP for the upcoming solve.
+  // The "no batteries" branch keeps the cell on continuously — without
+  // a SoC signal there's no reason to throttle.
   public override void OnPreSolve() {
+    if (production == null) return;
+
+    double contents = 0, capacity = 0;
+    foreach (var b in Vessel.AllComponents().OfType<Battery>()) {
+      contents += b.Buffer.Contents;
+      capacity += b.Buffer.Capacity;
+    }
+    bool noBatteries = capacity < 1e-9;
+    double soc = noBatteries ? 0 : contents / capacity;
+
+    if (noBatteries) {
+      IsActive = true;
+    } else if (IsActive && soc > SocOffThreshold) {
+      IsActive = false;
+    } else if (!IsActive && soc < SocOnThreshold) {
+      IsActive = true;
+    }
+
+    double frac = Manifold.FillFraction;
+    if (RefillActive && frac >= RefillOffThreshold) {
+      RefillActive = false;
+    } else if (!RefillActive && frac < RefillOnThreshold) {
+      RefillActive = true;
+    }
+
+    production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
     if (refill != null) refill.Throttle = RefillActive ? 1.0 : 0.0;
+  }
+
+  // Post-solve: forecast valid-until times for the production device and
+  // for the component (refill flip). Production flips on either SoC
+  // threshold crossing OR manifold drying out; refill flips on manifold
+  // hitting the opposite threshold. Both forecasts use the just-solved
+  // battery rates and refill/production Activities.
+  public override void OnPostSolve() {
+    if (production == null) return;
+
+    double contents = 0, capacity = 0, batteryRate = 0;
+    foreach (var b in Vessel.AllComponents().OfType<Battery>()) {
+      contents += b.Buffer.Contents;
+      capacity += b.Buffer.Capacity;
+      batteryRate += b.Buffer.Rate;  // signed: + = charging, − = draining
+    }
+    bool noBatteries = capacity < 1e-9;
+
+    // SoC threshold flip.
+    double dtSocFlip = double.PositiveInfinity;
+    if (!noBatteries && Math.Abs(batteryRate) > 1e-9) {
+      if (IsActive && batteryRate > 0) {
+        double remaining = SocOffThreshold * capacity - contents;
+        if (remaining > 0) dtSocFlip = remaining / batteryRate;
+      } else if (!IsActive && batteryRate < 0) {
+        double remaining = contents - SocOnThreshold * capacity;
+        if (remaining > 0) dtSocFlip = remaining / (-batteryRate);
+      }
+    }
+
+    // Manifold-empty time. Refill is so much faster than production
+    // reactant draw (~200×) that this only matters when the main tank is
+    // empty and refill is forced to 0.
+    double dtMfdEmpty = double.PositiveInfinity;
+    if (production.Activity > 1e-9) {
+      double netDrain = production.Activity * ProductionDrainRate
+                      - RefillActivity      * RefillRate;
+      if (netDrain > 1e-12 && Manifold.Contents > 0)
+        dtMfdEmpty = Manifold.Contents / netDrain;
+    }
+
+    double dtProdFlip = Math.Min(dtSocFlip, dtMfdEmpty);
+    ValidUntilSeconds = dtProdFlip;
+    double now = Vessel.Systems.Clock.UT;
+    production.ValidUntil = double.IsPositiveInfinity(dtProdFlip)
+      ? double.PositiveInfinity
+      : now + dtProdFlip;
+
+    // Refill flip → component-level ValidUntil (no per-demand ValidUntil
+    // on the coupled refill consumer; bubbles through as cmp.ValidUntil).
+    double netFill = RefillActivity      * RefillRate
+                   - production.Activity * ProductionDrainRate;
+    double dtRefillFlip = RefillActive
+      ? Manifold.TimeToFraction(RefillOffThreshold, netFill)
+      : Manifold.TimeToFraction(RefillOnThreshold,  netFill);
+
+    double dtCmp = Math.Min(dtProdFlip, dtRefillFlip);
+    ValidUntil = double.IsPositiveInfinity(dtCmp)
+      ? double.PositiveInfinity
+      : now + dtCmp;
+  }
+
+  // Drain/fill manifold contents using the previous solve's Activities.
+  // Same staleness contract as Buffer.Rate-based integration: rates come
+  // from the prior Solve, integrate over `dt`, next Solve reads the new
+  // state. Accumulator.Integrate clamps at [0, capacity] so an over-shoot
+  // between solves doesn't push the manifold negative — the production
+  // ValidUntil set in OnPostSolve ensures we re-solve before the over-
+  // shoot grows large.
+  public override void OnAdvance(double dt) {
+    if (production == null || dt <= 0) return;
+    double netRate = RefillActivity      * RefillRate
+                   - production.Activity * ProductionDrainRate;
+    Manifold.Integrate(netRate, dt);
   }
 
   public override void Save(PartState state) {

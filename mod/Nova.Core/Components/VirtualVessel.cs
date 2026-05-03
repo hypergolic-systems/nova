@@ -225,224 +225,6 @@ public class VirtualVessel {
     solarDevice.ValidUntil = nextShadowTransitionUT;
   }
 
-  // Hysteresis bands for fuel cell auto-on/auto-off. Centralised here so
-  // the same numbers drive both the on/off transition and the
-  // valid-until forecast — there's exactly one place to update if the
-  // bands ever need tuning.
-  private const double FuelCellOnSocThreshold  = 0.20;
-  private const double FuelCellOffSocThreshold = 0.80;
-
-  // Manifold refill hysteresis. The refill demands pull reactant from
-  // main tanks at envelope-friendly rates (~0.1466 mix-L/s) and top up
-  // the component-internal manifold; production drains the manifold
-  // off-LP at the µL/s reactant rate. Refill kicks on when the manifold
-  // dips below 10% and turns off at 100%.
-  private const double FuelCellRefillOnThreshold  = 0.10;
-  private const double FuelCellRefillOffThreshold = 1.00;
-
-  // Pre-solve: aggregate vessel-wide battery SoC and apply hysteresis
-  // to each FuelCell's IsActive (production) and RefillActive (manifold
-  // top-up) flags. Sets Demand on the production device + refill demand
-  // rates (via FuelCell.OnPreSolve) for the upcoming solve.
-  //
-  // The "no batteries" branch keeps the cell on continuously — without
-  // a SoC signal there's no reason to throttle.
-  private void UpdateFuelCellDevices() {
-    var fuelCells = AllComponents().OfType<FuelCell>().ToList();
-    if (fuelCells.Count == 0) return;
-
-    double contents = 0, capacity = 0;
-    foreach (var b in AllComponents().OfType<Battery>()) {
-      contents += b.Buffer.Contents;
-      capacity += b.Buffer.Capacity;
-    }
-    bool noBatteries = capacity < 1e-9;
-    double soc = noBatteries ? 0 : contents / capacity;
-
-    foreach (var fc in fuelCells) {
-      if (fc.production == null) continue;
-
-      // Production hysteresis (SoC band).
-      if (noBatteries) {
-        fc.IsActive = true;
-      } else if (fc.IsActive && soc > FuelCellOffSocThreshold) {
-        fc.IsActive = false;
-      } else if (!fc.IsActive && soc < FuelCellOnSocThreshold) {
-        fc.IsActive = true;
-      }
-
-      // Refill hysteresis. Single mix-manifold; one fraction reading.
-      double frac = fc.Manifold.FillFraction;
-      if (fc.RefillActive && frac >= FuelCellRefillOffThreshold) {
-        fc.RefillActive = false;
-      } else if (!fc.RefillActive && frac < FuelCellRefillOnThreshold) {
-        fc.RefillActive = true;
-      }
-
-      fc.production.Demand = (fc.IsActive && !fc.Manifold.IsEmpty) ? 1.0 : 0.0;
-      // Refill demand rates set by FuelCell.OnPreSolve based on RefillActive.
-    }
-  }
-
-  // Post-solve: compute valid-until forecasts for each fuel cell using
-  // the *converged* Activities. Production-side ValidUntil lives on the
-  // Process device; refill-side lives on the component (no per-demand
-  // ValidUntil — it's a coupled-pair forecast).
-  //
-  // Production flips on:
-  //   • SoC reaches a hysteresis threshold
-  //   • manifold runs dry (production was active, can't continue)
-  //
-  // Refill flips on:
-  //   • manifold drops below 10% (turn ON)
-  //   • manifold reaches 100% (turn OFF)
-  private void DistributeFuelCellState() {
-    var fuelCells = AllComponents().OfType<FuelCell>().ToList();
-    if (fuelCells.Count == 0) return;
-
-    double contents = 0, capacity = 0, batteryRate = 0;
-    foreach (var b in AllComponents().OfType<Battery>()) {
-      contents += b.Buffer.Contents;
-      capacity += b.Buffer.Capacity;
-      batteryRate += b.Buffer.Rate;  // signed: + = charging, − = draining
-    }
-    bool noBatteries = capacity < 1e-9;
-
-    foreach (var fc in fuelCells) {
-      if (fc.production == null) continue;
-
-      // -------- Production ValidUntil --------
-
-      // SoC threshold flip.
-      double dtSocFlip = double.PositiveInfinity;
-      if (!noBatteries && Math.Abs(batteryRate) > 1e-9) {
-        if (fc.IsActive && batteryRate > 0) {
-          double remaining = FuelCellOffSocThreshold * capacity - contents;
-          if (remaining > 0) dtSocFlip = remaining / batteryRate;
-        } else if (!fc.IsActive && batteryRate < 0) {
-          double remaining = contents - FuelCellOnSocThreshold * capacity;
-          if (remaining > 0) dtSocFlip = remaining / (-batteryRate);
-        }
-      }
-
-      // Manifold-empty time (production gated off when fuel runs out).
-      // Net drain rate in mix-L/s; refill is so much faster than
-      // production reactant draw (~200×) that this only matters when
-      // the main tank is empty and refill is forced to 0.
-      double dtMfdEmpty = double.PositiveInfinity;
-      if (fc.production.Activity > 1e-9) {
-        double netDrain = fc.production.Activity * fc.ProductionDrainRate
-                        - fc.RefillActivity      * fc.RefillRate;
-        if (netDrain > 1e-12 && fc.Manifold.Contents > 0)
-          dtMfdEmpty = fc.Manifold.Contents / netDrain;
-      }
-
-      double dtProdFlip = Math.Min(dtSocFlip, dtMfdEmpty);
-      fc.ValidUntilSeconds = dtProdFlip;
-      fc.production.ValidUntil = double.IsPositiveInfinity(dtProdFlip)
-        ? double.PositiveInfinity
-        : simulationTime + dtProdFlip;
-
-      // -------- Refill ValidUntil → on FuelCell.ValidUntil --------
-
-      double netFill = fc.RefillActivity      * fc.RefillRate
-                     - fc.production.Activity * fc.ProductionDrainRate;
-      double dtRefillFlip = fc.RefillActive
-        ? fc.Manifold.TimeToFraction(FuelCellRefillOffThreshold, netFill)
-        : fc.Manifold.TimeToFraction(FuelCellRefillOnThreshold, netFill);
-
-      // Single component-level ValidUntil for the runner; min of the
-      // two flip times so whichever comes first triggers the resolve.
-      double dtCmp = Math.Min(dtProdFlip, dtRefillFlip);
-      fc.ValidUntil = double.IsPositiveInfinity(dtCmp)
-        ? double.PositiveInfinity
-        : simulationTime + dtCmp;
-    }
-  }
-
-  // Drain/fill manifold contents using the previous solve's Activities.
-  // Same staleness contract as Buffer.Rate-based integration: rates
-  // come from the prior Solve, integrate over `deltaT`, next Solve
-  // reads the new state. Accumulator.Integrate clamps at [0, capacity]
-  // so an over-shoot between solves doesn't push the manifold negative —
-  // the production ValidUntil set in DistributeFuelCellState ensures we
-  // re-solve before the over-shoot grows large.
-  private void IntegrateFuelCellManifolds(double deltaT) {
-    if (deltaT <= 0) return;
-    foreach (var fc in AllComponents().OfType<FuelCell>()) {
-      if (fc.production == null) continue;
-      double netRate = fc.RefillActivity      * fc.RefillRate
-                     - fc.production.Activity * fc.ProductionDrainRate;
-      fc.Manifold.Integrate(netRate, deltaT);
-    }
-  }
-
-  // Drain/fill reaction-wheel accumulators off-system. Drain comes from
-  // live intensity (sum of |throttles| set this frame by SolveAttitude);
-  // refill comes from the LP-solved refill device's previous Activity.
-  // The hysteresis flip itself happens in ReactionWheel.OnPreSolve;
-  // this method just integrates the buffer and refreshes the per-wheel
-  // ValidUntil forecast so the Tick scheduler steps to the right next
-  // event.
-  private void IntegrateReactionWheelBuffers(double deltaT) {
-    if (deltaT <= 0) return;
-
-    foreach (var w in AllComponents().OfType<ReactionWheel>()) {
-      if (w.refill == null || w.Buffer == null) continue;
-
-      double intensity = Math.Abs(w.ThrottlePitch)
-                       + Math.Abs(w.ThrottleRoll)
-                       + Math.Abs(w.ThrottleYaw);
-      double desiredDrain = intensity * w.ElectricRate;
-      double fillRate     = w.refill.Activity * w.RefillRateWatts;
-      // Available power this tick = whatever's in the buffer plus this
-      // tick's worth of LP-supplied refill. Drain can't exceed it.
-      double available    = w.Buffer.Contents / deltaT + fillRate;
-      double effective    = Math.Min(desiredDrain, available);
-      double net          = fillRate - effective;
-
-      w.Buffer.Integrate(net, deltaT);
-      w.Satisfaction = desiredDrain > 1e-9 ? effective / desiredDrain : 1.0;
-      w.CurrentDrain = effective;
-      w.CurrentRefill = fillRate;
-
-      UpdateReactionWheelForecast(w);
-    }
-  }
-
-  // Refresh refill.ValidUntil for each wheel based on current
-  // intensity + buffer state + last-solve refill.Activity. Called at
-  // three hooks where any of those inputs may have just changed:
-  //   1. Top of Tick — SolveAttitude may have changed intensity since
-  //      the last solve.
-  //   2. After IntegrateReactionWheelBuffers — buffer state advances.
-  //   3. End of DoSolve — refill.Activity changes when the LP solves
-  //      with a flipped Demand.
-  private void UpdateReactionWheelForecasts() {
-    foreach (var w in AllComponents().OfType<ReactionWheel>())
-      UpdateReactionWheelForecast(w);
-  }
-
-  private void UpdateReactionWheelForecast(ReactionWheel w) {
-    if (w.refill == null || w.Buffer == null) return;
-
-    double intensity = Math.Abs(w.ThrottlePitch)
-                     + Math.Abs(w.ThrottleRoll)
-                     + Math.Abs(w.ThrottleYaw);
-    double drain = intensity * w.ElectricRate;
-    double fill  = w.refill.Activity * w.RefillRateWatts;
-    double net   = fill - drain;
-
-    // Next flip is at the OPPOSITE threshold from the current state.
-    double dt = w.RefillActive
-      ? w.Buffer.TimeToFraction(ReactionWheel.RefillOffFraction, net)
-      : w.Buffer.TimeToFraction(ReactionWheel.RefillOnFraction,  net);
-
-    w.refill.ValidUntil = double.IsPositiveInfinity(dt)
-      ? double.PositiveInfinity
-      : simulationTime + dt;
-  }
-
   private const int MaxTickIterations = 100;
 
   // Floor for the per-iteration step in Tick. A device's `ValidUntil` can
@@ -460,17 +242,14 @@ public class VirtualVessel {
     try {
       UpdateShadowState();
       UpdateSolarDeviceDemand();
-      UpdateFuelCellDevices();
       foreach (var component in AllComponents())
         component.OnPreSolve();
 
       systems.Solve();
 
       DistributeSolarPanelCurrentRates();
-      DistributeFuelCellState();
-      // Wheel forecasts depend on the freshly-solved refill.Activity —
-      // refresh after Solve so nextExpiry reflects the new state.
-      UpdateReactionWheelForecasts();
+      foreach (var component in AllComponents())
+        component.OnPostSolve();
       needsSolve = false;
       nextExpiry = ComputeNextExpiry(simulationTime);
     } catch (Exception e) {
@@ -499,11 +278,11 @@ public class VirtualVessel {
   public void Tick(double targetTime) {
     if (systems == null) return;
 
-    // SolveAttitude (NovaVesselModule.FixedUpdate, runs before this
-    // Tick) may have changed wheel intensity since the last solve —
-    // refresh the per-wheel forecasts so the cached `nextExpiry`
-    // reflects current drain/fill rates before the loop consumes it.
-    UpdateReactionWheelForecasts();
+    // External mutations between ticks (e.g. SolveAttitude setting wheel
+    // throttles) don't invalidate the LP, but may invalidate component
+    // forecasts. Give every component a chance to refresh before the
+    // first ComputeNextExpiry consumes them.
+    foreach (var c in AllComponents()) c.OnTickBegin();
 
     var iterations = 0;
 
@@ -539,8 +318,11 @@ public class VirtualVessel {
       var dt = nextStop - simulationTime;
       if (dt > 0) {
         systems.AdvanceClock(dt);
-        IntegrateFuelCellManifolds(dt);
-        IntegrateReactionWheelBuffers(dt);  // refreshes per-wheel ValidUntil
+        // Component-internal accumulators (FuelCell.Manifold,
+        // ReactionWheel.Buffer) integrate against last solve's
+        // Activities here. System-owned Buffers lerp themselves
+        // against the shared SimClock — nothing to do for those.
+        foreach (var c in AllComponents()) c.OnAdvance(dt);
         simulationTime = nextStop;
       }
 
@@ -616,13 +398,17 @@ public class VirtualVessel {
   }
 
   /// <summary>
-  /// Run OnPreSolve on all components and solve the resource systems.
-  /// Used by DeltaVSimulation on cloned vessels.
+  /// Run OnPreSolve on all components, solve the resource systems, then
+  /// run OnPostSolve so component-internal forecasts (FuelCell ValidUntil,
+  /// ReactionWheel refill ValidUntil, etc.) reflect the just-solved
+  /// Activities. Used by DeltaVSimulation on cloned vessels and by tests.
   /// </summary>
   public void Solve() {
     foreach (var cmp in AllComponents())
       cmp.OnPreSolve();
     systems.Solve();
+    foreach (var cmp in AllComponents())
+      cmp.OnPostSolve();
   }
 
   public void UpdatePartTree(Dictionary<uint, uint?> parentMap) {
