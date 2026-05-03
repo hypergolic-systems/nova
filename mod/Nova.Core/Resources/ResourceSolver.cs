@@ -347,7 +347,22 @@ public class ResourceSolver {
 
         if (poolsAtDp.Count == 0) continue;
 
-        IteratePoolBeta(poolsAtDp, pinnedPools);
+        // Per-resource β. Conservation is per-(node, resource) — each
+        // resource's flow network is independent (no cross-resource
+        // coupling except through converter devices, whose activities
+        // were already pinned in Phase A). Solving each resource's β-LP
+        // independently means the binding resource (e.g. RP-1 with the
+        // tightest demand/supply ratio) doesn't cap fairness for slack-
+        // ier resources (e.g. LOX with more spare capacity).
+        var byResource = new Dictionary<Resource, List<Pool>>();
+        foreach (var p in poolsAtDp) {
+          if (!byResource.TryGetValue(p.Resource, out var list))
+            byResource[p.Resource] = list = new List<Pool>();
+          list.Add(p);
+        }
+        foreach (var group in byResource.Values) {
+          IteratePoolBeta(group, pinnedPools);
+        }
       }
     }
 
