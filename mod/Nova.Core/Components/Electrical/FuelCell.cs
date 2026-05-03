@@ -6,39 +6,35 @@ using Nova.Core.Systems;
 
 namespace Nova.Core.Components.Electrical;
 
-// PEM-style fuel cell, buffer-pattern. Two LP devices, none of them
-// carrying the µL/s reactant rates that would foul GLOP's tolerance:
+// PEM-style fuel cell, buffer-pattern. The component-internal manifold
+// is an `Accumulator` storing total "mix" volume (LH₂ + LOx combined,
+// in litres). Per-resource production rates (Lh2Rate, LoxRate at full
+// activity) imply a fixed volumetric mix ratio, so one number tracks
+// both reactants in lockstep. See `docs/lp_hygiene.md` for why the
+// µL/s reactant rates stay off the LP.
 //
-//   • `refill`     consumes LH₂ + LOx from main tanks at envelope-friendly
-//                  ~0.1 L/s, gated by hysteresis on internal manifold fill.
-//   • `production` produces EC at the rated wattage with no LP-visible
-//                  inputs (Solar-style "free" producer). Activity gated
-//                  by IsActive (SoC hysteresis) AND hasFuel (manifold non-empty).
+// The Accumulator owns:
+//   • Refill side — Staging Consumer with two coupled inputs
+//     (LH₂ + LOx) at the configured volumetric proportions. Refill
+//     hysteresis (10 / 100% manifold fill) is internal.
+//   • Lerp state — manifold contents over time, with refill activity
+//     and production drain rate combined into a signed Rate.
 //
-// The manifold is a component-internal `Accumulator` storing total
-// "mix" volume — LH₂ + LOx combined — in litres. The cell's per-resource
-// consumption (Lh2Rate, LoxRate at full activity) implies a fixed
-// volumetric mix ratio, so one number tracks both reactants in lockstep.
-// Production drains the manifold at µL/s outside the LP, so conservation
-// never sees those rates. See `docs/lp_hygiene.md` for the design rationale.
+// FuelCell owns:
+//   • Production side — vessel-wide EC producer Device, gated by
+//     IsActive (battery SoC hysteresis) AND manifold-non-empty.
+//   • Production drain → pushed onto Manifold.TapRate post-solve so
+//     the manifold lerps with the right drain.
+//   • Production ValidUntil — soonest of SoC threshold flip or
+//     manifold-empty; production refreshes on either event.
 //
-// Self-orchestrated via the OnPreSolve / OnPostSolve / OnAdvance hooks:
-//   - Production ON  when vessel-wide battery SoC <  20% (or no batteries)
-//                OFF when vessel-wide battery SoC >  80%
-//   - Refill     ON  when manifold fill < 10%
-//                OFF when manifold reaches 100%
-//
-// `IsActive`, `RefillActive`, and the manifold contents persist across
-// save/load via FuelCellState. `ValidUntilSeconds` is OnPostSolve's
-// forecast for the production device's next state flip — the soonest of
-// SoC threshold crossing or manifold-empty event.
+// IsActive and the manifold contents persist across save/load via
+// FuelCellState. RefillActive lives on Manifold but is also persisted
+// here so old-style snapshots round-trip.
 public class FuelCell : VirtualComponent {
-  // Hysteresis bands. Production tracks vessel-wide battery SoC;
-  // refill tracks the component-internal manifold fraction.
-  private const double SocOnThreshold     = 0.20;
-  private const double SocOffThreshold    = 0.80;
-  private const double RefillOnThreshold  = 0.10;
-  private const double RefillOffThreshold = 1.00;
+  // Production hysteresis bands (vessel-wide battery SoC).
+  private const double SocOnThreshold  = 0.20;
+  private const double SocOffThreshold = 0.80;
 
   // Config (from prefab MODULE — populated by ComponentFactory.CreateFuelCell).
   public double Lh2Rate;             // L/s of LH₂ at full production
@@ -48,7 +44,7 @@ public class FuelCell : VirtualComponent {
 
   // Persisted state.
   public bool IsActive;
-  public bool RefillActive;
+  public bool RefillActive;              // mirrored to/from Manifold.RefillActive
   public Accumulator Manifold = new();   // mix-L (LH₂ + LOx combined)
 
   // Seconds until the next predicted production state flip given the
@@ -68,15 +64,7 @@ public class FuelCell : VirtualComponent {
   // Combined volumetric production drain at full activity (mix-L/s).
   public double ProductionDrainRate => Lh2Rate + LoxRate;
 
-  // Refill is a coupled-input consumer (LH₂ + LOx in fixed ratio) on
-  // the staging system. The solver's coupling pass guarantees the
-  // refill stops drawing either propellant if the other can't be
-  // supplied.
-  internal StagingFlowSystem.Consumer refill;
   internal ProcessFlowSystem.Device production;
-
-  // Achieved fraction of the requested mix refill rate (0..1).
-  public double RefillActivity => refill?.Activity ?? 0;
 
   public override VirtualComponent Clone() {
     return new FuelCell {
@@ -87,40 +75,37 @@ public class FuelCell : VirtualComponent {
       IsActive = IsActive,
       RefillActive = RefillActive,
       Manifold = new Accumulator {
-        Capacity = Manifold.Capacity, Contents = Manifold.Contents,
+        Capacity = Manifold.Capacity,
+        Contents = Manifold.Contents,
       },
     };
   }
 
   public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
-    // Refill: one coupled-input consumer with two propellants at fixed
-    // mix-proportions. Throttle goes 0 ↔ 1 with the hysteresis flag;
-    // the staging solver's coupling pass handles bottleneck scaling
-    // automatically.
-    refill = systems.Staging.RegisterConsumer(node);
-    refill.AddInput(Resource.LiquidHydrogen, RefillRate * Lh2Frac);
-    refill.AddInput(Resource.LiquidOxygen,   RefillRate * LoxFrac);
+    // Manifold owns the refill side: a coupled-input Staging Consumer
+    // with two propellants at the configured mix proportions. The
+    // staging solver's coupling pass guarantees refill stops drawing
+    // either propellant if the other can't be supplied.
+    // Push the persisted RefillActive into Manifold's runtime state
+    // before configuring the refill device — Configure* reads
+    // RefillActive to set the initial Throttle.
+    Manifold.RefillActive = RefillActive;
+    Manifold.ConfigureStagingRefill(systems, node,
+        (Resource.LiquidHydrogen, RefillRate * Lh2Frac),
+        (Resource.LiquidOxygen,   RefillRate * LoxFrac));
 
     // Production: vessel-wide EC producer. Activity is gated each tick
     // by OnPreSolve (IsActive + manifold-non-empty).
     production = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
     production.AddOutput(Resource.ElectricCharge, EcOutput);
     production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
-
-    // Wire the manifold's clock + rebaseline to "now". Whatever the
-    // accumulator's prior BaselineUT was (default 0 from fresh
-    // construction, or save-load left-over), reset it so the lerp
-    // evaluates against the live clock from here on. Rate stays at 0
-    // until the first OnPostSolve.
-    Manifold.Clock = systems.Clock;
-    Manifold.BaselineUT = systems.Clock.UT;
   }
 
-  // Pre-solve: aggregate vessel-wide battery SoC, apply production
-  // hysteresis (IsActive) and refill hysteresis (RefillActive), then push
-  // the resulting Demand/Throttle into the LP for the upcoming solve.
-  // The "no batteries" branch keeps the cell on continuously — without
-  // a SoC signal there's no reason to throttle.
+  // Pre-solve: aggregate vessel-wide battery SoC and apply production
+  // hysteresis (IsActive). Manifold owns its own refill hysteresis and
+  // pushes Throttle automatically. The "no batteries" branch keeps the
+  // cell on continuously — without a SoC signal there's no reason to
+  // throttle.
   public override void OnPreSolve() {
     if (production == null) return;
 
@@ -140,29 +125,26 @@ public class FuelCell : VirtualComponent {
       IsActive = true;
     }
 
-    double frac = Manifold.FillFraction;
-    if (RefillActive && frac >= RefillOffThreshold) {
-      RefillActive = false;
-    } else if (!RefillActive && frac < RefillOnThreshold) {
-      RefillActive = true;
-    }
-
     production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
-    if (refill != null) refill.Throttle = RefillActive ? 1.0 : 0.0;
+
+    Manifold.OnPreSolve();
+    // Hysteresis flip happened inside Manifold.OnPreSolve — sync the
+    // persisted handle so external reads + Save see runtime state.
+    RefillActive = Manifold.RefillActive;
   }
 
-  // Post-solve: push the just-solved net flow into Manifold.Rate (lerp
-  // takes it forward from here), then forecast valid-until times for
-  // the production device and the component (refill flip). Production
-  // flips on either SoC threshold crossing OR manifold drying out;
-  // refill flips on manifold hitting the opposite threshold.
+  // Post-solve: feed production drain into Manifold.TapRate (lerp
+  // captures it forward), let the Manifold refresh its own net Rate +
+  // refill ValidUntil, then forecast production's own ValidUntil.
+  // cmp.ValidUntil bubbles up the soonest of (production flip,
+  // manifold refill flip).
   public override void OnPostSolve() {
     if (production == null) return;
 
-    // Net manifold flow: refill fills, production drains. Setter
-    // rebaselines the lerp at the current clock UT.
-    Manifold.Rate = RefillActivity      * RefillRate
-                  - production.Activity * ProductionDrainRate;
+    // Drain side → TapRate. Manifold.OnPostSolve picks up its own
+    // refill activity and rebaselines to "now".
+    Manifold.TapRate = production.Activity * ProductionDrainRate;
+    Manifold.OnPostSolve();
 
     double contents = 0, capacity = 0, batteryRate = 0;
     foreach (var b in Vessel.AllComponents().OfType<Battery>()) {
@@ -184,16 +166,12 @@ public class FuelCell : VirtualComponent {
       }
     }
 
-    // Manifold-empty time. Refill is so much faster than production
-    // reactant draw (~200×) that this only matters when the main tank is
-    // empty and refill is forced to 0.
+    // Manifold-empty time. Refill is much faster than production
+    // reactant draw (~200×) so this only matters when the main tank
+    // is empty and refill is forced to 0.
     double dtMfdEmpty = double.PositiveInfinity;
-    if (production.Activity > 1e-9) {
-      double netDrain = production.Activity * ProductionDrainRate
-                      - RefillActivity      * RefillRate;
-      if (netDrain > 1e-12 && Manifold.Contents > 0)
-        dtMfdEmpty = Manifold.Contents / netDrain;
-    }
+    if (production.Activity > 1e-9 && Manifold.Rate < -1e-12 && Manifold.Contents > 0)
+      dtMfdEmpty = Manifold.Contents / -Manifold.Rate;
 
     double dtProdFlip = Math.Min(dtSocFlip, dtMfdEmpty);
     ValidUntilSeconds = dtProdFlip;
@@ -202,18 +180,10 @@ public class FuelCell : VirtualComponent {
       ? double.PositiveInfinity
       : now + dtProdFlip;
 
-    // Refill flip → component-level ValidUntil (no per-demand ValidUntil
-    // on the coupled refill consumer; bubbles through as cmp.ValidUntil).
-    double netFill = RefillActivity      * RefillRate
-                   - production.Activity * ProductionDrainRate;
-    double dtRefillFlip = RefillActive
-      ? Manifold.TimeToFraction(RefillOffThreshold, netFill)
-      : Manifold.TimeToFraction(RefillOnThreshold,  netFill);
-
-    double dtCmp = Math.Min(dtProdFlip, dtRefillFlip);
-    ValidUntil = double.IsPositiveInfinity(dtCmp)
-      ? double.PositiveInfinity
-      : now + dtCmp;
+    // Bubble up to cmp.ValidUntil — soonest of production-flip and
+    // manifold-refill-flip (the latter owned by the Accumulator).
+    double earliest = Math.Min(production.ValidUntil, Manifold.ValidUntil);
+    ValidUntil = earliest;
   }
 
   public override void Save(PartState state) {

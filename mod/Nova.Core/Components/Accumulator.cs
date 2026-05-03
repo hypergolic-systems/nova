@@ -1,60 +1,94 @@
 using System;
+using Nova.Core.Resources;
 using Nova.Core.Systems;
 
 namespace Nova.Core.Components;
 
-// Off-LP storage cell with lerp-based state. Mirrors `Resource.Buffer`
-// but for component-internal accumulators that don't participate in
-// solver conservation rows:
+// Off-LP storage cell with lerp-based state and an owned refill device.
+// Mirrors Resource.Buffer's lerp model, but for component-internal
+// reservoirs that don't participate in solver conservation rows:
 //
-//   • FuelCell  — LH₂ + LOx manifold (µL/s reactant draw kept off-LP).
-//   • ReactionWheel — energy reserve (per-frame intensity changes kept
-//                     off-LP so SAS jiggling doesn't re-solve the LP).
+//   • FuelCell.Manifold       — LH₂ + LOx mix (Staging-refilled).
+//   • ReactionWheel.Buffer    — energy reserve (Process-refilled).
 //
-// Same lerp model as Buffer: store (BaselineContents, BaselineUT, Rate)
-// and compute Contents on read.
+// The Accumulator is self-contained: it holds an abstract quantity
+// (Capacity + lerp state), owns a refill device on either Process or
+// Staging with hysteresis on/off control, and exposes a single TapRate
+// setter for the drain side. Owners stop carrying boilerplate around
+// device construction, hysteresis flips, or forecast math.
 //
+// Lerp:
 //   Contents(t) = clamp(BaselineContents + Rate × (t - BaselineUT), 0, Capacity)
+//   Rate        = RefillActivity · RefillRate − TapRate    (signed; + = filling)
 //
-// The owning component (FuelCell, ReactionWheel) installs `Clock` at
-// `OnBuildSystems` time and updates `Rate` whenever the underlying flow
-// changes (post-solve, on intensity-change). No per-tick integration.
+// Hysteresis: refill flips ON when FillFraction ≤ RefillOnFraction
+// (default 10%), OFF when FillFraction ≥ RefillOffFraction (default
+// 100%). The Accumulator pushes the resulting on/off into the
+// underlying device's Demand (Process) or Throttle (Staging).
 //
-// "Accumulator" is the mechanical-engineering term for an off-board
-// reservoir that absorbs short-term flow imbalances (hydraulic,
-// pneumatic, electrical). Distinct from `Resource.Buffer`, which is
-// the LP-visible storage primitive that participates in conservation
-// rows.
+// ValidUntil is the absolute UT of the next forecasted hysteresis flip;
+// the owning component bubbles it up via cmp.ValidUntil so the Tick
+// scheduler can step to the event.
 //
-// See `mod/Nova.Core/Resources/Buffer.cs` for the full design rationale.
+// See `mod/Nova.Core/Resources/Buffer.cs` for the underlying lerp
+// design rationale.
 public class Accumulator {
   public double Capacity;
 
-  // Baseline state. Direct field access for owners (e.g. snapshot /
-  // restore code paths). Most callers should go through the property
-  // surface below.
+  // Baseline state. Direct field access for owners (snapshot/restore
+  // code paths). Most callers should go through the property surface.
   public double BaselineContents;
   public double BaselineUT;
 
-  // Shared clock — installed by the owning component at OnBuildSystems
-  // time. Tests can leave this null; ContentsAt then collapses to a
-  // static-value lookup at BaselineUT.
+  // Shared clock — installed by ConfigureProcessRefill /
+  // ConfigureStagingRefill. Tests can leave this null; ContentsAt
+  // then collapses to a static-value lookup at BaselineUT.
   internal SimClock Clock;
 
-  private double _rate;
+  // ── Refill side ──────────────────────────────────────────────────
+  // Exactly one of these is non-null after a Configure* call. The
+  // Accumulator pushes hysteresis-driven activation into Demand or
+  // Throttle on OnPreSolve, and reads the achieved Activity back on
+  // OnPostSolve.
+  internal ProcessFlowSystem.Device   processRefill;
+  internal StagingFlowSystem.Consumer stagingRefill;
+  // Capacity-units per second when refill activity = 1.
+  public double RefillRate;
+  // Last-solve achieved fraction (0..1). Updated in OnPostSolve.
+  public double RefillActivity;
 
-  public double Rate {
-    get => _rate;
+  // ── Hysteresis ───────────────────────────────────────────────────
+  public double RefillOnFraction  = 0.10;
+  public double RefillOffFraction = 1.00;
+  public bool   RefillActive;
+
+  // Absolute UT of the next forecasted hysteresis flip. +∞ when no
+  // flip is reachable from the current state. Owner exposes this via
+  // cmp.ValidUntil so VirtualVessel.ComputeNextExpiry sees it.
+  public double ValidUntil { get; private set; } = double.PositiveInfinity;
+
+  // ── Drain side ───────────────────────────────────────────────────
+  // Continuous drain rate (capacity-units/sec). Setter rebaselines
+  // the lerp at "now" and recomputes net Rate. Discrete-tap semantics
+  // are recoverable: piecewise-constant TapRate updates over a known
+  // dt are equivalent to Tap(rate × dt).
+  private double _tapRate;
+  public double TapRate {
+    get => _tapRate;
     set {
-      // Rebaseline before applying the new rate. The OLD rate was valid
-      // from BaselineUT up to "now"; capture the resulting Contents as
-      // the new baseline so the new rate applies forward from now.
-      var t = Clock?.UT ?? BaselineUT;
-      BaselineContents = ContentsAt(t);
-      BaselineUT = t;
-      _rate = value;
+      RebaselineNow();
+      _tapRate = value;
+      RecomputeRate();
+      RefreshValidUntil();
     }
   }
+
+  // ── Lerp state ───────────────────────────────────────────────────
+  // Net signed rate (+ = filling). Updated whenever RefillActivity or
+  // TapRate changes. Read-only externally — use ConfigureRefill / the
+  // OnPostSolve hook to drive the refill side and TapRate setter to
+  // drive the drain side.
+  public double Rate { get; private set; }
 
   // Current Contents, lerped to the shared clock's UT and clamped to
   // [0, Capacity]. Setter rebaselines.
@@ -67,16 +101,12 @@ public class Accumulator {
   }
 
   public double ContentsAt(double ut) {
-    var projected = BaselineContents + _rate * (ut - BaselineUT);
+    var projected = BaselineContents + Rate * (ut - BaselineUT);
     if (projected < 0) return 0;
     if (projected > Capacity) return Capacity;
     return projected;
   }
 
-  // Capture Contents at the given UT as the new baseline. Rate
-  // unchanged. Owners typically follow with `Rate = …` on the same
-  // accumulator; the Rate setter would auto-rebaseline as well, so
-  // explicit Refresh is mostly for batching readability.
   public void Refresh(double ut) {
     BaselineContents = ContentsAt(ut);
     BaselineUT = ut;
@@ -87,14 +117,12 @@ public class Accumulator {
   public bool IsFull  => Contents >= Capacity - 1e-9;
 
   // Time for Contents to reach `targetFrac × Capacity` given a signed
-  // netRate. +∞ when the rate doesn't move toward the target — the
-  // caller usually pairs that with PositiveInfinity ValidUntil.
+  // netRate. +∞ when the rate doesn't move toward the target.
   //
-  // Edge case worth its own line: when Contents is already AT the
-  // target and netRate keeps pushing past, we return 0 (not +∞). The
-  // 0 forecast forces an immediate re-solve so OnPreSolve gets to
-  // flip the hysteresis flag — without it, a buffer pinned at a
-  // threshold by a clamp would stay there forever.
+  // Edge case: when Contents is already AT the target and netRate
+  // keeps pushing past, we return 0 (not +∞) — the clamp absorbs the
+  // over-fill silently, so the 0 forecast forces an immediate re-solve
+  // so OnPreSolve can flip the hysteresis flag.
   public double TimeToFraction(double targetFrac, double netRate) {
     if (Capacity <= 0) return double.PositiveInfinity;
     double target = targetFrac * Capacity;
@@ -103,5 +131,86 @@ public class Accumulator {
     if (slack < 0 && netRate < -1e-12) return slack / netRate;
     if (Math.Abs(slack) < 1e-12 && Math.Abs(netRate) > 1e-12) return 0;
     return double.PositiveInfinity;
+  }
+
+  // ── Configure ────────────────────────────────────────────────────
+  // Wire a single-input refill on the Process system (e.g.
+  // ReactionWheel pulling EC). Installs the SimClock at the same time
+  // and rebaselines BaselineUT to "now" so the lerp anchors against
+  // the live clock from here on.
+  public void ConfigureProcessRefill(VesselSystems systems,
+      Resource resource, double refillRate,
+      ProcessFlowSystem.Priority priority = ProcessFlowSystem.Priority.Low) {
+    RefillRate = refillRate;
+    processRefill = systems.Process.AddDevice(priority);
+    processRefill.AddInput(resource, refillRate);
+    processRefill.Demand = RefillActive ? 1.0 : 0.0;
+    InstallClock(systems.Clock);
+  }
+
+  // Wire a multi-input refill on the Staging system (e.g. FuelCell
+  // hydrolox manifold). RefillRate = sum of per-input rates — the
+  // Accumulator's lerp uses the total volumetric flow.
+  public void ConfigureStagingRefill(VesselSystems systems,
+      StagingFlowSystem.Node node,
+      params (Resource resource, double rate)[] inputs) {
+    stagingRefill = systems.Staging.RegisterConsumer(node);
+    double total = 0;
+    foreach (var (resource, rate) in inputs) {
+      stagingRefill.AddInput(resource, rate);
+      total += rate;
+    }
+    RefillRate = total;
+    stagingRefill.Throttle = RefillActive ? 1.0 : 0.0;
+    InstallClock(systems.Clock);
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────
+  // Pre-solve: hysteresis flip on FillFraction, push the resulting
+  // active state into the underlying refiller's Demand (Process) or
+  // Throttle (Staging) for the upcoming solve.
+  public void OnPreSolve() {
+    double frac = FillFraction;
+    if (RefillActive && frac >= RefillOffFraction) RefillActive = false;
+    else if (!RefillActive && frac <= RefillOnFraction) RefillActive = true;
+
+    double on = RefillActive ? 1.0 : 0.0;
+    if (processRefill != null) processRefill.Demand   = on;
+    if (stagingRefill != null) stagingRefill.Throttle = on;
+  }
+
+  // Post-solve: capture the underlying refiller's achieved Activity,
+  // recompute net Rate (rebaselining at "now"), and forecast the next
+  // hysteresis flip.
+  public void OnPostSolve() {
+    RefillActivity = processRefill?.Activity ?? stagingRefill?.Activity ?? 0;
+    RebaselineNow();
+    RecomputeRate();
+    RefreshValidUntil();
+  }
+
+  // ── Internals ────────────────────────────────────────────────────
+  private void InstallClock(SimClock clock) {
+    Clock = clock;
+    BaselineUT = clock.UT;
+  }
+
+  private void RebaselineNow() {
+    var t = Clock?.UT ?? BaselineUT;
+    BaselineContents = ContentsAt(t);
+    BaselineUT = t;
+  }
+
+  private void RecomputeRate() {
+    Rate = RefillActivity * RefillRate - _tapRate;
+  }
+
+  private void RefreshValidUntil() {
+    double dt = RefillActive
+      ? TimeToFraction(RefillOffFraction, Rate)
+      : TimeToFraction(RefillOnFraction,  Rate);
+    ValidUntil = double.IsPositiveInfinity(dt)
+      ? double.PositiveInfinity
+      : (Clock?.UT ?? BaselineUT) + dt;
   }
 }

@@ -7,22 +7,18 @@ namespace Nova.Core.Components.Propulsion;
 
 // Reaction wheel, buffer-pattern. Each wheel owns a small off-LP
 // `Accumulator` (2.5 kJ for a 250 W wheel ≈ 10 s of single-axis-full).
-// Player input drains it directly each tick; the LP only sees the
-// *refill* device pulling EC at the rated wattage when hysteresis says
-// so. The LP re-solves only on hysteresis flips, not on every per-frame
-// intensity change.
+// The Accumulator owns the refill side (Process Device pulling EC at
+// the rated wattage when hysteresis says so) and the lerp; the LP only
+// re-solves on hysteresis flips, not on every per-frame intensity
+// change.
 //
-// Scheduling mirrors `FuelCell`:
-//   • OnPreSolve flips RefillActive based on current FillFraction.
-//   • `refill.ValidUntil` forecasts the time-to-next-flip and is
-//     refreshed at three points:
-//       OnTickBegin  — intensity may have changed externally since
-//                      the last solve (NovaVesselModule.SolveAttitude).
-//       OnAdvance    — buffer state advances during clock integration.
-//       OnPostSolve  — refill.Activity changes when the LP re-solves
-//                      with a flipped Demand.
-//     The Tick scheduler then advances simulationTime to the forecasted
-//     event time and triggers a re-solve when it's reached.
+// The wheel updates `Buffer.TapRate = intensity × ElectricRate` at:
+//   • OnTickBegin — intensity may have changed externally between
+//                   ticks (NovaVesselModule.SolveAttitude).
+//   • OnPostSolve — refill.Activity changed; the Accumulator's net
+//                   Rate (refill·activity − tap) needs the latest
+//                   intensity captured too (it's stable within a Tick
+//                   so this is mostly defensive).
 //
 // See `docs/lp_hygiene.md` §1 for the buffer-pattern rationale.
 public class ReactionWheel : VirtualComponent {
@@ -48,17 +44,12 @@ public class ReactionWheel : VirtualComponent {
   public double BufferCapacityJoules => ElectricRate * 10;
   public double RefillRateWatts      => ElectricRate;
 
-  // Hysteresis matches FuelCell manifold: refill ON when buffer drains
-  // to 10%, refill OFF when buffer fills to 100%.
-  public const double RefillOnFraction  = 0.10;
-  public const double RefillOffFraction = 1.00;
-
   // Persisted off-LP state.
-  public Accumulator Buffer;     // null until OnBuildSolver / Load
-  public bool RefillActive;
+  public Accumulator Buffer;     // null until OnBuildSystems / Load
+  public bool RefillActive;      // mirrored to/from Buffer.RefillActive
 
   // Live derived telemetry. Computed on read from Buffer state +
-  // last-solved refill.Activity + current intensity, so reads always
+  // last-solved refill activity + current intensity, so reads always
   // reflect "right now" — no per-tick mutation. SolveAttitude reads
   // Satisfaction each frame to scale applied torque.
   //
@@ -67,43 +58,39 @@ public class ReactionWheel : VirtualComponent {
   //                  the bus can't sustain demand on its own.
   //   CurrentDrain  = drain actually being supplied (= desiredDrain
   //                  while buffer non-empty; = fillRate when starved).
-  //   CurrentRefill = fill rate from the EC bus (= refill.Activity ×
+  //   CurrentRefill = fill rate from the EC bus (= refill activity ×
   //                  RefillRateWatts).
   public double Satisfaction {
     get {
-      if (refill == null || Buffer == null) return 1.0;
+      if (Buffer == null) return 1.0;
       double intensity = Math.Abs(ThrottlePitch)
                        + Math.Abs(ThrottleRoll)
                        + Math.Abs(ThrottleYaw);
       if (intensity < 1e-9) return 1.0;
       double desiredDrain = intensity * ElectricRate;
-      double fillRate = refill.Activity * RefillRateWatts;
+      double fillRate = Buffer.RefillActivity * RefillRateWatts;
       if (Buffer.Contents > 1e-9 || fillRate >= desiredDrain) return 1.0;
       return fillRate / desiredDrain;
     }
   }
   public double CurrentDrain {
     get {
-      if (refill == null || Buffer == null) return 0;
+      if (Buffer == null) return 0;
       double intensity = Math.Abs(ThrottlePitch)
                        + Math.Abs(ThrottleRoll)
                        + Math.Abs(ThrottleYaw);
       if (intensity < 1e-9) return 0;
       double desiredDrain = intensity * ElectricRate;
-      double fillRate = refill.Activity * RefillRateWatts;
+      double fillRate = Buffer.RefillActivity * RefillRateWatts;
       if (Buffer.Contents > 1e-9) return desiredDrain;
       return Math.Min(desiredDrain, fillRate);
     }
   }
-  public double CurrentRefill => refill?.Activity * RefillRateWatts ?? 0;
+  public double CurrentRefill => (Buffer?.RefillActivity ?? 0) * RefillRateWatts;
 
-  internal ProcessFlowSystem.Device refill;
-
-  // Public read-only access to the refill device's ValidUntil — handy
-  // for tests asserting forecast behaviour and for telemetry that wants
-  // to surface "next refill flip" without taking an internal dep on the
-  // device shape.
-  public double RefillValidUntil => refill?.ValidUntil ?? double.PositiveInfinity;
+  // Public read-only access to the Accumulator's flip forecast. Handy
+  // for tests asserting forecast behaviour and for telemetry.
+  public double RefillValidUntil => Buffer?.ValidUntil ?? double.PositiveInfinity;
 
   public override VirtualComponent Clone() {
     return new ReactionWheel {
@@ -131,64 +118,43 @@ public class ReactionWheel : VirtualComponent {
     Buffer.Capacity = BufferCapacityJoules;
     if (Buffer.Contents > Buffer.Capacity) Buffer.Contents = Buffer.Capacity;
 
-    // Wire the buffer's clock + rebaseline to "now". From here on, the
-    // lerp evaluates against the live SimClock; OnTickBegin/OnPostSolve
-    // update Rate when intensity or refill.Activity changes.
-    Buffer.Clock = systems.Clock;
-    Buffer.BaselineUT = systems.Clock.UT;
-
-    // Priority.Low — matches FuelCell.refill. Wheel refill is
-    // opportunistic top-up of an off-system buffer; if the EC bus is
-    // bound we'd rather throttle refill and keep avionics/lights
-    // powered than the other way round. Buffer covers wheel work in
-    // the meantime.
-    refill = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
-    refill.AddInput(Resource.ElectricCharge, RefillRateWatts);
-    refill.Demand = RefillActive ? 1.0 : 0.0;
+    // Push the persisted RefillActive into the Accumulator runtime
+    // state. ConfigureProcessRefill reads it to set initial Demand.
+    Buffer.RefillActive = RefillActive;
+    Buffer.ConfigureProcessRefill(systems, Resource.ElectricCharge,
+        RefillRateWatts, ProcessFlowSystem.Priority.Low);
   }
 
   public override void OnPreSolve() {
-    if (refill == null) return;
-    // Hysteresis flip: refill ON when buffer drains to ≤ 10%, OFF when
-    // it fills to ≥ 100%. Mirrors FuelCell's manifold band. Both bounds
-    // are inclusive so a forecast that lands the buffer exactly at the
-    // threshold (TimeToFraction's intent) flips reliably.
-    double frac = Buffer.FillFraction;
-    if (RefillActive && frac >= RefillOffFraction) RefillActive = false;
-    else if (!RefillActive && frac <= RefillOnFraction) RefillActive = true;
-    refill.Demand = RefillActive ? 1.0 : 0.0;
+    if (Buffer == null) return;
+    Buffer.OnPreSolve();
+    // Hysteresis flip happened inside Buffer.OnPreSolve — sync the
+    // persisted handle so external reads + Save see runtime state.
+    RefillActive = Buffer.RefillActive;
   }
 
-  public override void OnTickBegin() => RefreshBufferState();
-  public override void OnPostSolve() => RefreshBufferState();
+  public override void OnTickBegin() {
+    PushTapRate();
+    if (Buffer != null) ValidUntil = Buffer.ValidUntil;
+  }
 
-  // Push the current intensity + last-solve refill.Activity into
-  // Buffer.Rate (lerp takes it forward) and refresh refill.ValidUntil
-  // for the soonest hysteresis flip. Idempotent; called from both
-  // OnTickBegin (intensity may have changed externally) and OnPostSolve
-  // (refill.Activity changed). The Rate setter rebaselines at clock.UT,
-  // capturing the previous lerp's Contents-at-now into the new
-  // baseline.
-  private void RefreshBufferState() {
-    if (refill == null || Buffer == null) return;
+  public override void OnPostSolve() {
+    PushTapRate();
+    Buffer.OnPostSolve();
+    ValidUntil = Buffer.ValidUntil;
+  }
 
+  // intensity × ElectricRate = continuous drain rate. Setter on
+  // Accumulator.TapRate rebaselines at "now" and recomputes net Rate
+  // (refill·activity − tap). Net rate stays correct even if intensity
+  // changes between Ticks (OnTickBegin captures the new value before
+  // ComputeNextExpiry consumes the forecast).
+  private void PushTapRate() {
+    if (Buffer == null) return;
     double intensity = Math.Abs(ThrottlePitch)
                      + Math.Abs(ThrottleRoll)
                      + Math.Abs(ThrottleYaw);
-    double drain = intensity * ElectricRate;
-    double fill  = refill.Activity * RefillRateWatts;
-    double net   = fill - drain;
-
-    Buffer.Rate = net;
-
-    // Next flip is at the OPPOSITE threshold from the current state.
-    double dt = RefillActive
-      ? Buffer.TimeToFraction(RefillOffFraction, net)
-      : Buffer.TimeToFraction(RefillOnFraction,  net);
-
-    refill.ValidUntil = double.IsPositiveInfinity(dt)
-      ? double.PositiveInfinity
-      : Vessel.Systems.Clock.UT + dt;
+    Buffer.TapRate = intensity * ElectricRate;
   }
 
   public override void Save(PartState state) {
