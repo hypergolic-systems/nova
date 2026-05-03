@@ -13,7 +13,7 @@ The penalty for violating the contract is real and observable: GLOP returns `MPS
 
 | Quantity | Range | Where it lives |
 | --- | --- | --- |
-| **Conservation row coefficients** (rates) | 0.1 – 10 000 | `device.AddInput(...)`, `device.AddOutput(...)` |
+| **Conservation row coefficients** (rates) | 0.1 – 10 000 | `inputs` / `outputs` arrays passed to `systems.AddDevice(...)` |
 | **LP variable bounds** (mostly buffer flow rates) | 0.1 – ~10 000, max 100 000 | `Buffer.MaxRateIn`, `Buffer.MaxRateOut` |
 | **Buffer state** (capacity, contents) | unbounded | `Buffer.Capacity`, `Buffer.Contents` — not in LP |
 | **Time deltas** (forecasts, valid-until) | unbounded | `Device.ValidUntil` — not in LP |
@@ -34,6 +34,31 @@ EC quantity = Joules. EC rate = Watts. `1 EC = 1 J`, `1 EC/s = 1 W`. `Buffer.Cap
 
 The unit convention is what makes the envelope numerically meaningful: 1.0 in the LP means "1 W" or "1 L/s" in the same physical scale across every component.
 
+## Device construction
+
+Components declare resource flow through `VesselSystems.AddDevice`:
+
+```csharp
+device = systems.AddDevice(node,
+    inputs:   new[] { (Resource.LiquidHydrogen, lh2Rate),
+                      (Resource.LiquidOxygen,   loxRate) },
+    outputs:  new[] { (Resource.ElectricCharge, ecOutput) },
+    priority: ProcessFlowSystem.Priority.Low);
+```
+
+The factory routes the whole device to one solver based on the resources' `Domain`:
+
+- **Topological** inputs (RP-1, LOX, LH₂, Hydrazine, Xenon) → `StagingFlowSystem.Consumer`.
+- **Uniform** inputs/outputs (ElectricCharge, future O₂/CO₂/H₂O/heat) → `ProcessFlowSystem.Device`.
+
+Hard rules, validated at factory time:
+
+- **Single domain.** A Device's `Activity` is managed by exactly one solver, so all of its inputs and outputs must share a domain. Mixed-domain flow (e.g. ISRU consuming water and producing O₂/H₂ across the two systems) is modelled with two devices coupled via an Accumulator — the same way FuelCell already bridges Staging refill ↔ Process EC production.
+- **Topological resources have no LP-visible producers.** Only tanks (`Buffer` on a Staging node) store them. `outputs` of a Topological resource throws.
+- **Inputs/outputs are immutable after construction.** No `AddInput` / `AddOutput` mutators on the Device — declare resources upfront, validate once.
+
+Within the Process side, the rest of this document still applies: keep within-row spread under 10⁵, avoid degenerate column scales, etc.
+
 ## Patterns for staying in envelope
 
 When a component's natural rate falls outside [0.1, 10 000], use one of these patterns rather than putting the raw rate in the LP.
@@ -42,7 +67,7 @@ When a component's natural rate falls outside [0.1, 10 000], use one of these pa
 
 Use when a component's consumption is either much faster than the LP cadence (per-frame intensity changes on reaction wheels) or much slower than the envelope's lower bound (fuel cell µL/s reactant flow).
 
-The component owns a small internal `Accumulator`. Consumption against the buffer happens *outside* the LP, debiting `Accumulator.Contents` directly each tick. The LP only sees the *refill* flow into the buffer, governed by hysteresis on buffer fill state.
+The component owns a small internal `Accumulator`. Consumption is *off-LP*: the component sets `Accumulator.TapRate` (continuous drain rate), which combines with the refill activity in the Accumulator's lerp — `Contents(t) = clamp(BaselineContents + Rate × (t − BaselineUT), 0, Capacity)` where `Rate = RefillActivity·RefillRate − TapRate`. No per-tick integration, just rate updates at solve boundaries. The LP only sees the *refill* flow into the buffer, governed by hysteresis on buffer fill state.
 
 ```
 main tank   ──refill──►   manifold   ──drain (off-LP)──►   component
@@ -55,7 +80,7 @@ main tank   ──refill──►   manifold   ──drain (off-LP)──►   c
 
 The refill rate is the LP-visible quantity and lives at envelope-friendly scale (~0.1–10 L/s or W). The component-internal consumption can be anything — micro-flows for fuel cells, burst flows for wheel torque commands — and the LP never sees it.
 
-Cost: each buffered component carries persistent buffer state (saved to `PartState`) and per-tick control logic.
+Cost: each buffered component carries persistent buffer state (saved to `PartState`) and small amounts of control logic on the standard `OnPreSolve` / `OnPostSolve` / `OnTickBegin` hooks. The `Accumulator` itself owns the refill `Device` + hysteresis bands, so component code reduces to "set TapRate, read Contents".
 
 Examples in scope:
 - **Fuel cells** consume LH₂/LOx at µL/s; refill the mix-manifold at ~0.15 L/s when below threshold (refill is on the *staging* side, but the same pattern applies — buffer between two solver domains).
@@ -98,7 +123,7 @@ with `C` the chosen C-rate (typically 0.5–2). For Z-100 (3.6 MJ) at 1C → 1 0
 
 ## Things to never do
 
-- **Don't put inputs and outputs at vastly different scales on a single hybrid `Device`.** GLOP's column scaler can't fix a column whose entries span 10⁷. Split into input + output devices, or use the buffer pattern to bring everything to one scale.
+- **Don't put inputs and outputs at vastly different scales on a single `Device`.** GLOP's column scaler can't fix a column whose entries span 10⁷. The single-domain rule already keeps Topological/Uniform from co-existing on one Device, but within a domain you can still construct a Device whose inputs and outputs span far too much: an EC consumer at 1 W *and* a side EC output at 10 MW, say. Split into two devices, or use the buffer pattern to bring everything to one scale.
 - **Don't rely on `±∞` for `MaxRateIn`/`MaxRateOut`.** GLOP tolerates them but they make the simplex's pivot numerics worse and can leak into ABNORMAL on adjacent constraints. Pick a finite cap (10× the worst plausible flow is fine).
 - **Don't mix component-internal rates into LP coefficients.** If a fuel cell consumes 5×10⁻⁴ L/s reactant per kW of EC, that 5×10⁻⁴ does not belong in any conservation row — that's what the buffer pattern is for.
 - **Don't read `Variable.SolutionValue()` after a bound mutation without re-solving.** GLOP invalidates its basis on any `SetBounds` / `SetCoefficient` call; subsequent `SolutionValue()` reads return 0 until the next `Solve()`. ProcessFlowSystem snapshots values into local maps immediately after each successful solve, so callers don't need to worry about this — but anyone touching the priority loop must.
@@ -125,8 +150,12 @@ After all priorities:
 ## Reference
 
 - `mod/Nova.Core/Systems/ProcessFlowSystem.cs` — LP construction, per-tick reset, priority loop, lex-2 cleanup, buffer-rate distribution.
-- `mod/Nova.Core/Components/VirtualVessel.cs` — pre/post-solve orchestration (`UpdateSolarDeviceDemand`, `UpdateFuelCellDevices`, `DistributeFuelCellState`). Drives both Staging + Process each tick.
 - `mod/Nova.Core/Systems/StagingFlowSystem.cs` — water-fill solver (no LP envelope concerns).
+- `mod/Nova.Core/Systems/VesselSystems.cs` — `AddDevice` factory, same-domain validation, cross-system orchestration.
+- `mod/Nova.Core/Systems/Device.cs` — unified Device facade over `Staging.Consumer` / `Process.Device`.
+- `mod/Nova.Core/Components/VirtualVessel.cs` — Tick scheduler + generic `OnPreSolve` / `OnPostSolve` / `OnTickBegin` / `OnAdvance` dispatch over components. Vessel-aggregate solar handling lives here too (`UpdateSolarDeviceDemand`).
+- `mod/Nova.Core/Components/Accumulator.cs` — lerp-based off-LP cell, owns its own refill `Device` + hysteresis.
+- `mod/Nova.Core/Resources/Buffer.cs` — lerp-based LP-visible storage primitive.
 - `mod/Nova.Core/Resources/Resource.cs` — unit convention; `ResourceDomain` (Topological / Uniform) tags which solver owns the resource.
 - `mod/Nova.Core/Components/Electrical/FuelCell.cs` — worked example of the buffer pattern bridging staging refill ↔ process production.
 
