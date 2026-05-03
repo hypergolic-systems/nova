@@ -102,10 +102,18 @@ public class FuelCell : VirtualComponent {
     refill.AddInput(Resource.LiquidOxygen,   RefillRate * LoxFrac);
 
     // Production: vessel-wide EC producer. Activity is gated each tick
-    // by the orchestrator (IsActive + manifold-non-empty).
+    // by OnPreSolve (IsActive + manifold-non-empty).
     production = systems.Process.AddDevice(ProcessFlowSystem.Priority.Low);
     production.AddOutput(Resource.ElectricCharge, EcOutput);
     production.Demand = (IsActive && !Manifold.IsEmpty) ? 1.0 : 0.0;
+
+    // Wire the manifold's clock + rebaseline to "now". Whatever the
+    // accumulator's prior BaselineUT was (default 0 from fresh
+    // construction, or save-load left-over), reset it so the lerp
+    // evaluates against the live clock from here on. Rate stays at 0
+    // until the first OnPostSolve.
+    Manifold.Clock = systems.Clock;
+    Manifold.BaselineUT = systems.Clock.UT;
   }
 
   // Pre-solve: aggregate vessel-wide battery SoC, apply production
@@ -143,13 +151,18 @@ public class FuelCell : VirtualComponent {
     if (refill != null) refill.Throttle = RefillActive ? 1.0 : 0.0;
   }
 
-  // Post-solve: forecast valid-until times for the production device and
-  // for the component (refill flip). Production flips on either SoC
-  // threshold crossing OR manifold drying out; refill flips on manifold
-  // hitting the opposite threshold. Both forecasts use the just-solved
-  // battery rates and refill/production Activities.
+  // Post-solve: push the just-solved net flow into Manifold.Rate (lerp
+  // takes it forward from here), then forecast valid-until times for
+  // the production device and the component (refill flip). Production
+  // flips on either SoC threshold crossing OR manifold drying out;
+  // refill flips on manifold hitting the opposite threshold.
   public override void OnPostSolve() {
     if (production == null) return;
+
+    // Net manifold flow: refill fills, production drains. Setter
+    // rebaselines the lerp at the current clock UT.
+    Manifold.Rate = RefillActivity      * RefillRate
+                  - production.Activity * ProductionDrainRate;
 
     double contents = 0, capacity = 0, batteryRate = 0;
     foreach (var b in Vessel.AllComponents().OfType<Battery>()) {
@@ -201,20 +214,6 @@ public class FuelCell : VirtualComponent {
     ValidUntil = double.IsPositiveInfinity(dtCmp)
       ? double.PositiveInfinity
       : now + dtCmp;
-  }
-
-  // Drain/fill manifold contents using the previous solve's Activities.
-  // Same staleness contract as Buffer.Rate-based integration: rates come
-  // from the prior Solve, integrate over `dt`, next Solve reads the new
-  // state. Accumulator.Integrate clamps at [0, capacity] so an over-shoot
-  // between solves doesn't push the manifold negative — the production
-  // ValidUntil set in OnPostSolve ensures we re-solve before the over-
-  // shoot grows large.
-  public override void OnAdvance(double dt) {
-    if (production == null || dt <= 0) return;
-    double netRate = RefillActivity      * RefillRate
-                   - production.Activity * ProductionDrainRate;
-    Manifold.Integrate(netRate, dt);
   }
 
   public override void Save(PartState state) {

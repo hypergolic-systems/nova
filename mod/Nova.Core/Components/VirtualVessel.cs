@@ -317,12 +317,10 @@ public class VirtualVessel {
 
       var dt = nextStop - simulationTime;
       if (dt > 0) {
+        // System-owned Buffers and component-internal Accumulators all
+        // lerp their Contents against the shared SimClock — nothing
+        // per-component needs poking on a clock advance.
         systems.AdvanceClock(dt);
-        // Component-internal accumulators (FuelCell.Manifold,
-        // ReactionWheel.Buffer) integrate against last solve's
-        // Activities here. System-owned Buffers lerp themselves
-        // against the shared SimClock — nothing to do for those.
-        foreach (var c in AllComponents()) c.OnAdvance(dt);
         simulationTime = nextStop;
       }
 

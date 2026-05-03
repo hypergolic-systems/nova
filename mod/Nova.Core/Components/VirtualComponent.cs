@@ -56,19 +56,13 @@ public class VirtualComponent {
   // empty forecast). Called once at the top of VirtualVessel.Tick.
   public virtual void OnTickBegin() {}
 
-  // Post-solve hook: distribute solved Activities into component-internal
-  // state (per-panel CurrentRate, per-cell ValidUntil, per-wheel
-  // refill.ValidUntil, etc.). Called by VirtualVessel.DoSolve after
-  // systems.Solve().
+  // Post-solve hook: push solved Activities into component-internal
+  // lerp state (Accumulator.Rate, ValidUntil forecasts, per-panel
+  // CurrentRate, etc.). Called by VirtualVessel.DoSolve after
+  // systems.Solve(). Component-internal Accumulators advance via the
+  // same lerp model as system-owned Buffers — no per-tick integration,
+  // just rate updates at solve time.
   public virtual void OnPostSolve() {}
-
-  // Clock-advance hook: integrate component-internal accumulators using
-  // the most recent solve's Activities over the elapsed `dt`. Called by
-  // VirtualVessel.Tick on each non-zero clock advance. Buffer-based
-  // resources (the system-owned LP/staging Buffers) lerp themselves
-  // against the shared SimClock and don't need this — only off-system
-  // accumulators (FuelCell.Manifold, ReactionWheel.Buffer) do.
-  public virtual void OnAdvance(double dt) {}
 
   public virtual void Update(double nowUT) {}
 
