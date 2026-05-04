@@ -6,7 +6,7 @@ namespace Nova.Core.Communications;
 // Distance to a node = max over reaching paths of the path's
 // minimum-edge rate. Modified Dijkstra: relax with `min(dist[u], rate(u→v))`,
 // pop with `argmax dist`. Linear-scan PQ — endpoint counts are small.
-internal static class MaxRatePath {
+public static class MaxRatePath {
 
   // Returns the ordered Links along the chosen source→dest path.
   // Null if no positive-rate path exists, or if source == dest.

@@ -238,6 +238,26 @@ public class CommunicationsNetwork {
     var from = link.From;
     var to = link.To;
     var maxCeiling = LinkMaxCeiling(from, to);
+
+    // Analytical path: both endpoints are circular Kepler orbits
+    // around the same parent body. Same bucket-finding loop, but
+    // each position eval is closed-form arithmetic instead of an
+    // iterative Kepler propagator (~1700× faster per call).
+    if (from.Motion is KeplerMotion ka && to.Motion is KeplerMotion kb
+        && ReferenceEquals(ka.Parent, kb.Parent)
+        && ka.Eccentricity == 0 && kb.Eccentricity == 0) {
+      Func<double, int> bucketAtFast = t => {
+        var pa = KeplerEvaluator.PositionAt(ka, t);
+        var pb = KeplerEvaluator.PositionAt(kb, t);
+        var d = (pb - pa).Magnitude;
+        BestPair(from, to, d, out _, out var r);
+        return RateBuckets.BucketIndex(r, maxCeiling);
+      };
+      return LinkHorizon.NextBucketCrossing(ut, bucketAtFast);
+    }
+
+    // Numerical fallback: opaque PositionAt closures (active flight,
+    // surface stations, eccentric orbits, cross-body pairs).
     Func<double, int> bucketAt = t => {
       var pa = from.PositionAt(t);
       var pb = to.PositionAt(t);

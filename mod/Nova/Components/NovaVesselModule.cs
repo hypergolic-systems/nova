@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using Nova.Core;
+using Nova.Communications;
 using Nova.Core.Components;
+using Nova.Core.Components.Communications;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
 using Nova.Core.Utils;
@@ -71,6 +73,8 @@ public class NovaVesselModule : VesselModule {
     GameEvents.onVesselWasModified.Add(OnVesselWasModified);
     GameEvents.onPartDeCoupleNewVesselComplete.Add(OnVesselSplit);
     GameEvents.onVesselsUndocking.Add(OnVesselsUndocking);
+    GameEvents.onVesselGoOnRails.Add(OnVesselGoOnRails);
+    GameEvents.onVesselGoOffRails.Add(OnVesselGoOffRails);
   }
 
   private void OnDestroy() {
@@ -78,6 +82,21 @@ public class NovaVesselModule : VesselModule {
     GameEvents.onVesselWasModified.Remove(OnVesselWasModified);
     GameEvents.onPartDeCoupleNewVesselComplete.Remove(OnVesselSplit);
     GameEvents.onVesselsUndocking.Remove(OnVesselsUndocking);
+    GameEvents.onVesselGoOnRails.Remove(OnVesselGoOnRails);
+    GameEvents.onVesselGoOffRails.Remove(OnVesselGoOffRails);
+    if (vessel != null)
+      NovaCommunicationsAddon.Instance?.RemoveVesselEndpoint(vessel.id);
+  }
+
+  // Rails-state transitions change which Motion model the comms addon
+  // should attach: on-rails Kepler vessels get analytical solver; off-
+  // rails (active flight) gets numerical fallback. Refresh the
+  // endpoint on each transition.
+  private void OnVesselGoOnRails(Vessel v) {
+    if (v == vessel) NovaCommunicationsAddon.Instance?.RefreshVesselEndpoint(v);
+  }
+  private void OnVesselGoOffRails(Vessel v) {
+    if (v == vessel) NovaCommunicationsAddon.Instance?.RefreshVesselEndpoint(v);
   }
 
   /// <summary>
@@ -115,6 +134,26 @@ public class NovaVesselModule : VesselModule {
   /// </summary>
   private void ConfigureVirtualVessel(VirtualVessel vv) {
     vv.Log = NovaLog.Log;
+    RegisterCommsEndpoint();
+  }
+
+  // Push this vessel into the comms network. Called whenever Virtual
+  // is built or modified — antennas come from Virtual.AllComponents
+  // (already populated at this point, even before PartModule.OnStart).
+  // Idempotent: AddVesselEndpoint short-circuits if already present.
+  private void RegisterCommsEndpoint() {
+    var addon = NovaCommunicationsAddon.Instance;
+    if (addon == null || Virtual == null) return;
+    var antennas = Virtual.AllComponents().OfType<Antenna>().ToList();
+    if (antennas.Count == 0) return;
+    addon.AddVesselEndpoint(vessel, antennas);
+  }
+
+  // Re-register: drop the existing endpoint and re-add. Used when the
+  // antenna set changes (parts added/removed, dock/undock).
+  private void RebuildCommsEndpoint() {
+    NovaCommunicationsAddon.Instance?.RemoveVesselEndpoint(vessel.id);
+    RegisterCommsEndpoint();
   }
 
   public void InvalidateRcsCache() {
@@ -131,6 +170,7 @@ public class NovaVesselModule : VesselModule {
     RebuildTopology();
     InvalidateRcsCache();
     InvalidateSolarData();
+    RebuildCommsEndpoint();
   }
 
   private void OnVesselSplit(Vessel oldVessel, Vessel newVessel) {

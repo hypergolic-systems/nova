@@ -19,7 +19,16 @@ public class Endpoint {
 
   // World-frame position at the given UT. Drivers wrap the
   // appropriate KSP/Planetarium calls; tests pass deterministic stubs.
+  // Authoritative for any caller that needs a numeric position.
   public Func<double, Vec3d> PositionAt;
+
+  // Optional solver hint: structured motion model the analytical
+  // horizon solver can inspect. When both endpoints of a directed
+  // link expose a compatible model (e.g. both KeplerMotion around
+  // the same parent body), ComputeLinkHorizons routes through
+  // AnalyticalLinkHorizon instead of numerical bisection. Null →
+  // always falls back to numerical.
+  public MotionModel Motion;
 
   // Antennas attached to this endpoint. The Network selects the best
   // (transmit, receive) pair per directed edge when computing rate.

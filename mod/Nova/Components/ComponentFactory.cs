@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Nova.Core.Components;
+using Nova.Core.Components.Communications;
 using Nova.Core.Components.Crew;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
@@ -34,6 +35,7 @@ public static class ComponentFactory {
     ["NovaCommandModule"] = "Command",
     ["NovaThermometerModule"] = "Thermometer",
     ["NovaDataStorageModule"] = "DataStorage",
+    ["NovaAntennaModule"] = "Antenna",
   };
 
   public static void RegisterModuleMapping(string moduleName, string typeName) {
@@ -71,6 +73,7 @@ public static class ComponentFactory {
       "Command" => CreateCommand(moduleNode),
       "Thermometer" => CreateThermometer(moduleNode),
       "DataStorage" => CreateDataStorage(moduleNode),
+      "Antenna" => CreateAntenna(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
@@ -238,6 +241,15 @@ public static class ComponentFactory {
   public static DataStorage CreateDataStorage(ConfigNode node) {
     return new DataStorage {
       CapacityBytes = long.Parse(node.GetValue("capacityBytes")),
+    };
+  }
+
+  public static Antenna CreateAntenna(ConfigNode node) {
+    return new Antenna {
+      TxPower = double.Parse(node.GetValue("txPower")),
+      Gain = double.Parse(node.GetValue("gain")),
+      MaxRate = double.Parse(node.GetValue("maxRate")),
+      RefDistance = double.Parse(node.GetValue("refDistance")),
     };
   }
 }

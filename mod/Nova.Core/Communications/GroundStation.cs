@@ -30,8 +30,12 @@ public static class GroundStation {
 
   // Build the KSC endpoint. `homeworldPositionAt` supplies the
   // body's centre at a given UT — KSP wraps Planetarium; tests can
-  // pass a constant. Keeps this file Nova.Core-pure.
-  public static Endpoint Ksc(Func<double, Vec3d> homeworldPositionAt) {
+  // pass a constant. `initialRotationDeg` is the body's rotation
+  // phase at ut=0 (KSP CelestialBody.initialRotation); without it,
+  // the surface point is placed in the wrong inertial-frame
+  // longitude. Defaults to 0 for tests.
+  public static Endpoint Ksc(Func<double, Vec3d> homeworldPositionAt,
+      double initialRotationDeg = 0) {
     return SurfaceEndpoint(
       id: "KSC",
       latitudeDeg: KscLatitudeDeg,
@@ -39,6 +43,7 @@ public static class GroundStation {
       altitudeM: KscAltitudeM,
       bodyRadiusM: KerbinRadiusM,
       siderealPeriodS: KerbinSiderealPeriodS,
+      initialRotationDeg: initialRotationDeg,
       bodyPositionAt: homeworldPositionAt,
       antennas: new List<Antenna> {
         new() {
@@ -55,22 +60,29 @@ public static class GroundStation {
   // is eastward (positive longitude direction with positive UT).
   // Body-fixed (lat, lon, alt) → body-frame Cartesian → world frame
   // via bodyPositionAt(ut) translation.
+  //
+  // `initialRotationDeg` is the body's rotation phase at ut=0. The
+  // body's rotation at UT is `initialRotation + 360°·UT/period`
+  // (KSP's CelestialBody convention). Tests pass 0; live KSP code
+  // passes `homeBody.initialRotation`.
   public static Endpoint SurfaceEndpoint(
       string id,
       double latitudeDeg, double longitudeDeg, double altitudeM,
       double bodyRadiusM, double siderealPeriodS,
       Func<double, Vec3d> bodyPositionAt,
-      List<Antenna> antennas) {
+      List<Antenna> antennas,
+      double initialRotationDeg = 0) {
 
     var latRad = latitudeDeg * Math.PI / 180.0;
     var lonRad = longitudeDeg * Math.PI / 180.0;
+    var initialRotationRad = initialRotationDeg * Math.PI / 180.0;
     var radius = bodyRadiusM + altitudeM;
     var omega = 2 * Math.PI / siderealPeriodS;
     var cosLat = Math.Cos(latRad);
     var sinLat = Math.Sin(latRad);
 
     Vec3d Position(double ut) {
-      var phase = lonRad + omega * ut;
+      var phase = lonRad + initialRotationRad + omega * ut;
       var local = new Vec3d(
         radius * cosLat * Math.Cos(phase),
         radius * sinLat,
