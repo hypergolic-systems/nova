@@ -47,13 +47,13 @@ public class AnalyticalLinkHorizonTests {
       MeanAnomalyAtEpoch = meanAnomalyAtEpoch,
       Epoch = epoch,
     };
-    Func<double, Vec3d> pos = ut => KeplerEvaluator.PositionAt(k, ut);
+    Func<double, Vec3d> pos = ut => AnalyticalPosition.Of(k, ut);
     return (k, pos);
   }
 
   [TestMethod]
-  public void KeplerEvaluator_EquatorialCircular_MatchesOrbitsCircular() {
-    // Circular equatorial orbit at a=1, period=2π. KeplerEvaluator
+  public void AnalyticalPosition_EquatorialCircular_MatchesOrbitsCircular() {
+    // Circular equatorial orbit at a=1, period=2π. AnalyticalPosition
     // and the test-fixture Orbits.Circular helper should agree on
     // position to floating-point precision.
     var body = UnitBody();
@@ -62,7 +62,7 @@ public class AnalyticalLinkHorizonTests {
     // Orbits.Circular: phase = ω·ut; here ω = sqrt(Mu/a³) = 1.
     var reference = Orbits.Circular(radius: 1.0, period: 2 * Math.PI);
     for (var ut = 0.0; ut <= 2 * Math.PI; ut += 0.5) {
-      var p_eval = KeplerEvaluator.PositionAt(k, ut);
+      var p_eval = AnalyticalPosition.Of(k, ut);
       var p_ref = reference(ut);
       Assert.AreEqual(p_ref.X, p_eval.X, 1e-12, $"X mismatch at ut={ut}");
       Assert.AreEqual(p_ref.Y, p_eval.Y, 1e-12, $"Y mismatch at ut={ut}");
@@ -71,17 +71,17 @@ public class AnalyticalLinkHorizonTests {
   }
 
   [TestMethod]
-  public void KeplerEvaluator_PolarOrbit_PositionsInXZPlane() {
+  public void AnalyticalPosition_PolarOrbit_PositionsInXZPlane() {
     // 90° inclination, LAN=0 → orbital plane is the XZ plane.
     // At argument-of-latitude=0 the vessel sits at +X (ascending node);
     // at π/2 it's at +Z; at π it's at -X; at 3π/2 it's at -Z.
     var body = UnitBody();
     var (k, _) = Circular(body, a: 1.0, inclinationRad: Math.PI / 2,
                           lanRad: 0, argPeRad: 0, meanAnomalyAtEpoch: 0);
-    var p0 = KeplerEvaluator.PositionAt(k, 0);
-    var p1 = KeplerEvaluator.PositionAt(k, Math.PI / 2);
-    var p2 = KeplerEvaluator.PositionAt(k, Math.PI);
-    var p3 = KeplerEvaluator.PositionAt(k, 3 * Math.PI / 2);
+    var p0 = AnalyticalPosition.Of(k, 0);
+    var p1 = AnalyticalPosition.Of(k, Math.PI / 2);
+    var p2 = AnalyticalPosition.Of(k, Math.PI);
+    var p3 = AnalyticalPosition.Of(k, 3 * Math.PI / 2);
 
     Assert.AreEqual(1.0, p0.X, 1e-12); Assert.AreEqual(0.0, p0.Y, 1e-12); Assert.AreEqual(0.0, p0.Z, 1e-12);
     Assert.AreEqual(0.0, p1.X, 1e-12); Assert.AreEqual(0.0, p1.Y, 1e-12); Assert.AreEqual(1.0, p1.Z, 1e-12);
@@ -90,14 +90,94 @@ public class AnalyticalLinkHorizonTests {
   }
 
   [TestMethod]
-  public void KeplerEvaluator_EllipticOrbit_Throws() {
+  public void AnalyticalPosition_EllipticalOrbit_MatchesOrbitsElliptical() {
+    // Elliptical orbit at a=1, e=0.5, period=2π. Validates the
+    // Newton-Raphson Kepler solve against the test-fixture reference
+    // implementation, which is independently derived.
     var body = UnitBody();
     var k = new KeplerMotion {
-      Parent = body, SemiMajorAxis = 1, Eccentricity = 0.1,
+      Parent = body, SemiMajorAxis = 1.0, Eccentricity = 0.5,
+      Inclination = 0, Lan = 0, ArgPe = 0,
+      MeanAnomalyAtEpoch = 0, Epoch = 0,
+    };
+    // Orbits.Elliptical with same params: argPeriapsis=0, M₀=0, period=2π.
+    var reference = Orbits.Elliptical(semiMajor: 1.0, eccentricity: 0.5,
+                                       period: 2 * Math.PI);
+    for (var ut = 0.0; ut <= 2 * Math.PI; ut += 0.3) {
+      var p_eval = AnalyticalPosition.Of(k, ut);
+      var p_ref = reference(ut);
+      // Both implementations use 6 Newton-Raphson iterations; agree
+      // to floating-point precision.
+      Assert.AreEqual(p_ref.X, p_eval.X, 1e-10, $"X mismatch at ut={ut}");
+      Assert.AreEqual(p_ref.Y, p_eval.Y, 1e-10, $"Y mismatch at ut={ut}");
+      Assert.AreEqual(p_ref.Z, p_eval.Z, 1e-10, $"Z mismatch at ut={ut}");
+    }
+  }
+
+  [TestMethod]
+  public void AnalyticalPosition_Surface_RotatesEastwardWithBody() {
+    // Body with rotation period 2π so omega = 1 rad/s. A point at
+    // (lat=0, lon=0, alt=0) on a body of radius 1 starts at +X and
+    // sweeps eastward (toward +Z by KSP convention: +Y rotation).
+    var body = new Body {
+      Id = "TestBody", Mu = 1, Radius = 1.0,
+      RotationPeriod = 2 * Math.PI, InitialRotationDeg = 0,
+    };
+    var s = new SurfaceMotion {
+      Parent = body, LatitudeDeg = 0, LongitudeDeg = 0, AltitudeM = 0,
+    };
+    var p0 = AnalyticalPosition.Of(s, 0);
+    var p1 = AnalyticalPosition.Of(s, Math.PI / 2);
+    var p2 = AnalyticalPosition.Of(s, Math.PI);
+
+    Assert.AreEqual(1.0, p0.X, 1e-12); Assert.AreEqual(0.0, p0.Z, 1e-12);
+    Assert.AreEqual(0.0, p1.X, 1e-12); Assert.AreEqual(1.0, p1.Z, 1e-12);
+    Assert.AreEqual(-1.0, p2.X, 1e-12); Assert.AreEqual(0.0, p2.Z, 1e-12);
+  }
+
+  [TestMethod]
+  public void AnalyticalPosition_Surface_HonoursInitialRotation() {
+    // Body with InitialRotationDeg = 90°. A point at lon=0 should
+    // appear rotated 90° eastward at ut=0 — i.e., at +Z (since
+    // theta = 0 + 90° + 0 = 90°).
+    var body = new Body {
+      Id = "Spun", Mu = 1, Radius = 1.0,
+      RotationPeriod = 2 * Math.PI, InitialRotationDeg = 90,
+    };
+    var s = new SurfaceMotion {
+      Parent = body, LatitudeDeg = 0, LongitudeDeg = 0, AltitudeM = 0,
+    };
+    var p = AnalyticalPosition.Of(s, 0);
+    Assert.AreEqual(0.0, p.X, 1e-12);
+    Assert.AreEqual(1.0, p.Z, 1e-12);
+  }
+
+  [TestMethod]
+  public void AnalyticalPosition_BodyChain_AddsParentOrbit() {
+    // Two-level chain: a "moon" orbiting a "planet" at radius 10, and
+    // a vessel orbiting the moon at radius 1. Vessel's absolute
+    // position = vessel-relative-to-moon + moon-relative-to-planet.
+    var planet = new Body { Id = "Planet", Mu = 1000, Radius = 5 };
+    var moonOrbit = new KeplerMotion {
+      Parent = planet, SemiMajorAxis = 10, Eccentricity = 0,
       Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
     };
-    Assert.ThrowsException<InvalidOperationException>(
-        () => KeplerEvaluator.PositionAt(k, 0));
+    var moon = new Body {
+      Id = "Moon", Mu = 1, Radius = 1,
+      Parent = planet, OrbitAroundParent = moonOrbit,
+    };
+    var vesselOrbit = new KeplerMotion {
+      Parent = moon, SemiMajorAxis = 1, Eccentricity = 0,
+      Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
+    };
+
+    // At ut=0: moon is at (10, 0, 0) relative to planet. Vessel is at
+    // (1, 0, 0) relative to moon. Total: (11, 0, 0) relative to planet
+    // (which is the root in this scenario).
+    var p = AnalyticalPosition.Of(vesselOrbit, 0);
+    Assert.AreEqual(11.0, p.X, 1e-10);
+    Assert.AreEqual(0.0, p.Y, 1e-10);
+    Assert.AreEqual(0.0, p.Z, 1e-10);
   }
 
   [TestMethod]
@@ -139,61 +219,141 @@ public class AnalyticalLinkHorizonTests {
   }
 
   [TestMethod]
-  public void Dispatcher_EccentricEndpoint_FallsBackToNumerical() {
-    // KeplerMotion with eccentricity != 0 is not handled by
-    // KeplerEvaluator. Dispatcher must route to numerical.
-    // Verified by ensuring no exception is thrown (the analytical
-    // path would throw via KeplerEvaluator).
+  public void Dispatcher_EccentricCircularPair_AnalyticalMatchesNumerical() {
+    // Mixed circular + elliptical pair on the same parent body. The
+    // analytical path now handles eccentric via Newton-Raphson; verify
+    // it agrees with the independent numerical reference (Orbits.*).
     var body = UnitBody();
-    var (_, posA) = Circular(body, a: 1000, inclinationRad: 0,
-                              lanRad: 0, argPeRad: 0, meanAnomalyAtEpoch: 0);
+    Func<double, Vec3d> posA = Orbits.Circular(radius: 1000, period: 2 * Math.PI * Math.Sqrt(1000.0 * 1000 * 1000));
+    Func<double, Vec3d> posB = Orbits.Elliptical(semiMajor: 2000, eccentricity: 0.3,
+                                                  period: 2 * Math.PI * Math.Sqrt(2000.0 * 2000 * 2000));
     var kA = new KeplerMotion {
-      Parent = body, SemiMajorAxis = 1000, Eccentricity = 0.0,  // circular A
+      Parent = body, SemiMajorAxis = 1000, Eccentricity = 0,
       Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
     };
     var kB = new KeplerMotion {
-      Parent = body, SemiMajorAxis = 2000, Eccentricity = 0.1,  // eccentric B
+      Parent = body, SemiMajorAxis = 2000, Eccentricity = 0.3,
       Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
     };
     var antenna = Knee(refDist: 1500, maxRate: 1000);
 
+    var (analyticalNext, _) = ForecastForPair(antenna, posA, kA, posB, kB, currentUT: 0, withMotion: true);
+    var (numericalNext, _) = ForecastForPair(antenna, posA, kA, posB, kB, currentUT: 0, withMotion: false);
+    var threshold = CommunicationsParameters.MaxHorizonSeconds * 1e-6;
+    Assert.AreEqual(numericalNext, analyticalNext, threshold,
+        $"eccentric pair analytical={analyticalNext} numerical={numericalNext}");
+  }
+
+  [TestMethod]
+  public void Dispatcher_SurfaceSurfaceSameBody_RotateTogether_HorizonCap() {
+    // Two surface points on the same body — they co-rotate, so their
+    // distance is constant. Bisection should find no bucket transition
+    // → return horizon cap.
+    var body = new Body {
+      Id = "Body", Mu = 1, Radius = 1000,
+      RotationPeriod = 86400, InitialRotationDeg = 0,
+    };
+    var sA = new SurfaceMotion { Parent = body, LatitudeDeg = 0, LongitudeDeg = 0, AltitudeM = 0 };
+    var sB = new SurfaceMotion { Parent = body, LatitudeDeg = 0, LongitudeDeg = 30, AltitudeM = 0 };
+    var antenna = Knee(refDist: 700, maxRate: 1000);
+
     var net = new CommunicationsNetwork();
-    var epA = new Endpoint { Id = "A", PositionAt = posA, Motion = kA };
+    var epA = new Endpoint {
+      Id = "A", Motion = sA,
+      PositionAt = ut => AnalyticalPosition.Of(sA, ut),
+    };
     epA.Antennas.Add(antenna);
     var epB = new Endpoint {
-      Id = "B",
-      PositionAt = ut => new Vec3d(2000 * Math.Cos(ut), 2000 * Math.Sin(ut), 0),
-      Motion = kB,
+      Id = "B", Motion = sB,
+      PositionAt = ut => AnalyticalPosition.Of(sB, ut),
     };
     epB.Antennas.Add(antenna);
     net.AddEndpoint(epA); net.AddEndpoint(epB);
 
-    // Should not throw — eccentric pair routes through numerical.
     var graph = net.Solve(0);
-    Assert.AreEqual(2, graph.Links.Count);
+    var ab = graph.Links.First(l => l.From.Id == "A" && l.To.Id == "B");
+    Assert.AreEqual(0 + CommunicationsParameters.MaxHorizonSeconds, ab.NextEventUT, 1.0,
+        "co-rotating surface pair should never see a bucket transition");
   }
 
   [TestMethod]
-  public void Dispatcher_DifferentParentBodies_FallsBackToNumerical() {
-    var bodyA = new Body { Id = "BodyA", Mu = 1, Radius = 0.1 };
-    var bodyB = new Body { Id = "BodyB", Mu = 1, Radius = 0.1 };
-    var (kA, posA) = Circular(bodyA, a: 1000, inclinationRad: 0,
-                               lanRad: 0, argPeRad: 0, meanAnomalyAtEpoch: 0);
-    var (kB, posB) = Circular(bodyB, a: 1000, inclinationRad: 0,
-                               lanRad: 0, argPeRad: 0, meanAnomalyAtEpoch: 0);
-    var antenna = Knee(refDist: 1500, maxRate: 1000);
+  public void Dispatcher_SurfaceKeplerSameBody_AnalyticalMatchesNumerical() {
+    // Surface station + orbiting vessel around the same body.
+    // Analytical path now covers SurfaceMotion + KeplerMotion via the
+    // body-chain composition (both have the same Parent, BodyCentreAt
+    // contributes 0 for the root, surface offset rotates with body,
+    // Kepler offset orbits around it).
+    var body = new Body {
+      Id = "Body", Mu = 1, Radius = 100,
+      RotationPeriod = 1000, InitialRotationDeg = 0,
+    };
+    var sStation = new SurfaceMotion {
+      Parent = body, LatitudeDeg = 0, LongitudeDeg = 0, AltitudeM = 0,
+    };
+    var kVessel = new KeplerMotion {
+      Parent = body, SemiMajorAxis = 200, Eccentricity = 0,
+      Inclination = 0, Lan = 0, ArgPe = 0,
+      MeanAnomalyAtEpoch = Math.PI / 4, Epoch = 0,
+    };
+    var antenna = Knee(refDist: 200, maxRate: 1000);
 
-    var net = new CommunicationsNetwork();
-    var epA = new Endpoint { Id = "A", PositionAt = posA, Motion = kA };
-    epA.Antennas.Add(antenna);
-    var epB = new Endpoint { Id = "B", PositionAt = posB, Motion = kB };
-    epB.Antennas.Add(antenna);
-    net.AddEndpoint(epA); net.AddEndpoint(epB);
+    Func<double, Vec3d> posStation = ut => AnalyticalPosition.Of(sStation, ut);
+    Func<double, Vec3d> posVessel = ut => AnalyticalPosition.Of(kVessel, ut);
 
-    // Should solve cleanly via numerical fallback (different bodies
-    // means the analytical path doesn't apply).
-    var graph = net.Solve(0);
-    Assert.AreEqual(2, graph.Links.Count);
+    var (anN, _) = ForecastFor(body, kVessel, posVessel, kVessel, posVessel, antenna, 0,
+                               withMotion: true,
+                               overrideMotionA: sStation, overridePosA: posStation);
+    var (numN, _) = ForecastFor(body, kVessel, posVessel, kVessel, posVessel, antenna, 0,
+                                withMotion: false,
+                                overrideMotionA: sStation, overridePosA: posStation);
+    var threshold = CommunicationsParameters.MaxHorizonSeconds * 1e-6;
+    Assert.AreEqual(numN, anN, threshold,
+        $"surface↔Kepler analytical={anN} numerical={numN}");
+  }
+
+  [TestMethod]
+  public void Dispatcher_DifferentParentBodies_HierarchicalAnalyticalMatchesNumerical() {
+    // Two-level chain: planet (root, Mu=1e6) with two moons orbiting
+    // it; one vessel around each moon. Cross-moon link's r(t) needs
+    // hierarchical body-chain composition.
+    var planet = new Body { Id = "Planet", Mu = 1e6, Radius = 100 };
+    var moonAOrbit = new KeplerMotion {
+      Parent = planet, SemiMajorAxis = 1000, Eccentricity = 0,
+      Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
+    };
+    var moonA = new Body {
+      Id = "MoonA", Mu = 100, Radius = 10,
+      Parent = planet, OrbitAroundParent = moonAOrbit,
+    };
+    var moonBOrbit = new KeplerMotion {
+      Parent = planet, SemiMajorAxis = 1500, Eccentricity = 0,
+      Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = Math.PI / 3, Epoch = 0,
+    };
+    var moonB = new Body {
+      Id = "MoonB", Mu = 100, Radius = 10,
+      Parent = planet, OrbitAroundParent = moonBOrbit,
+    };
+    var vesselA = new KeplerMotion {
+      Parent = moonA, SemiMajorAxis = 30, Eccentricity = 0,
+      Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
+    };
+    var vesselB = new KeplerMotion {
+      Parent = moonB, SemiMajorAxis = 30, Eccentricity = 0,
+      Inclination = 0, Lan = 0, ArgPe = 0, MeanAnomalyAtEpoch = 0, Epoch = 0,
+    };
+    // Closures use AnalyticalPosition's hierarchical composition for
+    // the numerical reference too — they must, because Orbits.Circular
+    // doesn't support body chains. Equivalence check here verifies
+    // dispatcher routing, not Kepler math (covered separately above).
+    Func<double, Vec3d> posA = ut => AnalyticalPosition.Of(vesselA, ut);
+    Func<double, Vec3d> posB = ut => AnalyticalPosition.Of(vesselB, ut);
+    var antenna = Knee(refDist: 600, maxRate: 1000);
+
+    var (anN, _) = ForecastFor(planet, vesselA, posA, vesselB, posB, antenna, 0, withMotion: true);
+    var (numN, _) = ForecastFor(planet, vesselA, posA, vesselB, posB, antenna, 0, withMotion: false);
+    var threshold = CommunicationsParameters.MaxHorizonSeconds * 1e-6;
+    Assert.AreEqual(numN, anN, threshold,
+        $"cross-moon analytical={anN} numerical={numN}");
   }
 
   // Build the same scenario twice — once with Motion attached
@@ -213,18 +373,40 @@ public class AnalyticalLinkHorizonTests {
   }
 
   private static (double nextEventUT, double rate) ForecastFor(
-      Body body, KeplerMotion kA, Func<double, Vec3d> posA,
-      KeplerMotion kB, Func<double, Vec3d> posB,
-      Antenna antenna, double currentUT, bool withMotion) {
+      Body body,
+      MotionModel mA, Func<double, Vec3d> posA,
+      MotionModel mB, Func<double, Vec3d> posB,
+      Antenna antenna, double currentUT, bool withMotion,
+      MotionModel overrideMotionA = null, Func<double, Vec3d> overridePosA = null) {
     var net = new CommunicationsNetwork();
-    var epA = new Endpoint { Id = "A", PositionAt = posA, Motion = withMotion ? kA : null };
+    var actualMotionA = overrideMotionA ?? mA;
+    var actualPosA = overridePosA ?? posA;
+    var epA = new Endpoint {
+      Id = "A",
+      PositionAt = actualPosA,
+      Motion = withMotion ? actualMotionA : null,
+    };
     epA.Antennas.Add(antenna);
-    var epB = new Endpoint { Id = "B", PositionAt = posB, Motion = withMotion ? kB : null };
+    var epB = new Endpoint {
+      Id = "B",
+      PositionAt = posB,
+      Motion = withMotion ? mB : null,
+    };
     epB.Antennas.Add(antenna);
     net.AddEndpoint(epA); net.AddEndpoint(epB);
 
     var graph = net.Solve(currentUT);
     var ab = graph.Links.First(l => l.From.Id == "A" && l.To.Id == "B");
     return (ab.NextEventUT, ab.RateBps);
+  }
+
+  // Convenience for tests that don't need the Body parameter (tests
+  // already wired their own motion models).
+  private static (double nextEventUT, double rate) ForecastForPair(
+      Antenna antenna,
+      Func<double, Vec3d> posA, MotionModel mA,
+      Func<double, Vec3d> posB, MotionModel mB,
+      double currentUT, bool withMotion) {
+    return ForecastFor(body: null, mA, posA, mB, posB, antenna, currentUT, withMotion);
   }
 }

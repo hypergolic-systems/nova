@@ -28,6 +28,19 @@ public class CommunicationsNetwork {
   private bool needsSolve = true;
   private double? simulationTime;
 
+  // Per-directed-link cache of the most recently computed
+  // NextEventUT, keyed by (fromEndpointId, toEndpointId). Between
+  // bucket transitions the analytical r(t) is deterministic, so once
+  // a horizon is computed it stays valid until either the cached UT
+  // is reached (current Solve will pass it) or a topology / Motion
+  // change forces a re-solve via Invalidate().
+  //
+  // For a 100-vessel network with ~5000 directed links, only a
+  // handful trigger transitions at any one Solve; the rest read from
+  // cache and skip both pre-screen and bisection. This is what makes
+  // event-driven scheduling actually save work at scale.
+  private readonly Dictionary<(string, string), double> linkHorizonCache = new();
+
   public IReadOnlyList<Endpoint> Endpoints => endpoints;
   public IReadOnlyList<Job> Jobs => jobs;
   public bool NeedsSolve => needsSolve;
@@ -66,7 +79,10 @@ public class CommunicationsNetwork {
     return true;
   }
 
-  public void Invalidate() { needsSolve = true; }
+  public void Invalidate() {
+    needsSolve = true;
+    linkHorizonCache.Clear();
+  }
 
   // Last solved snapshot. If dirty and we have a previous solve UT,
   // re-solves at that UT before returning. Empty before the first
@@ -214,24 +230,46 @@ public class CommunicationsNetwork {
         var linkBA = FindLink(b, a);
         if (linkAB == null && linkBA == null) continue;
 
+        // Cache hit: if both directions have a cached NextEventUT
+        // still in the future, skip pre-screen + bisection entirely.
+        // This is the dominant path at scale — only pairs whose
+        // events have actually arrived (or new pairs) recompute.
+        var abCached = linkAB != null
+                    && linkHorizonCache.TryGetValue((linkAB.From.Id, linkAB.To.Id), out var cAB)
+                    && cAB > ut;
+        var baCached = linkBA != null
+                    && linkHorizonCache.TryGetValue((linkBA.From.Id, linkBA.To.Id), out var cBA)
+                    && cBA > ut;
+        if ((linkAB == null || abCached) && (linkBA == null || baCached)) {
+          if (linkAB != null) linkAB.NextEventUT = linkHorizonCache[(linkAB.From.Id, linkAB.To.Id)];
+          if (linkBA != null) linkBA.NextEventUT = linkHorizonCache[(linkBA.From.Id, linkBA.To.Id)];
+          continue;
+        }
+
         // (1) Per-pair filter: max distance at which any antenna pair
         // could deliver a bucket-≥1 link. Beyond this, both directions
         // are permanently bucket 0.
         var pairRMax = PairMaxUsefulRange(a, b);
 
         if (PrescreenAlwaysOutOfRange(a, b, ut, pairRMax)) {
-          if (linkAB != null) linkAB.NextEventUT = horizonCapUT;
-          if (linkBA != null) linkBA.NextEventUT = horizonCapUT;
+          if (linkAB != null) SetAndCache(linkAB, horizonCapUT);
+          if (linkBA != null) SetAndCache(linkBA, horizonCapUT);
           continue;
         }
 
         // Detailed bisection per direction. Asymmetric antennas mean
         // each direction can transition at a different UT, so we can't
-        // share the bisection result.
-        if (linkAB != null) linkAB.NextEventUT = HorizonForLink(linkAB, ut);
-        if (linkBA != null) linkBA.NextEventUT = HorizonForLink(linkBA, ut);
+        // share the bisection result. A cache hit on one direction
+        // doesn't help the other (independent UTs).
+        if (linkAB != null) SetAndCache(linkAB, abCached ? linkHorizonCache[(linkAB.From.Id, linkAB.To.Id)] : HorizonForLink(linkAB, ut));
+        if (linkBA != null) SetAndCache(linkBA, baCached ? linkHorizonCache[(linkBA.From.Id, linkBA.To.Id)] : HorizonForLink(linkBA, ut));
       }
     }
+  }
+
+  private void SetAndCache(Link link, double nextEventUT) {
+    link.NextEventUT = nextEventUT;
+    linkHorizonCache[(link.From.Id, link.To.Id)] = nextEventUT;
   }
 
   private double HorizonForLink(Link link, double ut) {
@@ -239,16 +277,19 @@ public class CommunicationsNetwork {
     var to = link.To;
     var maxCeiling = LinkMaxCeiling(from, to);
 
-    // Analytical path: both endpoints are circular Kepler orbits
-    // around the same parent body. Same bucket-finding loop, but
-    // each position eval is closed-form arithmetic instead of an
-    // iterative Kepler propagator (~1700× faster per call).
-    if (from.Motion is KeplerMotion ka && to.Motion is KeplerMotion kb
-        && ReferenceEquals(ka.Parent, kb.Parent)
-        && ka.Eccentricity == 0 && kb.Eccentricity == 0) {
+    // Analytical path: both endpoints expose a structured MotionModel
+    // (KeplerMotion or SurfaceMotion). The bisection loop is unchanged,
+    // but each position eval becomes closed-form arithmetic via
+    // AnalyticalPosition.Of — no iterative Kepler propagator. Cross-SOI
+    // is handled by the recursive body-chain composition inside
+    // AnalyticalPosition; the dispatch condition is intentionally
+    // broad ("both non-null") rather than same-parent only.
+    if (from.Motion != null && to.Motion != null) {
+      var fm = from.Motion;
+      var tm = to.Motion;
       Func<double, int> bucketAtFast = t => {
-        var pa = KeplerEvaluator.PositionAt(ka, t);
-        var pb = KeplerEvaluator.PositionAt(kb, t);
+        var pa = AnalyticalPosition.Of(fm, t);
+        var pb = AnalyticalPosition.Of(tm, t);
         var d = (pb - pa).Magnitude;
         BestPair(from, to, d, out _, out var r);
         return RateBuckets.BucketIndex(r, maxCeiling);
@@ -256,8 +297,9 @@ public class CommunicationsNetwork {
       return LinkHorizon.NextBucketCrossing(ut, bucketAtFast);
     }
 
-    // Numerical fallback: opaque PositionAt closures (active flight,
-    // surface stations, eccentric orbits, cross-body pairs).
+    // Numerical fallback: opaque PositionAt closures. Used when one
+    // or both endpoints have no MotionModel (active flight, ad-hoc
+    // test fixtures).
     Func<double, int> bucketAt = t => {
       var pa = from.PositionAt(t);
       var pb = to.PositionAt(t);
