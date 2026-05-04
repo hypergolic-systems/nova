@@ -107,10 +107,17 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     if (v == null || antennas == null || antennas.Count == 0) return;
     if (vesselEndpoints.ContainsKey(v.id)) return;
 
+    var motion = ExtractMotionFor(v);
     var ep = new Endpoint {
       Id = v.id.ToString("D"),
       PositionAt = ut => v.orbit.getTruePositionAtUT(ut).ToNova(),
-      Motion = ExtractMotionFor(v),
+      Motion = motion,
+      // Off-rails vessels (no Motion) follow non-deterministic
+      // trajectories; predicting future UTs from getTruePositionAtUT
+      // gives wrong horizons. The reactive bucket-watch in FixedUpdate
+      // handles transitions instead. Saves ~bisection cost per Solve
+      // for any pair involving this endpoint.
+      IsPredictable = motion != null,
     };
     ep.Antennas.AddRange(antennas);
     Network.AddEndpoint(ep);

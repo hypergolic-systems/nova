@@ -30,6 +30,20 @@ public class Endpoint {
   // always falls back to numerical.
   public MotionModel Motion;
 
+  // True iff PositionAt is reliable for forecasting future state —
+  // i.e. the closure can be queried at arbitrary future UTs and
+  // returns positions consistent with what the endpoint will
+  // actually do. Default true (preserves test fixture behaviour).
+  //
+  // Off-rails KSP vessels under thrust set this false: KSP's
+  // `getTruePositionAtUT` projects a free-flight trajectory the
+  // actual vessel diverges from, so any horizon computed from it
+  // is wrong. ComputeLinkHorizons skips bisection for any pair
+  // involving an unpredictable endpoint and pins NextEventUT at
+  // the horizon cap; the driver is expected to handle bucket
+  // transitions reactively (see AnyLinkBucketDifference).
+  public bool IsPredictable = true;
+
   // Antennas attached to this endpoint. The Network selects the best
   // (transmit, receive) pair per directed edge when computing rate.
   public List<Antenna> Antennas = new();

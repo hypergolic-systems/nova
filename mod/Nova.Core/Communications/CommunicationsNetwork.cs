@@ -256,6 +256,18 @@ public class CommunicationsNetwork {
         var linkBA = FindLink(b, a);
         if (linkAB == null && linkBA == null) continue;
 
+        // Skip predictive bisection when either endpoint declares
+        // its trajectory unpredictable (off-rails vessels under
+        // thrust). Forecasting a horizon from a closure that doesn't
+        // model the actual physics produces wrong UTs and burns CPU;
+        // the driver handles these reactively via
+        // AnyLinkBucketDifference each FixedUpdate.
+        if (!a.IsPredictable || !b.IsPredictable) {
+          if (linkAB != null) SetAndCache(linkAB, horizonCapUT);
+          if (linkBA != null) SetAndCache(linkBA, horizonCapUT);
+          continue;
+        }
+
         // Cache hit: if both directions have a cached NextEventUT
         // still in the future, skip pre-screen + bisection entirely.
         // This is the dominant path at scale — only pairs whose

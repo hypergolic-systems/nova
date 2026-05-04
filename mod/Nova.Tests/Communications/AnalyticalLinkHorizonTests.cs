@@ -401,6 +401,30 @@ public class AnalyticalLinkHorizonTests {
   }
 
   [TestMethod]
+  public void Unpredictable_Endpoint_SkipsBisection_PinsHorizonCap() {
+    // Endpoint with IsPredictable=false (off-rails proxy). The pair's
+    // NextEventUT must be set to the horizon cap regardless of the
+    // closure's actual behaviour over time — bisection is suppressed.
+    var net = new CommunicationsNetwork();
+    var antenna = new Antenna { TxPower = 1, Gain = 1, MaxRate = 1000, RefDistance = 100 };
+    var ground = new Endpoint { Id = "G", PositionAt = _ => Vec3d.Zero };
+    ground.Antennas.Add(antenna);
+    // Receding satellite — bisection would normally find a bucket
+    // transition at t≈10s. With IsPredictable=false we skip the work.
+    var sat = new Endpoint {
+      Id = "S",
+      PositionAt = ut => new Vec3d(90 + ut, 0, 0),
+      IsPredictable = false,
+    };
+    sat.Antennas.Add(antenna);
+    net.AddEndpoint(ground); net.AddEndpoint(sat);
+    var graph = net.Solve(0);
+    var gs = graph.Links.First(l => l.From.Id == "G" && l.To.Id == "S");
+    Assert.AreEqual(0 + CommunicationsParameters.MaxHorizonSeconds, gs.NextEventUT, 1e-6,
+        "unpredictable pair should pin to horizon cap, not the t≈10s transition");
+  }
+
+  [TestMethod]
   public void OffRailsCheck_NoBucketChange_ReportsFalse() {
     // Two stationary endpoints, no Motion (closure-only). After the
     // first solve, current bucket matches cached → no change.
