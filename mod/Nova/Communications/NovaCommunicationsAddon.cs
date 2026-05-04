@@ -154,6 +154,21 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     if (Network == null) return;
     var ut = Planetarium.GetUniversalTime();
 
+    // Reactive bucket-watch for off-rails endpoints. Predictive
+    // bisection on `getTruePositionAtUT` for an under-thrust vessel
+    // forecasts events on a hypothetical free-flight trajectory the
+    // actual vessel diverges from — wrong horizons, stale cached
+    // rates. Instead, recompute current bucket here and force a
+    // re-solve if it stepped. For on-rails endpoints (Motion set),
+    // the predictive path is exact and we let it stand.
+    foreach (var kv in vesselEndpoints) {
+      if (kv.Value.Motion != null) continue;
+      if (Network.AnyLinkBucketDifference(kv.Value, ut)) {
+        Network.Invalidate();
+        break;
+      }
+    }
+
     if (ut >= nextSolveUT || Network.NeedsSolve) {
       var sw = System.Diagnostics.Stopwatch.StartNew();
       Network.Solve(ut);

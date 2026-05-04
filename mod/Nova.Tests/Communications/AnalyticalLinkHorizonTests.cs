@@ -400,6 +400,69 @@ public class AnalyticalLinkHorizonTests {
     return (ab.NextEventUT, ab.RateBps);
   }
 
+  [TestMethod]
+  public void OffRailsCheck_NoBucketChange_ReportsFalse() {
+    // Two stationary endpoints, no Motion (closure-only). After the
+    // first solve, current bucket matches cached → no change.
+    var net = new CommunicationsNetwork();
+    var antenna = Knee(refDist: 100, maxRate: 1000);
+    var a = new Endpoint { Id = "A", PositionAt = _ => Vec3d.Zero };
+    a.Antennas.Add(antenna);
+    var b = new Endpoint { Id = "B", PositionAt = _ => new Vec3d(50, 0, 0) };
+    b.Antennas.Add(antenna);
+    net.AddEndpoint(a); net.AddEndpoint(b);
+    net.Solve(0);
+    Assert.IsFalse(net.AnyLinkBucketDifference(a, 1));
+    Assert.IsFalse(net.AnyLinkBucketDifference(a, 100));
+  }
+
+  [TestMethod]
+  public void OffRailsCheck_BucketCrossed_ReportsTrue() {
+    // Endpoint moves at 1 m/s; antenna knee at r=100 (Knee100). At
+    // t=0 it's at r=90 (above-knee, full rate). At t=20 it's at
+    // r=110 (below knee, lower bucket). Bucket has changed.
+    var net = new CommunicationsNetwork();
+    var antenna = new Antenna { TxPower = 1, Gain = 1, MaxRate = 1000, RefDistance = 100 };
+    var ground = new Endpoint { Id = "G", PositionAt = _ => Vec3d.Zero };
+    ground.Antennas.Add(antenna);
+    var sat = new Endpoint {
+      Id = "S",
+      PositionAt = ut => new Vec3d(90 + ut, 0, 0),  // 1 m/s recede
+    };
+    sat.Antennas.Add(antenna);
+    net.AddEndpoint(ground); net.AddEndpoint(sat);
+    net.Solve(0);
+    Assert.IsFalse(net.AnyLinkBucketDifference(sat, 0));
+    // At t=20, distance is 110m → below knee. Bucket should have changed.
+    Assert.IsTrue(net.AnyLinkBucketDifference(sat, 20));
+  }
+
+  [TestMethod]
+  public void OffRailsCheck_Invalidate_ClearsCacheAndForcesRecompute() {
+    // After detecting a bucket change, calling Invalidate() should
+    // both set NeedsSolve and clear linkHorizonCache (so next Solve
+    // recomputes horizons from scratch).
+    var net = new CommunicationsNetwork();
+    var antenna = new Antenna { TxPower = 1, Gain = 1, MaxRate = 1000, RefDistance = 100 };
+    var ground = new Endpoint { Id = "G", PositionAt = _ => Vec3d.Zero };
+    ground.Antennas.Add(antenna);
+    var sat = new Endpoint {
+      Id = "S",
+      PositionAt = ut => new Vec3d(90 + ut, 0, 0),
+    };
+    sat.Antennas.Add(antenna);
+    net.AddEndpoint(ground); net.AddEndpoint(sat);
+    net.Solve(0);
+    Assert.IsFalse(net.NeedsSolve);
+    if (net.AnyLinkBucketDifference(sat, 20)) net.Invalidate();
+    Assert.IsTrue(net.NeedsSolve);
+    var graph = net.Solve(20);
+    var gs = graph.Links.First(l => l.From.Id == "G" && l.To.Id == "S");
+    // After re-solve at t=20, the link should reflect the new bucket
+    // (recede past the knee → quantised below 1000).
+    Assert.IsTrue(gs.RateBps < 1000);
+  }
+
   // Convenience for tests that don't need the Body parameter (tests
   // already wired their own motion models).
   private static (double nextEventUT, double rate) ForecastForPair(

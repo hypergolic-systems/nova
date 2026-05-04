@@ -84,6 +84,32 @@ public class CommunicationsNetwork {
     linkHorizonCache.Clear();
   }
 
+  // Reactive bucket-change check for endpoints with no MotionModel
+  // (active-flight / closure-only). Walks every link involving `ep`,
+  // recomputes the current quantised rate from the closure positions,
+  // and returns true if any link has stepped out of its cached bucket
+  // since the last Solve.
+  //
+  // Caller (KSP-side addon, every FixedUpdate) uses this to invalidate
+  // the network when the player's vessel actually crosses a bucket
+  // boundary — predictive bisection on `getTruePositionAtUT` gives
+  // wrong answers under thrust, so we react instead of predict for
+  // off-rails endpoints.
+  public bool AnyLinkBucketDifference(Endpoint ep, double ut) {
+    if (graph == null) return false;
+    foreach (var link in graph.Links) {
+      if (link.From != ep && link.To != ep) continue;
+      var pa = link.From.PositionAt(ut);
+      var pb = link.To.PositionAt(ut);
+      var d = (pb - pa).Magnitude;
+      BestPair(link.From, link.To, d, out _, out var rate);
+      var maxCeiling = LinkMaxCeiling(link.From, link.To);
+      var quantised = RateBuckets.Quantize(rate, maxCeiling);
+      if (Math.Abs(quantised - link.RateBps) > 1e-6) return true;
+    }
+    return false;
+  }
+
   // Last solved snapshot. If dirty and we have a previous solve UT,
   // re-solves at that UT before returning. Empty before the first
   // Solve call.
