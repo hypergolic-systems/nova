@@ -84,6 +84,11 @@ public class DeltaVSimulation {
     return results;
   }
 
+  // Last Burn loop's iteration count. Exposed so the regression test
+  // for the empty-buffer-pinhole bug (Run_AfterLiveTicks_…) can assert
+  // the loop stays well below MaxIterations across many ticks.
+  public static int LastBurnIterations;
+
   private static StageResult Burn(
       VirtualVessel sim,
       StagingFlowSystem staging,
@@ -94,8 +99,10 @@ public class DeltaVSimulation {
     double stageStartMass = staging.ActiveNodes().Sum(n => n.Mass());
     double lastThrust = 0, lastMassFlow = 0;
     int iterations = 0;
+    LastBurnIterations = 0;
 
     while (iterations++ < MaxIterations) {
+      LastBurnIterations = iterations;
       sim.Solve();
 
       if (AllTiersSpent(triggerNodes, propellantResources)) break;

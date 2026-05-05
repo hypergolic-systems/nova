@@ -49,6 +49,24 @@ public class StagingFlowSystem : BackgroundSystem {
   // LP's 1e-9 because we're doing arithmetic, not pivot-tolerance work.
   private const double Epsilon = 1e-12;
 
+  // Per-buffer "is this buffer alive" tolerance, relative to Capacity.
+  // Absolute Epsilon (1e-12) sufficed when buffers were always freshly
+  // baselined, but at non-trivial sim-UT the lerp arithmetic
+  // `BaselineContents + rate × (UT − BaselineUT)` produces residuals
+  // bounded by ~ULP(UT) × rate — which exceeds 1e-12 for UT ≳ 100 s on
+  // a typical engine drain, leaving a should-be-empty buffer with
+  // contents like +5e-12 stuck just above Epsilon. MaxTickDt then
+  // returns `contents/-rate ≈ 1e-13 s`, the burn loop in
+  // DeltaVSimulation runs to its 10000-iter cap, and DeltaV recompute
+  // spikes from <1 ms to ~600 ms. A capacity-relative threshold makes
+  // the cliff scale with the buffer's noise, so FP residuals always
+  // clamp clean — and a billionth of capacity is physically zero.
+  private const double BufferAliveRelTol = 1e-9;
+  private static bool IsAlive(Buffer b) =>
+      b.Contents > BufferAliveRelTol * b.Capacity;
+  private static bool HasFillHeadroom(Buffer b) =>
+      b.Contents < b.Capacity * (1 - BufferAliveRelTol);
+
   // ── Public types ───────────────────────────────────────────────────
 
   public class Node {
@@ -103,12 +121,11 @@ public class StagingFlowSystem : BackgroundSystem {
     public double TimeToNextExpiry() {
       double earliest = double.PositiveInfinity;
       foreach (var b in Buffers) {
-        var contents = b.Contents;
-        if (b.Rate < 0 && contents > Epsilon) {
-          var t = contents / -b.Rate;
+        if (b.Rate < 0 && IsAlive(b)) {
+          var t = b.Contents / -b.Rate;
           if (t < earliest) earliest = t;
-        } else if (b.Rate > 0 && contents < b.Capacity - Epsilon) {
-          var t = (b.Capacity - contents) / b.Rate;
+        } else if (b.Rate > 0 && HasFillHeadroom(b)) {
+          var t = (b.Capacity - b.Contents) / b.Rate;
           if (t < earliest) earliest = t;
         }
       }
@@ -427,8 +444,8 @@ public class StagingFlowSystem : BackgroundSystem {
       if (n.DrainPriority != dp) continue;
       var bufs = n.Buffers.Where(b => ReferenceEquals(b.Resource, resource)).ToList();
       if (bufs.Count == 0) continue;
-      double totalAmount = bufs.Sum(b => Math.Max(0, b.Contents));
-      double maxRateOut = bufs.Sum(b => b.Contents > Epsilon ? b.MaxRateOut : 0);
+      double totalAmount = bufs.Sum(b => IsAlive(b) ? b.Contents : 0);
+      double maxRateOut = bufs.Sum(b => IsAlive(b) ? b.MaxRateOut : 0);
       if (totalAmount < Epsilon || maxRateOut < Epsilon) continue;
       allActivePools.Add((n, bufs, totalAmount, maxRateOut));
     }
@@ -585,12 +602,11 @@ public class StagingFlowSystem : BackgroundSystem {
       if (n.Jettisoned) continue;
       foreach (var b in n.Buffers) {
         if (b.Resource.Domain != ResourceDomain.Topological) continue;
-        var contents = b.Contents;
-        if (b.Rate < -Epsilon && contents > Epsilon) {
-          var t = contents / -b.Rate;
+        if (b.Rate < -Epsilon && IsAlive(b)) {
+          var t = b.Contents / -b.Rate;
           if (t < earliest) earliest = t;
-        } else if (b.Rate > Epsilon && contents < b.Capacity - Epsilon) {
-          var t = (b.Capacity - contents) / b.Rate;
+        } else if (b.Rate > Epsilon && HasFillHeadroom(b)) {
+          var t = (b.Capacity - b.Contents) / b.Rate;
           if (t < earliest) earliest = t;
         }
       }

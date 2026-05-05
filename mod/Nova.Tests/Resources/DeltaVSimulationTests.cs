@@ -481,4 +481,80 @@ public class DeltaVSimulationTests {
         $"Stage 0 dV should be positive, got {results[0].DeltaV}");
     Assert.AreEqual(0, results[0].InverseStageIndex);
   }
+
+  // Regression: NovaStageTopic.Recompute fires every 1 s in flight,
+  // calling Run on the live vessel. On a partial-throttle burn the
+  // recompute occasionally hit 600+ ms with the Burn loop running to
+  // its 10000-iteration cap. Root cause: Buffer.ContentsAt at non-
+  // trivial sim-UT produced FP residuals (~ULP(UT) × rate) larger than
+  // the absolute Epsilon=1e-12 used as the "buffer alive" threshold,
+  // so a should-be-empty buffer kept reading +5e-12 and MaxTickDt
+  // returned `contents/-rate ≈ 1e-13 s` — the loop ground forward in
+  // ULP-sized steps until the cap. Fix: capacity-relative threshold
+  // via IsAlive(b) in StagingFlowSystem.
+  //
+  // Mirrors the user's actual Comms I .hgc layout, including the live-
+  // vs-clone time drift caused by Recompute running on a Unity-frame
+  // cadence rather than FixedUpdate.
+  [TestMethod]
+  public void Run_AfterLiveTicks_AtFlightUT_DoesNotBlowIters() {
+    var podHydrazineTank = new TankVolume {
+      Volume = 40, MaxRate = 100,
+      Tanks = { new Buffer { Resource = Resource.Hydrazine, Capacity = 40, Contents = 40 } }
+    };
+    var fuelTank = new TankVolume {
+      Volume = 4000, MaxRate = 1000,
+      Tanks = {
+        new Buffer { Resource = Resource.RP1, Capacity = 1600, Contents = 1600 },
+        new Buffer { Resource = Resource.LiquidOxygen, Capacity = 2400, Contents = 2400 },
+      }
+    };
+    var engine = new Engine();
+    engine.Initialize(thrust: 215, isp: 320, new List<(Resource, double)> {
+      (Resource.RP1, 2), (Resource.LiquidOxygen, 3),
+    });
+
+    var vv = new VirtualVessel();
+    var parentMap = new Dictionary<uint, uint?>();
+    var partsConfig = new[] {
+      (1u, "mk1pod", (uint?)null, 840.0, new List<VirtualComponent> { podHydrazineTank }),
+      (2u, "fuelTank", (uint?)1u, 500.0, new List<VirtualComponent> { fuelTank }),
+      (3u, "engine", (uint?)2u, 1500.0, new List<VirtualComponent> { engine }),
+    };
+    foreach (var (id, name, parentId, dryMass, components) in partsConfig) {
+      vv.AddPart(id, name, dryMass, components);
+      parentMap[id] = parentId;
+    }
+    vv.UpdatePartTree(parentMap);
+    // UT high enough that ULP(UT) × rate exceeds Epsilon=1e-12 — matches
+    // the user's actual flight UT when the bug was observed.
+    const double baseUT = 905.0;
+    vv.InitializeSolver(baseUT);
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 3 } },
+    };
+    engine.Throttle = 0.52;
+    vv.Invalidate();
+
+    int worst = 0;
+    double worstAt = 0, worstOffset = 0;
+    var rng = new System.Random(42);
+    for (int step = 0; step < 1500; step++) {
+      double simT = baseUT + step * 0.02;
+      vv.Tick(simT);
+      // Recompute fires from a telemetry callback on a Unity-frame
+      // cadence, so `time` can lead the live clock by 0..16 ms.
+      double cloneOffset = rng.NextDouble() * 0.016;
+      DeltaVSimulation.Run(vv, stages, simT + cloneOffset);
+      if (DeltaVSimulation.LastBurnIterations > worst) {
+        worst = DeltaVSimulation.LastBurnIterations;
+        worstAt = step * 0.02;
+        worstOffset = cloneOffset;
+      }
+    }
+    Assert.IsTrue(worst < 100,
+        $"Burn should converge in <100 iters at every step. Worst was " +
+        $"{worst} iters at relSimT={worstAt:F2}s offset={worstOffset*1000:F2}ms");
+  }
 }
