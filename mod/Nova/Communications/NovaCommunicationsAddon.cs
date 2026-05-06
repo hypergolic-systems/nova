@@ -121,13 +121,20 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     if (v == null || antennas == null || antennas.Count == 0) return;
     if (vesselEndpoints.ContainsKey(v.id)) return;
 
-    var motion = ExtractMotionFor(v);
-    var primary = v.orbit?.referenceBody != null
-        ? NovaBodyRegistry.For(v.orbit.referenceBody)
-        : null;
+    // Vessel.orbit is the expression-bodied property `orbitDriver.orbit`,
+    // which NPEs when read during the early portion of Vessel.Initialize
+    // (onVesselPartCountChanged fires at Vessel.cs:2018, but orbitDriver
+    // isn't assigned until line 2038). Read through orbitDriver directly
+    // to dodge that ordering trap; if orbit isn't ready yet we register
+    // motion-less and let the on/off-rails refresh patch it up later.
+    var orbit = v.orbitDriver?.orbit;
+    var refBody = orbit?.referenceBody;
+
+    var motion = ExtractMotionFor(v, orbit);
+    var primary = refBody != null ? NovaBodyRegistry.For(refBody) : null;
     var ep = new Endpoint {
       Id = v.id.ToString("D"),
-      PositionAt = ut => v.orbit.getTruePositionAtUT(ut).ToNova(),
+      PositionAt = ut => v.orbitDriver?.orbit?.getTruePositionAtUT(ut).ToNova() ?? Vec3d.Zero,
       Motion = motion,
       PrimaryBody = primary,
       // Off-rails vessels (no Motion) follow non-deterministic
@@ -150,11 +157,14 @@ public class NovaCommunicationsAddon : MonoBehaviour {
   // trajectories; landed/splashed vessels track the surface (they're
   // SurfaceMotion-shaped, but v1 has no surface↔Kepler solver). Both
   // fall back to the opaque PositionAt closure (numerical bisection).
-  private static MotionModel ExtractMotionFor(Vessel v) {
+  //
+  // `orbit` is read through `v.orbitDriver?.orbit` by the caller — the
+  // `Vessel.orbit` property NPEs early in Vessel.Initialize.
+  private static MotionModel ExtractMotionFor(Vessel v, Orbit orbit) {
     if (v.LandedOrSplashed) return null;          // surface-bound; use closure
     if (!v.packed) return null;                   // off-rails / under physics
-    if (v.orbit == null || v.orbit.referenceBody == null) return null;
-    return NovaBodyRegistry.ExtractKepler(v.orbit, NovaBodyRegistry.For(v.orbit.referenceBody));
+    if (orbit == null || orbit.referenceBody == null) return null;
+    return NovaBodyRegistry.ExtractKepler(orbit, NovaBodyRegistry.For(orbit.referenceBody));
   }
 
   // Refresh a vessel's endpoint — drop and re-add. Used when the
