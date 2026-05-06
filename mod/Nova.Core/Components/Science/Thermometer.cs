@@ -111,6 +111,13 @@ public class Thermometer : VirtualComponent {
     file.Fidelity = AtmosphericProfileExperiment.FidelityFromAltCoverage(
         file.RecordedMinAltM, file.RecordedMaxAltM,
         bottomAlt.Value, layer.Value.topAltMeters);
+    // Mark complete the moment the layer is fully covered. Eligibility
+    // for transmission to KSC is gated on this flag — partial profiles
+    // stay local until the player completes the layer or discards the
+    // file. A re-entered layer would reset min/max and re-derive
+    // fidelity downward, but is_complete latches to true once set
+    // (the file has nothing more to learn).
+    if (file.Fidelity >= 1.0) file.IsComplete = true;
 
     storage.Upsert(file, AtmosphericProfileExperiment.FileSizeBytes);
   }
@@ -146,6 +153,12 @@ public class Thermometer : VirtualComponent {
   // expires — both for loaded and unloaded vessels. Creates the next
   // slice's file (if enabled+applicable) and re-arms ValidUntil.
   public override void Update(double nowUT) {
+    // Promote any LTS file whose slice has elapsed to complete. Cheap
+    // scan; eligible only when end_ut ≤ nowUT, which is exactly the
+    // slice-boundary case but also catches stale files surviving from
+    // past sessions.
+    MarkElapsedLtsFilesComplete(nowUT);
+
     if (!LtsEnabled) {
       ValidUntil = double.PositiveInfinity;
       return;
@@ -167,6 +180,23 @@ public class Thermometer : VirtualComponent {
     LtsCurrentSubjectId = subject.ToString();
     LtsActive = true;
     ValidUntil = sliceEnd;
+  }
+
+  // Latch fidelity = 1 + is_complete on every LTS file in this vessel's
+  // storage whose slice end has passed. The file's interpolated fidelity
+  // is normally a UT-derived read; setting the cached snapshot here gives
+  // offline tooling and the transmission queue a stable view.
+  private void MarkElapsedLtsFilesComplete(double nowUT) {
+    if (Vessel == null) return;
+    foreach (var s in Vessel.AllComponents().OfType<DataStorage>()) {
+      foreach (var f in s.Files) {
+        if (f.ExperimentId != LongTermStudyExperiment.ExperimentId) continue;
+        if (f.IsComplete) continue;
+        if (f.EndUt > nowUT) continue;
+        f.Fidelity = 1.0;
+        f.IsComplete = true;
+      }
+    }
   }
 
   // Drop any existing file for the given subject from every storage

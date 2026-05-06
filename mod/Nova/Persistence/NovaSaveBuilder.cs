@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Nova.Components;
+using Nova.Science;
 using Nova;
 using UnityEngine;
 using Proto = Nova.Core.Persistence.Protos;
@@ -17,6 +18,7 @@ public static class NovaSaveBuilder {
     var save = new Proto.SaveFile {
       UniversalTime = Planetarium.GetUniversalTime(),
       Game = BuildGameMetadata(game),
+      ScienceArchive = NovaScienceArchive.Instance.ToProto(),
     };
     save.Crews.AddRange(BuildCrewRoster(game.CrewRoster));
 

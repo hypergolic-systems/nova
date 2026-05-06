@@ -52,6 +52,7 @@ message SaveFile {
   repeated Vessel vessels = 3;
   GameMetadata game = 4;
   repeated Kerbal crew = 5;
+  ScienceArchive science_archive = 6;
 }
 
 message GameMetadata {
@@ -244,10 +245,30 @@ message ScienceFile {
   double start_ut                  = 8;
   double end_ut                    = 9;
   double slice_duration_seconds    = 10;
+
+  // Set by the producing experiment when no further data will be
+  // appended to this file (atm-profile: layer fully covered;
+  // lts: slice has elapsed). Eligibility flag for transmission to
+  // KSC — only complete files get queued.
+  bool is_complete                 = 11;
 }
 
 message DataStorageState {
   repeated ScienceFile files = 1;
+}
+
+// Game-wide record of every science file received at KSC. One entry
+// per subject (highest-fidelity wins on duplicate transmits — with
+// is_complete semantics this is effectively first-arrival-wins since
+// complete = fidelity 1.0). Lives at SaveFile scope.
+message ScienceArchive {
+  repeated ArchivedScienceRecord records = 1;
+}
+
+message ArchivedScienceRecord {
+  ScienceFile file                       = 1;
+  double      received_at_ut             = 2;
+  uint32      source_vessel_persistent_id = 3;
 }
 
 // Thermometer state. Body / situation / body-year are NOT here —

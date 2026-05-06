@@ -11,6 +11,7 @@ using Nova.Core.Flight;
 using Nova.Core.Utils;
 using Nova.Patches;
 using Nova.Persistence;
+using Nova.Science;
 using Nova.Telemetry;
 using Nova;
 using Proto = Nova.Core.Persistence.Protos;
@@ -84,6 +85,7 @@ public class NovaVesselModule : VesselModule {
     GameEvents.onVesselsUndocking.Remove(OnVesselsUndocking);
     GameEvents.onVesselGoOnRails.Remove(OnVesselGoOnRails);
     GameEvents.onVesselGoOffRails.Remove(OnVesselGoOffRails);
+    Virtual?.Systems?.Transmission?.CancelActive();
     if (vessel != null)
       NovaCommunicationsAddon.Instance?.RemoveVesselEndpoint(vessel.id);
   }
@@ -91,12 +93,18 @@ public class NovaVesselModule : VesselModule {
   // Rails-state transitions change which Motion model the comms addon
   // should attach: on-rails Kepler vessels get analytical solver; off-
   // rails (active flight) gets numerical fallback. Refresh the
-  // endpoint on each transition.
+  // endpoint on each transition; the refresh drops + re-adds the
+  // network endpoint, so the per-vessel transmission system needs
+  // its endpoint reference rewired too.
   private void OnVesselGoOnRails(Vessel v) {
-    if (v == vessel) NovaCommunicationsAddon.Instance?.RefreshVesselEndpoint(v);
+    if (v != vessel) return;
+    NovaCommunicationsAddon.Instance?.RefreshVesselEndpoint(v);
+    WireScienceTransmission();
   }
   private void OnVesselGoOffRails(Vessel v) {
-    if (v == vessel) NovaCommunicationsAddon.Instance?.RefreshVesselEndpoint(v);
+    if (v != vessel) return;
+    NovaCommunicationsAddon.Instance?.RefreshVesselEndpoint(v);
+    WireScienceTransmission();
   }
 
   /// <summary>
@@ -147,6 +155,7 @@ public class NovaVesselModule : VesselModule {
     var antennas = Virtual.AllComponents().OfType<Antenna>().ToList();
     if (antennas.Count == 0) return;
     addon.AddVesselEndpoint(vessel, antennas);
+    WireScienceTransmission();
   }
 
   // Re-register: drop the existing endpoint and re-add. Used when the
@@ -154,6 +163,19 @@ public class NovaVesselModule : VesselModule {
   private void RebuildCommsEndpoint() {
     NovaCommunicationsAddon.Instance?.RemoveVesselEndpoint(vessel.id);
     RegisterCommsEndpoint();
+  }
+
+  // Hand the per-vessel transmission system its network handles. Pulled
+  // out of RegisterCommsEndpoint so we can rewire on dock/undock without
+  // duplicating the antenna-registration body.
+  private void WireScienceTransmission() {
+    var addon = NovaCommunicationsAddon.Instance;
+    if (addon == null || Virtual?.Systems == null) return;
+    var ep = addon.GetVesselEndpoint(vessel.id);
+    if (ep == null || addon.KscEndpoint == null) return;
+    Virtual.Systems.Transmission.SetCommNetwork(
+        addon.Network, ep, addon.KscEndpoint,
+        NovaScienceArchive.Instance, vessel.persistentId);
   }
 
   public void InvalidateRcsCache() {
@@ -209,6 +231,10 @@ public class NovaVesselModule : VesselModule {
   }
 
   private void RebuildTopology() {
+    // InitializeSolver throws away the old VesselSystems. Cancel any
+    // in-flight science transmit first so its Packet doesn't orphan
+    // on the network with a stale source endpoint.
+    Virtual?.Systems?.Transmission?.CancelActive();
     Virtual.UpdatePartTree(BuildParentMap(vessel));
     Virtual.InitializeSolver(Planetarium.GetUniversalTime());
     RebuildCachedStructure();

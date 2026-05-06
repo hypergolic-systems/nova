@@ -1,4 +1,5 @@
 using System;
+using Nova.Core.Components;
 using Nova.Core.Resources;
 
 namespace Nova.Core.Systems;
@@ -22,21 +23,26 @@ public class VesselSystems {
 
   public StagingFlowSystem Staging { get; }
   public ProcessFlowSystem Process { get; }
+  public ScienceTransmissionSystem Transmission { get; }
 
-  public VesselSystems() {
+  public VesselSystems(VirtualVessel vessel = null) {
     Clock = new SimClock();
     Staging = new StagingFlowSystem(Clock);
     Process = new ProcessFlowSystem(Clock);
+    Transmission = new ScienceTransmissionSystem(vessel, Clock);
   }
 
   // Run all systems in order. Staging produces buffer rates and
   // demand satisfactions; Process never reads them (the two domains
   // are disjoint), so order is just for readability — Process could
-  // run first too. Components call OnPreSolve before this; runner
-  // does that since it owns the component list.
+  // run first too. Transmission polls storage + drives the comm
+  // network last; it's read-only against the resource solvers.
+  // Components call OnPreSolve before this; runner does that since
+  // it owns the component list.
   public void Solve() {
     Staging.Solve();
     Process.Solve();
+    Transmission.Solve();
   }
 
   // Soonest forecasted state-change across all systems, as relative
@@ -46,7 +52,11 @@ public class VesselSystems {
   public double MaxTickDt() {
     var s = Staging.MaxTickDt();
     var p = Process.MaxTickDt();
-    return s < p ? s : p;
+    var t = Transmission.MaxTickDt();
+    var min = s;
+    if (p < min) min = p;
+    if (t < min) min = t;
+    return min;
   }
 
   // Advance simulation time by dt. Buffers lerp Contents forward

@@ -21,9 +21,17 @@ public class NovaCommunicationsAddon : MonoBehaviour {
 
   public static NovaCommunicationsAddon Instance { get; private set; }
   public CommunicationsNetwork Network { get; private set; }
+  public Endpoint KscEndpoint => kscEndpoint;
 
   private Endpoint kscEndpoint;
   private readonly Dictionary<Guid, Endpoint> vesselEndpoints = new();
+
+  // Lookup the network endpoint for a vessel, or null if it hasn't been
+  // registered yet. Used by NovaVesselModule to wire each vessel's
+  // ScienceTransmissionSystem to its network identity.
+  public Endpoint GetVesselEndpoint(Guid vesselId)
+      => vesselEndpoints.TryGetValue(vesselId, out var ep) ? ep : null;
+
   private double lastLogUT = double.NegativeInfinity;
   private const double LogIntervalSeconds = 1.0;
 

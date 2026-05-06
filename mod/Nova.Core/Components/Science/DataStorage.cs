@@ -110,18 +110,8 @@ public class DataStorage : VirtualComponent {
     state.DataStorage = s;
   }
 
-  // Hardcoded per-experiment byte cost. Mirrors the constants on each
-  // experiment class. Eight bytes lost in space, balance later if it
-  // matters.
-  private static long FileSizeFor(string experimentId) {
-    return experimentId switch {
-      Nova.Core.Science.AtmosphericProfileExperiment.ExperimentId
-        => Nova.Core.Science.AtmosphericProfileExperiment.FileSizeBytes,
-      Nova.Core.Science.LongTermStudyExperiment.ExperimentId
-        => Nova.Core.Science.LongTermStudyExperiment.FileSizeBytes,
-      _ => 1_000,
-    };
-  }
+  private static long FileSizeFor(string experimentId)
+      => Nova.Core.Science.ExperimentSpecs.FileSizeFor(experimentId);
 
   public override VirtualComponent Clone() {
     var c = new DataStorage {

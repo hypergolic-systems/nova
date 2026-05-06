@@ -6,6 +6,7 @@ using System.Linq;
 using Nova.Core;
 using Nova.Core.Components;
 using Nova.Components;
+using Nova.Science;
 using Nova;
 using UnityEngine;
 using Proto = Nova.Core.Persistence.Protos;
@@ -54,6 +55,9 @@ public static class NovaSaveLoader {
   }
 
   static bool ApplyQuickload(Proto.SaveFile save) {
+    NovaScienceArchive.Reset();
+    NovaScienceArchive.Instance.HydrateFrom(save.ScienceArchive);
+
     // Build lookup of saved vessels by PersistentId
     var savedByPid = new Dictionary<uint, Proto.Vessel>();
     foreach (var sv in save.Vessels)
@@ -656,6 +660,9 @@ public static class NovaSaveLoader {
   /// </summary>
   public static void LoadScene(Proto.SaveFile save) {
     NovaLog.Log($"[SceneLoad] Creating {save.Vessels.Count} vessels from proto");
+
+    NovaScienceArchive.Reset();
+    NovaScienceArchive.Instance.HydrateFrom(save.ScienceArchive);
 
     // Destroy any existing persistent vessels from a previous session
     // (e.g., exit to main menu then load again).

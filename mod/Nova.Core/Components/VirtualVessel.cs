@@ -79,7 +79,7 @@ public class VirtualVessel {
   }
 
   public void InitializeSolver(double time) {
-    systems = new VesselSystems();
+    systems = new VesselSystems(this);
     // Anchor the clock at the initial UT so Contents lerps reference
     // a sensible baseline even before the first Solve.
     systems.Clock.UT = time;
