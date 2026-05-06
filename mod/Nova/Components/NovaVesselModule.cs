@@ -149,7 +149,11 @@ public class NovaVesselModule : VesselModule {
   // is built or modified — antennas come from Virtual.AllComponents
   // (already populated at this point, even before PartModule.OnStart).
   // Idempotent: AddVesselEndpoint short-circuits if already present.
-  private void RegisterCommsEndpoint() {
+  // Also called from NovaCommunicationsAddon.Awake to catch up
+  // vessels whose VesselModule loaded before the addon was online —
+  // a normal Flight-scene transition where Load_Postfix fires
+  // sometime in the load sequence and KSPAddon Awake happens after.
+  public void RegisterCommsEndpoint() {
     var addon = NovaCommunicationsAddon.Instance;
     if (addon == null || Virtual == null) return;
     var antennas = Virtual.AllComponents().OfType<Antenna>().ToList();

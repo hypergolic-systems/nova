@@ -51,6 +51,20 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     Network.AddEndpoint(kscEndpoint);
     GameEvents.onVesselSOIChanged.Add(OnVesselSOIChanged);
     NovaLog.Log($"[Comms] addon online; KSC registered, network has {Network.Endpoints.Count} endpoint(s)");
+
+    // Catch-up registration for vessels whose VesselModule was loaded
+    // before this addon awoke (typical Flight scene transition: the
+    // ProtoVessel Load_Postfix fires during scene load, building each
+    // vessel's Virtual and calling RegisterCommsEndpoint, but
+    // NovaCommunicationsAddon.Instance was still null at that moment
+    // so the registration silently no-ops). Without this catch-up,
+    // every vessel in the scene reads as DARK forever.
+    if (FlightGlobals.Vessels != null) {
+      for (int i = 0; i < FlightGlobals.Vessels.Count; i++) {
+        var v = FlightGlobals.Vessels[i];
+        v?.FindVesselModuleImplementing<Components.NovaVesselModule>()?.RegisterCommsEndpoint();
+      }
+    }
   }
 
   private void OnVesselSOIChanged(GameEvents.HostedFromToAction<Vessel, CelestialBody> data) {
