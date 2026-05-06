@@ -8,6 +8,7 @@
   // the real scene seamlessly.
 
   import { useGame, getKsp } from '@dragonglass/telemetry/svelte';
+  import { DragonglassRoot } from '@dragonglass/instruments';
   import FlightHud from './FlightHud.svelte';
   import EditorHud from './EditorHud.svelte';
   import RndScene from './components/rnd/RndScene.svelte';
@@ -28,18 +29,20 @@
   const label = $derived(scene ? scene.toLowerCase() : 'connecting…');
 </script>
 
-{#if scene === 'FLIGHT'}
-  <FlightHud />
-{:else if scene === 'EDITOR'}
-  <EditorHud />
-{:else if scene === 'RND'}
-  <RndScene />
-{:else}
-  <div class="placeholder">
-    <div class="placeholder__brand">NOVA</div>
-    <div class="placeholder__scene">{label}</div>
-  </div>
-{/if}
+<DragonglassRoot>
+  {#if scene === 'FLIGHT'}
+    <FlightHud />
+  {:else if scene === 'EDITOR'}
+    <EditorHud />
+  {:else if scene === 'RND'}
+    <RndScene />
+  {:else}
+    <div class="placeholder">
+      <div class="placeholder__brand">NOVA</div>
+      <div class="placeholder__scene">{label}</div>
+    </div>
+  {/if}
+</DragonglassRoot>
 
 <style>
   .placeholder {
