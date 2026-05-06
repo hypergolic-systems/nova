@@ -11,6 +11,8 @@
   // topic hasn't sent a frame yet. Cell widths are fixed so chips and
   // values appearing/disappearing don't reflow neighbours.
 
+  import { Tween } from 'svelte/motion';
+  import { cubicOut } from 'svelte/easing';
   import { useFlightData } from '@dragonglass/telemetry/svelte';
   import { useTimewarp } from '../telemetry/use-timewarp.svelte';
   import { useOrbit } from '../telemetry/use-orbit.svelte';
@@ -110,7 +112,6 @@
 
   // ── Reactive readouts ────────────────────────────────────────
   const met = $derived(formatMet(orbit.current?.missionTime ?? NaN));
-  const warpVisible = $derived((tw.current?.rate ?? 1) !== 1);
   const orbitReady = $derived(orbit.current !== undefined);
   const apFmt = $derived(formatOrbitAlt(orbit.current?.apA ?? NaN));
   const peFmt = $derived(formatOrbitAlt(orbit.current?.peA ?? NaN));
@@ -135,6 +136,21 @@
     tw.current ? warpIndex(tw.current.rate, tw.current.mode) : 0,
   );
   const warpMode = $derived(tw.current?.mode ?? 'rails');
+
+  // Short client-side tween on the displayed rate. The wire value
+  // snaps instantly when the player triggers a warp change (the C#
+  // topic publishes target rate, not KSP's animated curr_rate); we
+  // re-introduce a 280 ms ease so the digits feel alive rather than
+  // popping. The gauge segments still snap with the wire — only the
+  // text readout slides.
+  const warpTween = new Tween(1, { duration: 280, easing: cubicOut });
+  $effect(() => {
+    warpTween.target = tw.current?.rate ?? 1;
+  });
+  const warpDisplayRate = $derived(warpTween.current);
+  const warpVisible = $derived(
+    Math.abs(warpDisplayRate - 1) > 0.01 || (tw.current?.rate ?? 1) !== 1,
+  );
 </script>
 
 {#if flight.vesselId}
@@ -150,7 +166,7 @@
           <span class="ftb__warp-seg" class:ftb__warp-seg--lit={warpIdx > i}></span>
         {/each}
         <span class="ftb__warp-readout">
-          {warpVisible && tw.current ? formatWarp(tw.current.rate) : '×1'}
+          {warpVisible ? formatWarp(warpDisplayRate) : '×1'}
         </span>
       </div>
     </section>
@@ -250,7 +266,7 @@
   }
   .ftb__cell--clock { width: 188px; }
   .ftb__cell--orbit { width: 224px; }
-  .ftb__cell--link  { width: 200px; }
+  .ftb__cell--link  { width: 132px; }
   .ftb__cell--dim {
     opacity: 0.55;
   }
