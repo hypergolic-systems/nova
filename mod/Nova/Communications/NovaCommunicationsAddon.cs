@@ -38,9 +38,21 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     Instance = this;
     Network = new CommunicationsNetwork();
     NovaBodyRegistry.Reset();  // scene-fresh
+    NovaBodyRegistry.WarmAll();  // populate the SOI tree (children index) up-front
     BuildKscEndpoint();
     Network.AddEndpoint(kscEndpoint);
+    GameEvents.onVesselSOIChanged.Add(OnVesselSOIChanged);
     NovaLog.Log($"[Comms] addon online; KSC registered, network has {Network.Endpoints.Count} endpoint(s)");
+  }
+
+  private void OnVesselSOIChanged(GameEvents.HostedFromToAction<Vessel, CelestialBody> data) {
+    // SOI transition changes the vessel's PrimaryBody and therefore
+    // the occluder set membership of every link involving it. Refresh
+    // drops + re-adds the endpoint, which calls Invalidate via
+    // AddEndpoint and clears both the horizon cache and the occluder
+    // cache — same flow already used for on/off-rails transitions.
+    if (data.host == null) return;
+    RefreshVesselEndpoint(data.host);
   }
 
   // KSC position at any UT, in the same absolute frame
@@ -81,6 +93,7 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     kscEndpoint = new Endpoint {
       Id = "KSC",
       PositionAt = PositionAt,
+      PrimaryBody = NovaBodyRegistry.For(homeBody),
       // SurfaceMotion is captured day-one for the future analytical
       // surface↔Kepler solver; v1 dispatcher still routes KSC links
       // through numerical because no SurfaceMotion solver exists yet.
@@ -100,6 +113,7 @@ public class NovaCommunicationsAddon : MonoBehaviour {
   }
 
   private void OnDestroy() {
+    GameEvents.onVesselSOIChanged.Remove(OnVesselSOIChanged);
     Instance = null;
   }
 
@@ -108,10 +122,14 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     if (vesselEndpoints.ContainsKey(v.id)) return;
 
     var motion = ExtractMotionFor(v);
+    var primary = v.orbit?.referenceBody != null
+        ? NovaBodyRegistry.For(v.orbit.referenceBody)
+        : null;
     var ep = new Endpoint {
       Id = v.id.ToString("D"),
       PositionAt = ut => v.orbit.getTruePositionAtUT(ut).ToNova(),
       Motion = motion,
+      PrimaryBody = primary,
       // Off-rails vessels (no Motion) follow non-deterministic
       // trajectories; predicting future UTs from getTruePositionAtUT
       // gives wrong horizons. The reactive bucket-watch in FixedUpdate

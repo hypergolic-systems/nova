@@ -41,6 +41,12 @@ public class CommunicationsNetwork {
   // event-driven scheduling actually save work at scale.
   private readonly Dictionary<(string, string), double> linkHorizonCache = new();
 
+  // Per-unordered-pair cache of which celestial bodies could block
+  // the link's chord. The set is symmetric (A→B and B→A share it)
+  // and invariant between SOI transitions of either endpoint, so it
+  // shares the linkHorizonCache lifecycle: Invalidate() clears both.
+  private readonly Dictionary<(string, string), IReadOnlyList<Body>> occluderSetCache = new();
+
   public IReadOnlyList<Endpoint> Endpoints => endpoints;
   public IReadOnlyList<Job> Jobs => jobs;
   public bool NeedsSolve => needsSolve;
@@ -82,6 +88,18 @@ public class CommunicationsNetwork {
   public void Invalidate() {
     needsSolve = true;
     linkHorizonCache.Clear();
+    occluderSetCache.Clear();
+  }
+
+  // Lookup-or-build the occluder set for an unordered endpoint pair.
+  // The set is symmetric in (a, b), so we key on a lexicographically-
+  // ordered pair and share between both directions of the link.
+  private IReadOnlyList<Body> GetOccluderSet(Endpoint a, Endpoint b) {
+    var key = string.CompareOrdinal(a.Id, b.Id) < 0 ? (a.Id, b.Id) : (b.Id, a.Id);
+    if (occluderSetCache.TryGetValue(key, out var cached)) return cached;
+    var set = OccluderSet.For(a, b);
+    occluderSetCache[key] = set;
+    return set;
   }
 
   // Reactive bucket-change check for endpoints with no MotionModel
@@ -105,7 +123,15 @@ public class CommunicationsNetwork {
       BestPair(link.From, link.To, d, out _, out var rate);
       var maxCeiling = LinkMaxCeiling(link.From, link.To);
       var quantised = RateBuckets.Quantize(rate, maxCeiling);
-      if (Math.Abs(quantised - link.RateBps) > 1e-6) return true;
+      // Effective rate gates on occlusion: a blocked link reports
+      // 0 regardless of bucket. Without folding occlusion in here,
+      // a permanently-blocked link would compare quantised (nonzero)
+      // against link.RateBps (0) every tick and re-trigger
+      // Invalidate forever.
+      var occluders = GetOccluderSet(link.From, link.To);
+      var blocked = Occlusion.IsAnyBlocked(occluders, pa, pb, ut);
+      var effective = blocked ? 0 : quantised;
+      if (Math.Abs(effective - link.RateBps) > 1e-6) return true;
     }
     return false;
   }
@@ -222,7 +248,17 @@ public class CommunicationsNetwork {
         // won't sustain until the next solve.
         var maxCeiling = LinkMaxCeiling(from, to);
         var quantised = RateBuckets.Quantize(rate, maxCeiling);
-        links.Add(new Link(from, to, distance, snr, quantised));
+        // Occlusion gating: if any body in the link's occluder set
+        // is intersecting the chord, the link is dead until geometry
+        // clears. Effective rate is 0; MaxRatePath drops the edge via
+        // its `RateBps <= 0` filter, so routing handles this without
+        // allocator-side awareness.
+        var occluders = GetOccluderSet(from, to);
+        var blocked = Occlusion.IsAnyBlocked(occluders, positions[i], positions[j], ut);
+        var effective = blocked ? 0 : quantised;
+        var link = new Link(from, to, distance, snr, effective);
+        link.Blocked = blocked;
+        links.Add(link);
       }
     }
     graph = new GraphSnapshot(links, ut);
@@ -314,14 +350,14 @@ public class CommunicationsNetwork {
     var from = link.From;
     var to = link.To;
     var maxCeiling = LinkMaxCeiling(from, to);
+    var occluders = GetOccluderSet(from, to);
 
-    // Analytical path: both endpoints expose a structured MotionModel
-    // (KeplerMotion or SurfaceMotion). The bisection loop is unchanged,
-    // but each position eval becomes closed-form arithmetic via
-    // AnalyticalPosition.Of — no iterative Kepler propagator. Cross-SOI
-    // is handled by the recursive body-chain composition inside
-    // AnalyticalPosition; the dispatch condition is intentionally
-    // broad ("both non-null") rather than same-parent only.
+    // Two parallel state functions per link: bucket index and
+    // occlusion blocked/clear. We bisect each independently and
+    // take the min, rather than ORing into one combined state —
+    // combined state would collapse adjacent transitions of distinct
+    // kinds into one event, losing the bucket information needed at
+    // the post-event Solve.
     if (from.Motion != null && to.Motion != null) {
       var fm = from.Motion;
       var tm = to.Motion;
@@ -332,7 +368,9 @@ public class CommunicationsNetwork {
         BestPair(from, to, d, out _, out var r);
         return RateBuckets.BucketIndex(r, maxCeiling);
       };
-      return LinkHorizon.NextBucketCrossing(ut, bucketAtFast);
+      var bucketUT = LinkHorizon.NextDiscreteChange(ut, bucketAtFast);
+      var occUT = OcclusionHorizonAnalytical(fm, tm, occluders, ut);
+      return Math.Min(bucketUT, occUT);
     }
 
     // Numerical fallback: opaque PositionAt closures. Used when one
@@ -345,7 +383,34 @@ public class CommunicationsNetwork {
       BestPair(from, to, d, out _, out var r);
       return RateBuckets.BucketIndex(r, maxCeiling);
     };
-    return LinkHorizon.NextBucketCrossing(ut, bucketAt);
+    var bucketN = LinkHorizon.NextDiscreteChange(ut, bucketAt);
+    var occN = OcclusionHorizonNumerical(from, to, occluders, ut);
+    return Math.Min(bucketN, occN);
+  }
+
+  // Empty occluder set short-circuits to +∞: a link with no body
+  // context (test fixtures, or endpoints in disjoint SOI trees) can
+  // never become occluded, so skip the bisection sweep entirely.
+  private static double OcclusionHorizonAnalytical(MotionModel fm, MotionModel tm,
+                                                   IReadOnlyList<Body> occluders, double ut) {
+    if (occluders.Count == 0) return double.PositiveInfinity;
+    Func<double, int> blockAt = t => {
+      var pa = AnalyticalPosition.Of(fm, t);
+      var pb = AnalyticalPosition.Of(tm, t);
+      return Occlusion.IsAnyBlocked(occluders, pa, pb, t) ? 1 : 0;
+    };
+    return LinkHorizon.NextDiscreteChange(ut, blockAt);
+  }
+
+  private static double OcclusionHorizonNumerical(Endpoint from, Endpoint to,
+                                                  IReadOnlyList<Body> occluders, double ut) {
+    if (occluders.Count == 0) return double.PositiveInfinity;
+    Func<double, int> blockAt = t => {
+      var pa = from.PositionAt(t);
+      var pb = to.PositionAt(t);
+      return Occlusion.IsAnyBlocked(occluders, pa, pb, t) ? 1 : 0;
+    };
+    return LinkHorizon.NextDiscreteChange(ut, blockAt);
   }
 
   private Link FindLink(Endpoint from, Endpoint to) {

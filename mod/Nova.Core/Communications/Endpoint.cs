@@ -44,6 +44,15 @@ public class Endpoint {
   // transitions reactively (see AnyLinkBucketDifference).
   public bool IsPredictable = true;
 
+  // Body whose SOI this endpoint currently sits in. Drives the link's
+  // occluder set together with the other endpoint's PrimaryBody. May
+  // be null for test fixtures without body context — such endpoints
+  // behave as "always unblocked" (empty occluder set), which is the
+  // safe default. The KSP-side addon sets this from
+  // `vessel.orbit.referenceBody` for vessels and the home body for
+  // ground stations.
+  public Body PrimaryBody;
+
   // Antennas attached to this endpoint. The Network selects the best
   // (transmit, receive) pair per directed edge when computing rate.
   public List<Antenna> Antennas = new();

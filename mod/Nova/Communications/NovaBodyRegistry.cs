@@ -36,8 +36,24 @@ public static class NovaBodyRegistry {
     if (kspBody.referenceBody != null && kspBody.referenceBody != kspBody) {
       body.Parent = For(kspBody.referenceBody);
       body.OrbitAroundParent = ExtractKepler(kspBody.orbit, body.Parent);
+      // Mirror the parent linkage in the children index so OccluderSet
+      // can walk subtrees. Idempotent — guard against double-add when
+      // a body is touched again via a sibling's chain.
+      if (body.Parent != null && !body.Parent.Children.Contains(body))
+        body.Parent.Children.Add(body);
     }
     return body;
+  }
+
+  // Walk every body in FlightGlobals.Bodies once so the children index
+  // is fully populated before any link is built. The lazy For() path
+  // only fills bodies on already-discovered chains, which is fine for
+  // the analytical position solver but leaves siblings unlinked under
+  // their parent — OccluderSet's subtree enumeration needs the whole
+  // tree. Cheap one-shot pass; safe to call repeatedly.
+  public static void WarmAll() {
+    if (FlightGlobals.Bodies == null) return;
+    foreach (var b in FlightGlobals.Bodies) For(b);
   }
 
   // Snapshot a KSP Orbit into a Nova KeplerMotion. Used both for body

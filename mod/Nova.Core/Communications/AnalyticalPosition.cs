@@ -96,7 +96,7 @@ public static class AnalyticalPosition {
   // Recursively walk the body chain. The root body (no parent) sits
   // at the origin. Each non-root body's position = its Kepler offset
   // around its parent + its parent's centre.
-  private static Vec3d BodyCentreAt(Body body, double ut) {
+  public static Vec3d BodyCentreAt(Body body, double ut) {
     if (body == null || body.Parent == null || body.OrbitAroundParent == null)
       return Vec3d.Zero;
     return KeplerAt(body.OrbitAroundParent, ut) + BodyCentreAt(body.Parent, ut);

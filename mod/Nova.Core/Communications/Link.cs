@@ -13,14 +13,25 @@ public class Link {
   public Endpoint To { get; }
   public double DistanceM { get; }
   public double Snr { get; }
-  public double RateBps { get; }
+
+  // Effective rate after both bucket quantisation and occlusion
+  // gating. 0 when Blocked is true (line-of-sight obstructed by some
+  // body in the link's occluder set), else the bucket-floor rate.
+  // MaxRatePath filters edges with RateBps <= 0, so blocked links
+  // automatically drop out of routing without allocator changes.
+  public double RateBps { get; internal set; }
+
+  // True iff some occluder body in this link's set is currently
+  // intersecting the chord between endpoints. Surfaced for telemetry
+  // / UI; routing already excludes the edge via the RateBps filter.
+  public bool Blocked { get; internal set; }
 
   // Total demand allocated on this edge after the per-Solve max-min
   // fair allocation. 0 if no jobs use the edge; never exceeds RateBps.
   public double UsedBps { get; internal set; }
 
-  // Forecast UT at which this link's quantised bucket changes — i.e.
-  // the next geometry-driven state-change horizon for this edge.
+  // Forecast UT at which this link's effective state changes — the
+  // earliest of (next bucket transition, next occlusion enter/exit).
   // +∞ when the link is rate-stable across the full search horizon
   // (e.g. stationary endpoints). The network folds the min over all
   // link NextEventUTs into MaxTickDt.
