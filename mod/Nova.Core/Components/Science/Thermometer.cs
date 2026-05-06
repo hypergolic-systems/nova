@@ -116,8 +116,14 @@ public class Thermometer : VirtualComponent {
     // (see SnapAtmBoundary) fidelity hits 1.0 exactly on a clean
     // traversal; the 0.999 floor is a safety margin for any path that
     // bypasses the snap (e.g. re-entry from above without crossing
-    // both boundaries).
-    if (file.Fidelity >= 0.999) file.IsComplete = true;
+    // both boundaries). Invalidate the vessel on the flip so the
+    // transmission system Solves next tick — otherwise a stable cruise
+    // (no resource events firing) leaves the file queued but unsubmitted
+    // until the next unrelated solve event hits.
+    if (file.Fidelity >= 0.999 && !file.IsComplete) {
+      file.IsComplete = true;
+      Vessel?.Invalidate();
+    }
 
     storage.Upsert(file, AtmosphericProfileExperiment.FileSizeBytes);
   }
@@ -159,7 +165,10 @@ public class Thermometer : VirtualComponent {
     file.Fidelity = AtmosphericProfileExperiment.FidelityFromAltCoverage(
         file.RecordedMinAltM, file.RecordedMaxAltM,
         bottomAlt.Value, layer.Value.topAltMeters);
-    if (file.Fidelity >= 0.999) file.IsComplete = true;
+    if (file.Fidelity >= 0.999 && !file.IsComplete) {
+      file.IsComplete = true;
+      Vessel?.Invalidate();
+    }
   }
 
   // Interpolated-measurement creation for lts. Idempotent: if a file

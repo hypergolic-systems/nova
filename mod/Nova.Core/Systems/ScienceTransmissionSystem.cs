@@ -48,15 +48,17 @@ public class ScienceTransmissionSystem : BackgroundSystem {
     this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
   }
 
-  // Mod-side wiring entry point. May be called multiple times (e.g. on
-  // dock/undock when the endpoint is rebuilt). Cancels any in-flight
-  // packet because its endpoints are about to become stale.
+  // Mod-side wiring entry point. May be called multiple times — every
+  // rails transition / SOI change re-runs this with the (now in-place
+  // refreshed) endpoint references. Idempotent when the endpoint
+  // identities haven't changed; if they have (e.g. dock/undock rebuilt
+  // VesselSystems), the system instance itself is fresh and the active
+  // packet was cancelled by the teardown path.
   public void SetCommNetwork(CommunicationsNetwork network,
                              Endpoint vesselEndpoint,
                              Endpoint kscEndpoint,
                              IScienceArchive archive,
                              uint sourceVesselPersistentId) {
-    CancelActive();
     this.network = network;
     this.vesselEndpoint = vesselEndpoint;
     this.kscEndpoint = kscEndpoint;
@@ -66,6 +68,19 @@ public class ScienceTransmissionSystem : BackgroundSystem {
 
   public IReadOnlyCollection<string> QueuedSubjects => tracked;
   public Packet ActivePacket => active;
+
+  // Forecast: when does the active packet finish at its current
+  // allocated rate? Returning that horizon lets VirtualVessel.Tick
+  // pivot at delivery completion so we reap (Status=Completed) on
+  // the same tick the comm net flips it, instead of waiting for an
+  // unrelated resource-solver event to invalidate the vessel.
+  // +∞ when nothing is in flight.
+  public override double MaxTickDt() {
+    if (active == null) return double.PositiveInfinity;
+    if (active.Status != JobStatus.Active) return double.PositiveInfinity;
+    if (active.AllocatedRateBps <= 0) return double.PositiveInfinity;
+    return active.RemainingBytes / active.AllocatedRateBps;
+  }
 
   public override void Solve() {
     needsSolve = false;
