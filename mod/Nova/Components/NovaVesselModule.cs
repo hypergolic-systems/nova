@@ -175,7 +175,8 @@ public class NovaVesselModule : VesselModule {
     if (ep == null || addon.KscEndpoint == null) return;
     Virtual.Systems.Transmission.SetCommNetwork(
         addon.Network, ep, addon.KscEndpoint,
-        NovaScienceArchive.Instance, vessel.persistentId);
+        NovaScienceArchive.Instance,
+        vessel.persistentId, vessel.vesselName ?? "");
   }
 
   public void InvalidateRcsCache() {

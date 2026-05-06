@@ -18,9 +18,10 @@ public class ScienceTransmissionSystemTests {
   // --- Test scaffolding ----------------------------------------------------
 
   private class CapturingArchive : IScienceArchive {
-    public readonly List<(ScienceFile file, uint vesselId, double ut)> Received = new();
-    public void Receive(ScienceFile file, uint vesselId, double ut) {
-      Received.Add((file, vesselId, ut));
+    public readonly List<(ScienceFile file, uint vesselId, string vesselName, double ut)>
+        Received = new();
+    public void Receive(ScienceFile file, uint vesselId, string vesselName, double ut) {
+      Received.Add((file, vesselId, vesselName, ut));
     }
   }
 
@@ -67,7 +68,7 @@ public class ScienceTransmissionSystemTests {
 
     var (vessel, _) = MakeVessel();
     var sys = vessel.Systems.Transmission;
-    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42);
+    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42, "ProbeOne");
 
     sys.Solve();
     net.Solve(0);
@@ -87,7 +88,7 @@ public class ScienceTransmissionSystemTests {
     storage.Upsert(MakeAtmFile(fidelity: 0.5, complete: false), AtmFileBytes);
 
     var sys = vessel.Systems.Transmission;
-    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42);
+    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42, "ProbeOne");
 
     sys.Solve();
     Assert.IsNull(sys.ActivePacket);
@@ -105,7 +106,7 @@ public class ScienceTransmissionSystemTests {
     storage.Upsert(MakeAtmFile(fidelity: 1.0, complete: true), AtmFileBytes);
 
     var sys = vessel.Systems.Transmission;
-    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42);
+    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42, "ProbeOne");
 
     sys.Solve();
 
@@ -128,7 +129,7 @@ public class ScienceTransmissionSystemTests {
 
     var archive = new CapturingArchive();
     var sys = vessel.Systems.Transmission;
-    sys.SetCommNetwork(net, vEp, kEp, archive, 42);
+    sys.SetCommNetwork(net, vEp, kEp, archive, 42, "ProbeOne");
 
     // Tick 0: enqueue + submit packet.
     sys.Solve();
@@ -148,6 +149,7 @@ public class ScienceTransmissionSystemTests {
     Assert.AreEqual(1, archive.Received.Count, "archive should have received one file");
     Assert.AreEqual("atm-profile@Kerbin:troposphere", archive.Received[0].file.SubjectId);
     Assert.AreEqual(42u, archive.Received[0].vesselId);
+    Assert.AreEqual("ProbeOne", archive.Received[0].vesselName);
     Assert.AreEqual(2.0, archive.Received[0].ut, 1e-9);
   }
 
@@ -166,7 +168,7 @@ public class ScienceTransmissionSystemTests {
 
     var archive = new CapturingArchive();
     var sys = vessel.Systems.Transmission;
-    sys.SetCommNetwork(net, vEp, kEp, archive, 42);
+    sys.SetCommNetwork(net, vEp, kEp, archive, 42, "ProbeOne");
 
     sys.Solve();
     Assert.AreEqual(1, net.Jobs.Count(j => j.Status == JobStatus.Active));
@@ -197,7 +199,7 @@ public class ScienceTransmissionSystemTests {
     storage.Upsert(MakeAtmFile(fidelity: 1.0, complete: true), AtmFileBytes);
 
     var sys = vessel.Systems.Transmission;
-    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42);
+    sys.SetCommNetwork(net, vEp, kEp, new CapturingArchive(), 42, "ProbeOne");
 
     sys.Solve();
     net.Solve(0);

@@ -1,8 +1,11 @@
 <script lang="ts">
   // Full-page Nova scene that replaces the stock R&D building UI.
   // Routed to from `Hud.svelte` when `NovaSceneTopic.virtualScene === "RND"`.
-  // The actual tech-tree / archive content is future work — step 1
-  // ships the routing plumbing and a stub body that proves it.
+  //
+  // Tabbed shell: the Science archive ships first; Tech tree is a
+  // disabled placeholder while that work is under way. Tab chrome
+  // mirrors VesselPanel's chip pattern so the visual rhythm matches
+  // the rest of Nova's UI.
   //
   // Exiting back to the KSC: the title bar's Exit button (or Esc)
   // sends `setScene("")` to the mod side, which clears the topic and
@@ -11,6 +14,23 @@
   import { onMount } from 'svelte';
   import { getKsp } from '@dragonglass/telemetry/svelte';
   import { NovaSceneTopic } from '../../telemetry/nova-topics';
+  import ScienceArchiveView from './ScienceArchiveView.svelte';
+
+  type TabId = 'science' | 'tech';
+
+  interface Tab {
+    id:      TabId;
+    short:   string;
+    label:   string;
+    enabled: boolean;
+  }
+
+  const tabs: Tab[] = [
+    { id: 'science', short: 'SCI',  label: 'Science',   enabled: true  },
+    { id: 'tech',    short: 'TECH', label: 'Tech tree', enabled: false },
+  ];
+
+  let activeTab = $state<TabId>('science');
 
   const ksp = getKsp();
 
@@ -35,7 +55,7 @@
   <header class="rnd__head">
     <div class="rnd__head-text">
       <span class="rnd__title">Research &amp; Development</span>
-      <span class="rnd__subtitle">Nova replacement · stub</span>
+      <span class="rnd__subtitle">Nova</span>
     </div>
     <button
       type="button"
@@ -45,16 +65,31 @@
     >EXIT</button>
   </header>
 
+  <nav class="rnd__tabs" aria-label="R&amp;D sections">
+    {#each tabs as t (t.id)}
+      <button
+        type="button"
+        class="rnd__chip"
+        class:rnd__chip--active={activeTab === t.id}
+        class:rnd__chip--disabled={!t.enabled}
+        disabled={!t.enabled}
+        title={t.label}
+        onclick={() => t.enabled && (activeTab = t.id)}
+      >
+        <span class="rnd__chip-short">{t.short}</span>
+        <span class="rnd__chip-label">{t.label}</span>
+      </button>
+    {/each}
+  </nav>
+
   <main class="rnd__body">
-    <div class="rnd__pane">
-      <p class="rnd__lead">Tech tree and science archive will live here.</p>
-      <p class="rnd__sub">
-        Stock R&amp;D UI suppressed. Routing confirmed: the building click
-        flips Nova's virtual-scene topic, the Hud router navigates to
-        this view, and Exit / Esc round-trips back through
-        <code>setScene('')</code> to the mod side.
-      </p>
-    </div>
+    {#if activeTab === 'science'}
+      <ScienceArchiveView />
+    {:else}
+      <div class="rnd__placeholder">
+        <p class="rnd__lead">Tech tree coming soon</p>
+      </div>
+    {/if}
   </main>
 </div>
 
@@ -132,43 +167,83 @@
     outline: none;
   }
 
+  /* Tab chips. Pinned beneath the title bar — when content scrolls,
+     the chips stay visible so the player can pivot tabs without
+     scrolling back. Visual language mirrors VesselPanel's `.vp__chip`
+     so the two surfaces read as the same Nova grammar. */
+  .rnd__tabs {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-elev);
+  }
+  .rnd__chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--fg-dim);
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    cursor: pointer;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .rnd__chip:hover:not(.rnd__chip--disabled) {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+  }
+  .rnd__chip--active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(126, 245, 184, 0.08);
+    text-shadow: 0 0 6px var(--accent-glow);
+  }
+  .rnd__chip--disabled {
+    color: var(--fg-mute);
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  .rnd__chip-short {
+    font-variant-numeric: tabular-nums;
+  }
+  .rnd__chip-label {
+    font-size: 9.5px;
+    color: var(--fg-mute);
+    letter-spacing: 0.20em;
+    text-transform: uppercase;
+  }
+  .rnd__chip--active .rnd__chip-label {
+    color: var(--accent-soft);
+  }
+
   .rnd__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .rnd__placeholder {
     flex: 1 1 auto;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 24px;
-    min-height: 0;
-    overflow: auto;
-  }
-  .rnd__pane {
-    max-width: 520px;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    color: var(--fg-dim);
-    line-height: 1.55;
   }
   .rnd__lead {
     margin: 0;
-    color: var(--accent);
-    font-family: var(--font-display);
-    font-size: 14px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    text-shadow: 0 0 6px var(--accent-glow);
-  }
-  .rnd__sub {
-    margin: 0;
-    font-size: 12px;
     color: var(--fg-mute);
-  }
-  .rnd__sub code {
-    color: var(--fg);
-    background: rgba(126, 245, 184, 0.08);
-    padding: 1px 4px;
-    border-radius: 2px;
+    font-family: var(--font-display);
+    font-size: 13px;
+    letter-spacing: 0.20em;
+    text-transform: uppercase;
   }
 
   @keyframes rnd-in {

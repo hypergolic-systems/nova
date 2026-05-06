@@ -32,6 +32,7 @@ public class ScienceTransmissionSystem : BackgroundSystem {
   private Endpoint kscEndpoint;
   private IScienceArchive archive;
   private uint sourceVesselPersistentId;
+  private string sourceVesselName = "";
 
   // Queue of (storage, subjectId) refs awaiting transmission. We don't
   // store ScienceFile copies because the file lives in the storage and
@@ -58,12 +59,14 @@ public class ScienceTransmissionSystem : BackgroundSystem {
                              Endpoint vesselEndpoint,
                              Endpoint kscEndpoint,
                              IScienceArchive archive,
-                             uint sourceVesselPersistentId) {
+                             uint sourceVesselPersistentId,
+                             string sourceVesselName) {
     this.network = network;
     this.vesselEndpoint = vesselEndpoint;
     this.kscEndpoint = kscEndpoint;
     this.archive = archive;
     this.sourceVesselPersistentId = sourceVesselPersistentId;
+    this.sourceVesselName = sourceVesselName ?? "";
   }
 
   public IReadOnlyCollection<string> QueuedSubjects => tracked;
@@ -92,7 +95,7 @@ public class ScienceTransmissionSystem : BackgroundSystem {
           var ar = activeRef.Value;
           var file = ar.Storage.FindBySubject(ar.SubjectId);
           if (file != null) {
-            archive?.Receive(file, sourceVesselPersistentId, clock.UT);
+            archive?.Receive(file, sourceVesselPersistentId, sourceVesselName, clock.UT);
             ar.Storage.RemoveBySubject(ar.SubjectId);
             vessel?.Log?.Invoke(
                 $"[Science] archive received subject={ar.SubjectId} fidelity={file.Fidelity:F3} ut={clock.UT:F1}");

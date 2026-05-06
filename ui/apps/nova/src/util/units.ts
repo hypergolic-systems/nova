@@ -47,6 +47,19 @@ export function fmtBytes(bytes: number): string {
   return `${Math.round(bytes)} B`;
 }
 
+// UT (seconds since save start) → KSP-calendar Y/D label like
+// "Y2 d34". Day = 6 h = 21,600 s; year = 426 days = 9,201,600 s
+// (Kerbin's calendar). Returns "—" for non-positive / non-finite UT
+// (gaps, no record). Mirrors the format the in-game KSC clock uses.
+export function fmtUt(ut: number): string {
+  if (!Number.isFinite(ut) || ut <= 0) return '—';
+  const dayS = 21_600;
+  const yearS = 426 * dayS;
+  const year = Math.floor(ut / yearS) + 1;
+  const day  = Math.floor((ut % yearS) / dayS) + 1;
+  return `Y${year} d${day}`;
+}
+
 // Seconds → "1d 4h" / "3h 22m" / "12m 04s" / "42s". Whichever two
 // adjacent units render the magnitude legibly. Used for "produced …
 // ago" and "ETA …" strings.

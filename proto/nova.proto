@@ -269,6 +269,12 @@ message ArchivedScienceRecord {
   ScienceFile file                       = 1;
   double      received_at_ut             = 2;
   uint32      source_vessel_persistent_id = 3;
+  // Display name of the source vessel, captured at receive-time. Held
+  // on the record permanently so historical attribution survives the
+  // source vessel being destroyed, unloaded, or renamed. The UI reads
+  // this directly — never resolve via FlightGlobals at telemetry-emit
+  // time.
+  string      source_vessel_name         = 4;
 }
 
 // Thermometer state. Body / situation / body-year are NOT here —

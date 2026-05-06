@@ -120,4 +120,16 @@ public static class AtmosphericProfileExperiment {
     var layer = LayerAt(bodyName, altitude);
     return layer != null ? new SubjectKey(ExperimentId, bodyName, layer) : (SubjectKey?)null;
   }
+
+  // Enumerate every (body, layer) pair the experiment can produce a
+  // file for. Used by the science archive topic to render gaps —
+  // layers without a saved record show as outline-only cells. Order:
+  // body insertion order × bottom-to-top layers.
+  public static IEnumerable<(string body, string layer)> AllSubjects() {
+    foreach (var kv in Layers) {
+      foreach (var l in kv.Value) {
+        yield return (kv.Key, l.name);
+      }
+    }
+  }
 }

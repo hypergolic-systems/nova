@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Science;
@@ -18,15 +19,27 @@ public class NovaScienceArchive : IScienceArchive {
 
   public static NovaScienceArchive Instance { get; private set; } = new();
 
+  // Fired whenever the archive's contents may have changed: a record
+  // received, the singleton replaced (Reset), or contents replaced from
+  // a save (HydrateFrom). Telemetry topics subscribe to mark-dirty so
+  // they don't have to poll. Static + parameterless on purpose — the
+  // event survives Instance replacement and subscribers re-snapshot
+  // from `Instance` themselves.
+  public static event Action Changed;
+
   private readonly Dictionary<string, ArchivedScienceRecord> bySubject = new();
 
   // Replace the live singleton. Call when the game's archive context
   // changes (load, scene transition into a new game).
   public static void Reset() {
     Instance = new NovaScienceArchive();
+    Changed?.Invoke();
   }
 
-  public void Receive(ScienceFile file, uint sourceVesselPersistentId, double ut) {
+  public void Receive(ScienceFile file,
+                      uint sourceVesselPersistentId,
+                      string sourceVesselName,
+                      double ut) {
     if (file == null || string.IsNullOrEmpty(file.SubjectId)) return;
     if (bySubject.TryGetValue(file.SubjectId, out var existing)
         && existing.File != null
@@ -37,7 +50,9 @@ public class NovaScienceArchive : IScienceArchive {
       File = file,
       ReceivedAtUt = ut,
       SourceVesselPersistentId = sourceVesselPersistentId,
+      SourceVesselName = sourceVesselName ?? "",
     };
+    Changed?.Invoke();
   }
 
   public IEnumerable<ArchivedScienceRecord> AllRecords() => bySubject.Values;
@@ -51,11 +66,15 @@ public class NovaScienceArchive : IScienceArchive {
   // load completes.
   public void HydrateFrom(ScienceArchive proto) {
     bySubject.Clear();
-    if (proto == null) return;
+    if (proto == null) {
+      Changed?.Invoke();
+      return;
+    }
     foreach (var rec in proto.Records) {
       if (rec.File == null || string.IsNullOrEmpty(rec.File.SubjectId)) continue;
       bySubject[rec.File.SubjectId] = rec;
     }
+    Changed?.Invoke();
   }
 
   // Snapshot the live archive for save serialization.

@@ -607,6 +607,115 @@ export function decodeNovaScene(f: NovaSceneFrame): NovaSceneState {
   return { virtualScene: f[0] };
 }
 
+// ---------- Science archive (R&D scene) -------------------------
+
+// One subject's row in the per-(body, experiment) grid. `slice` is -1
+// for variant-only experiments (atm-profile) and 0..slicesPerYear-1 for
+// time-sliced experiments (lts). `sourceVessel` is the vessel name
+// captured at receive-time (persisted on `ArchivedScienceRecord`); it
+// is "" for unstudied gaps. UI never resolves it via runtime lookup.
+export type NovaArchiveSubjectFrame = [
+  variant: string,
+  slice: number,
+  fidelity: number,
+  receivedAtUt: number,
+  sourceVessel: string,
+];
+
+export type NovaArchiveBodyExperimentFrame = [
+  bodyName: string,
+  experimentId: string,
+  subjects: NovaArchiveSubjectFrame[],
+];
+
+export type NovaArchiveBodySummaryFrame = [
+  bodyName: string,
+  parentName: string,
+  archivedCount: number,
+  possibleCount: number,
+];
+
+// Wire frame for the singleton NovaScienceArchive topic. Two parallel
+// lists: a body summary roster (used by the body-list left rail and
+// the solar-system completion strip) and per-(body, experiment)
+// subject grids (used by the body-detail right pane).
+export type NovaScienceArchiveFrame = [
+  bodies: NovaArchiveBodySummaryFrame[],
+  grids: NovaArchiveBodyExperimentFrame[],
+];
+
+export interface BodySummary {
+  /** Body display name as KSP reports it ("Kerbin", "Mun"). */
+  bodyName: string;
+  /** Orbital parent's name; "" for the Sun. */
+  parentName: string;
+  /** Subjects with at least one transmitted record at KSC. */
+  archivedCount: number;
+  /** Universe of subjects this body could yield across every
+   *  experiment Nova currently supports. */
+  possibleCount: number;
+}
+
+export interface ArchiveSubject {
+  /** Variant identifier — atm-profile layer name ("troposphere"),
+   *  lts situation enum name ("SrfLanded"), etc. */
+  variant: string;
+  /** -1 for variant-only experiments, otherwise the slice index
+   *  within the body-year (0..slicesPerYear-1 for lts). */
+  slice: number;
+  /** [0,1]. 0 means no archived record. */
+  fidelity: number;
+  /** UT when the record was received at KSC; 0 for gaps. */
+  receivedAtUt: number;
+  /** Vessel name persisted on the record at receive-time. "" for
+   *  gaps. Persisted in the proto so it survives the source vessel
+   *  being renamed, unloaded, or destroyed. */
+  sourceVessel: string;
+}
+
+export interface NovaScienceArchive {
+  /** Body roster in solar-system order (depth-first, matches
+   *  `FlightGlobals.Bodies`). */
+  bodies: BodySummary[];
+  /** Indexed lookup: bodyName → experimentId → subjects[]. Subjects
+   *  arrive in the experiment's canonical enumeration order
+   *  (atm: bottom→top layers; lts: situations × slices 0..11). */
+  subjects: Map<string, Map<string, ArchiveSubject[]>>;
+}
+
+export const NovaScienceArchiveTopic: Topic<NovaScienceArchiveFrame> =
+  topic<NovaScienceArchiveFrame>('NovaScienceArchive');
+
+function decodeArchiveSubject(f: NovaArchiveSubjectFrame): ArchiveSubject {
+  return {
+    variant:      f[0],
+    slice:        f[1],
+    fidelity:     f[2],
+    receivedAtUt: f[3],
+    sourceVessel: f[4],
+  };
+}
+
+export function decodeScienceArchive(f: NovaScienceArchiveFrame): NovaScienceArchive {
+  const [bodyFrames, gridFrames] = f;
+  const bodies: BodySummary[] = bodyFrames.map(([bodyName, parentName, archivedCount, possibleCount]) => ({
+    bodyName,
+    parentName,
+    archivedCount,
+    possibleCount,
+  }));
+  const subjects = new Map<string, Map<string, ArchiveSubject[]>>();
+  for (const [bodyName, experimentId, subjFrames] of gridFrames) {
+    let perBody = subjects.get(bodyName);
+    if (!perBody) {
+      perBody = new Map();
+      subjects.set(bodyName, perBody);
+    }
+    perBody.set(experimentId, subjFrames.map(decodeArchiveSubject));
+  }
+  return { bodies, subjects };
+}
+
 // ---------- Decoders -------------------------------------------
 
 // Stock parts repeat their category in the title ("OX-STAT Photovoltaic

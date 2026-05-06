@@ -130,13 +130,18 @@ fn dump_save(save: &SaveFile) {
                     Some(f) => f,
                     None => continue,
                 };
+                let vessel_label = if r.source_vessel_name.is_empty() {
+                    format!("#{}", r.source_vessel_persistent_id)
+                } else {
+                    format!("{} (#{})", r.source_vessel_name, r.source_vessel_persistent_id)
+                };
                 println!(
-                    "  {} — fidelity={:.3} produced_at={:.1} received_at={:.1} from_vessel={} ({})",
+                    "  {} — fidelity={:.3} produced_at={:.1} received_at={:.1} from={} ({})",
                     f.subject_id,
                     f.fidelity,
                     f.produced_at,
                     r.received_at_ut,
-                    r.source_vessel_persistent_id,
+                    vessel_label,
                     f.instrument
                 );
             }

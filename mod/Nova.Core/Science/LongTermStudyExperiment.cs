@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Nova.Core.Science;
 
@@ -9,6 +10,30 @@ public static class LongTermStudyExperiment {
   public const string ExperimentId   = "lts";
   public const long   FileSizeBytes  = 5_000;
   public const int    SlicesPerYear  = 12;
+
+  // Situations the experiment recognises. `Situation.None` is excluded
+  // — vessels with no situation can't host an LTS file. The rendering
+  // order here is the canonical UI order (surface → flying → space).
+  public static readonly Situation[] SupportedSituations = new[] {
+    Situation.SrfLanded,
+    Situation.SrfSplashed,
+    Situation.FlyingLow,
+    Situation.FlyingHigh,
+    Situation.InSpaceLow,
+    Situation.InSpaceHigh,
+  };
+
+  // Enumerate every (situation, sliceIndex) pair the experiment can
+  // produce a file for at `bodyName`. Body-independent today (every
+  // body supports every situation × every slice); kept body-keyed so a
+  // future per-body filter (e.g. atmospheric-only situations on
+  // airless bodies) has a place to land.
+  public static IEnumerable<(Situation situation, int sliceIndex)>
+      AllSubjectsFor(string bodyName) {
+    foreach (var s in SupportedSituations) {
+      for (int i = 0; i < SlicesPerYear; i++) yield return (s, i);
+    }
+  }
 
   public static SubjectKey SubjectFor(
       string bodyName, Situation situation, double ut, double bodyYearSeconds) {
