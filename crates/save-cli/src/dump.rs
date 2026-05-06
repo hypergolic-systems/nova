@@ -121,6 +121,27 @@ fn dump_save(save: &SaveFile) {
             );
         }
     }
+    if let Some(arch) = &save.science_archive {
+        if !arch.records.is_empty() {
+            println!();
+            println!("Science Archive ({} record(s)):", arch.records.len());
+            for r in &arch.records {
+                let f = match &r.file {
+                    Some(f) => f,
+                    None => continue,
+                };
+                println!(
+                    "  {} — fidelity={:.3} produced_at={:.1} received_at={:.1} from_vessel={} ({})",
+                    f.subject_id,
+                    f.fidelity,
+                    f.produced_at,
+                    r.received_at_ut,
+                    r.source_vessel_persistent_id,
+                    f.instrument
+                );
+            }
+        }
+    }
     println!();
     for (i, vessel) in save.vessels.iter().enumerate() {
         println!("--- Vessel {i} ---");
