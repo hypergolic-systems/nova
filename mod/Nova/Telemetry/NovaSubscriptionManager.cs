@@ -14,12 +14,16 @@ namespace Nova.Telemetry;
 //
 // Recognised topic prefixes:
 //   NovaVesselStructure/<vesselGuid>  → NovaVesselStructureTopic
+//   NovaOrbit/<vesselGuid>            → NovaOrbitTopic
+//   NovaComms/<vesselGuid>            → NovaCommsTopic
 //   NovaPart/<partId>                 → NovaPartTopic
 //   NovaScience/<partId>              → NovaScienceTopic
 //   NovaStorage/<partId>              → NovaStorageTopic
 public sealed class NovaSubscriptionManager : MonoBehaviour {
   private const string LogPrefix = "[Nova/Telemetry] ";
   private const string VesselPrefix  = "NovaVesselStructure/";
+  private const string OrbitPrefix   = "NovaOrbit/";
+  private const string CommsPrefix   = "NovaComms/";
   private const string PartPrefix    = "NovaPart/";
   private const string SciencePrefix = "NovaScience/";
   private const string StoragePrefix = "NovaStorage/";
@@ -39,6 +43,18 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(VesselPrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselPrefix, out var vessel)) {
         AttachOrEnable<NovaVesselStructureTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(OrbitPrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, OrbitPrefix, out var vessel)) {
+        AttachOrEnable<NovaOrbitTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(CommsPrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, CommsPrefix, out var vessel)) {
+        AttachOrEnable<NovaCommsTopic>(vessel.gameObject);
       }
       return;
     }
@@ -66,6 +82,18 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(VesselPrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselPrefix, out var vessel)) {
         DisableIfPresent<NovaVesselStructureTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(OrbitPrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, OrbitPrefix, out var vessel)) {
+        DisableIfPresent<NovaOrbitTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(CommsPrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, CommsPrefix, out var vessel)) {
+        DisableIfPresent<NovaCommsTopic>(vessel.gameObject);
       }
       return;
     }

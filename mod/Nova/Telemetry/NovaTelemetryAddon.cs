@@ -55,6 +55,10 @@ public class NovaTelemetryAddon : MonoBehaviour {
           host.AddComponent<NovaScienceArchiveTopic>();
           NovaLog.Log("NovaScienceArchive topic attached to Dragonglass host");
         }
+        if (host.GetComponent<NovaTimewarpTopic>() == null) {
+          host.AddComponent<NovaTimewarpTopic>();
+          NovaLog.Log("NovaTimewarp topic attached to Dragonglass host");
+        }
         yield break;
       }
       yield return null;

@@ -607,6 +607,135 @@ export function decodeNovaScene(f: NovaSceneFrame): NovaSceneState {
   return { virtualScene: f[0] };
 }
 
+// ---------- Flight HUD top bar ----------------------------------
+
+// Singleton — KSP timewarp state. UT/MET deliberately omitted; UT
+// would push a wire frame per Update() during warp. The HUD top bar
+// derives the mission clock from the per-vessel NovaOrbit/<id> topic
+// instead.
+//
+// Wire format: [rate, mode]
+//   rate — float, TimeWarp.CurrentRate (1.0 = realtime)
+//   mode — "physics" (low/atmospheric warp) or "rails" (high warp)
+export type NovaTimewarpFrame = [rate: number, mode: 'physics' | 'rails'];
+
+export interface NovaTimewarp {
+  rate: number;
+  mode: 'physics' | 'rails';
+}
+
+export const NovaTimewarpTopic: Topic<NovaTimewarpFrame> =
+  topic<NovaTimewarpFrame>('NovaTimewarp');
+
+export function decodeTimewarp(f: NovaTimewarpFrame): NovaTimewarp {
+  return { rate: f[0], mode: f[1] };
+}
+
+// Per-vessel — orbit elements + mission-time pair. Bundling
+// missionTime/launchTime here saves a third subscription for the HUD
+// top bar; both readouts share the same per-frame cadence anyway.
+//
+// `period` is 0 for sub-orbital / hyperbolic trajectories
+// (eccentricity ≥ 1). `apA`/`peA` are 0 only when `vessel.orbit` is
+// itself null (rare scene transitions); the UI greys out the orbit
+// section in that case rather than displaying zeros.
+// `inclination` is in degrees (matches KSP's stock unit).
+export type NovaOrbitFrame = [
+  vesselId: string,
+  bodyName: string,
+  apA: number,
+  peA: number,
+  eccentricity: number,
+  inclination: number,
+  period: number,
+  missionTime: number,
+  launchTime: number,
+];
+
+export interface NovaOrbit {
+  vesselId: string;
+  bodyName: string;
+  apA: number;
+  peA: number;
+  eccentricity: number;
+  inclination: number;
+  period: number;
+  missionTime: number;
+  launchTime: number;
+}
+
+export const NovaOrbitTopic = (vesselId: string): Topic<NovaOrbitFrame> =>
+  topic<NovaOrbitFrame>(`NovaOrbit/${vesselId}`);
+
+export function decodeOrbit(f: NovaOrbitFrame): NovaOrbit {
+  return {
+    vesselId:     f[0],
+    bodyName:     f[1],
+    apA:          f[2],
+    peA:          f[3],
+    eccentricity: f[4],
+    inclination:  f[5],
+    period:       f[6],
+    missionTime:  f[7],
+    launchTime:   f[8],
+  };
+}
+
+// Per-vessel — comms summary. `bottleneckBps` is the rate-limiting
+// edge along the chosen vessel→KSC max-rate path; 0 when no path
+// exists. `directSnr` / `directRateBps` are the direct vessel→KSC
+// edge's SNR (linear) and theoretical pre-bottleneck rate; 0 when
+// no direct edge exists (vessel reachable only via relay).
+// `directMaxRateBps` is the antenna-pair hardware ceiling along
+// vessel→KSC; the UI uses `directRateBps / directMaxRateBps` as the
+// "fraction of ideal" for the signal-bar gauge so bars saturate
+// independent of the absolute units this game runs at. The XMIT
+// block (`tx*`) is populated only while a Packet is in flight; the
+// UI hides it entirely when `txActive` is false.
+export type NovaCommsFrame = [
+  vesselId: string,
+  hasPathToKsc: 0 | 1,
+  bottleneckBps: number,
+  directSnr: number,
+  directRateBps: number,
+  directMaxRateBps: number,
+  txActive: 0 | 1,
+  txRateBps: number,
+  txDeliveredBytes: number,
+  txTotalBytes: number,
+];
+
+export interface NovaComms {
+  vesselId: string;
+  hasPathToKsc: boolean;
+  bottleneckBps: number;
+  directSnr: number;
+  directRateBps: number;
+  directMaxRateBps: number;
+  txActive: boolean;
+  txRateBps: number;
+  txDeliveredBytes: number;
+  txTotalBytes: number;
+}
+
+export const NovaCommsTopic = (vesselId: string): Topic<NovaCommsFrame> =>
+  topic<NovaCommsFrame>(`NovaComms/${vesselId}`);
+
+export function decodeComms(f: NovaCommsFrame): NovaComms {
+  return {
+    vesselId:         f[0],
+    hasPathToKsc:     f[1] === 1,
+    bottleneckBps:    f[2],
+    directSnr:        f[3],
+    directRateBps:    f[4],
+    directMaxRateBps: f[5],
+    txActive:         f[6] === 1,
+    txRateBps:        f[7],
+    txDeliveredBytes: f[8],
+    txTotalBytes:     f[9],
+  };
+}
+
 // ---------- Science archive (R&D scene) -------------------------
 
 // One subject's row in the per-(body, experiment) grid. `slice` is -1

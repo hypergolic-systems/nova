@@ -12,6 +12,7 @@
     ALTITUDE_SCALE,
   } from '@dragonglass/instruments';
   import VesselPanel from './components/VesselPanel.svelte';
+  import FlightTopBar from './components/FlightTopBar.svelte';
 
   // Layout classes (.hud, .navslot, .staging-stack, .navball-cluster) and
   // the per-instrument SVG styling are defined in flight.css inside
@@ -33,6 +34,8 @@
     : 'SURFACE',
   );
 </script>
+
+<FlightTopBar />
 
 <div class="hud hud--navball-only">
   <div class="navslot navslot--bottom-left">
