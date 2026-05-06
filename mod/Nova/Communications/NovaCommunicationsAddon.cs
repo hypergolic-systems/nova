@@ -244,6 +244,12 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     if (ut >= nextSolveUT || Network.NeedsSolve) {
       var sw = System.Diagnostics.Stopwatch.StartNew();
       Network.Solve(ut);
+      // Refresh per-endpoint path-to-KSC caches so per-vessel
+      // telemetry topics can read connectivity state without
+      // running MaxRatePath.Find every frame. Tied to Solve cadence
+      // (event-driven), not Update — between solves nothing relevant
+      // changes about the routing.
+      Network.RefreshHomePathSummaries(kscEndpoint);
       sw.Stop();
       var maxDt = Network.MaxTickDt();
       nextSolveUT = ut + maxDt;

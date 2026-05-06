@@ -200,6 +200,48 @@ public class CommunicationsNetwork {
     return graph;
   }
 
+  // Walk every non-home endpoint and store its path-to-home summary
+  // (path bottleneck + direct-edge SNR/rate/ceiling) on the endpoint
+  // itself. Designed to run once per Solve so per-frame readers
+  // (NovaCommsTopic) can poll the cached fields without re-running
+  // MaxRatePath.Find every Update — that search allocates several
+  // dictionaries/sets/lists per call and burns GC at scale. The home
+  // endpoint's own summary is reset to default; the network has no
+  // notion of "home" outside this call, so leaving the field set
+  // would lie about a self-link.
+  public void RefreshHomePathSummaries(Endpoint home) {
+    if (home == null) return;
+    foreach (var ep in endpoints) {
+      if (ep == null) continue;
+      if (ep == home) {
+        ep.PathToHome = default;
+        continue;
+      }
+      var summary = new PathSummary();
+
+      var path = MaxRatePath.Find(graph, ep, home);
+      if (path != null && path.Count > 0) {
+        summary.HasPath = true;
+        var minRate = double.PositiveInfinity;
+        foreach (var l in path) {
+          if (l.RateBps < minRate) minRate = l.RateBps;
+        }
+        summary.BottleneckBps = minRate == double.PositiveInfinity ? 0 : minRate;
+      }
+
+      foreach (var l in graph.Links) {
+        if (l.From == ep && l.To == home) {
+          summary.DirectSnr = l.Snr;
+          summary.DirectRateBps = l.RateBps;
+          break;
+        }
+      }
+      summary.DirectMaxRateBps = LinkMaxCeiling(ep, home);
+
+      ep.PathToHome = summary;
+    }
+  }
+
   private void Integrate(double dt) {
     foreach (var job in jobs) {
       if (job.Status != JobStatus.Active) continue;

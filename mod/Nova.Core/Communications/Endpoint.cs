@@ -57,6 +57,17 @@ public class Endpoint {
   // (transmit, receive) pair per directed edge when computing rate.
   public List<Antenna> Antennas = new();
 
+  // Cached summary of this endpoint's path back to the network's
+  // designated home (KSC in the flight scene). Populated by
+  // CommunicationsNetwork.RefreshHomePathSummaries after each Solve;
+  // consumers (telemetry topics, UI) read these fields directly
+  // instead of re-running MaxRatePath.Find every frame — the search
+  // allocates a Dictionary/HashSet/List per call, which adds up at
+  // 60 Hz × N vessels and shows up as GC pressure. `HasPath` is false
+  // when no positive-rate route exists; on the home endpoint itself
+  // the summary is `default` (self-link not meaningful).
+  public PathSummary PathToHome;
+
   // Build an Endpoint from a VirtualVessel by harvesting its Antenna
   // components. Used by the future addon driver; useful for any
   // integration test that wants a vessel-shaped endpoint.
@@ -65,4 +76,18 @@ public class Endpoint {
     ep.Antennas.AddRange(vessel.AllComponents().OfType<Antenna>());
     return ep;
   }
+}
+
+// Cached connectivity summary from one endpoint to a designated home.
+// Refreshed by CommunicationsNetwork once per Solve; readers can
+// poll without allocating. `Direct*` fields cover the single direct
+// edge (vessel→home) — they're 0 when no direct edge exists (vessel
+// reachable only via relay), in which case `HasPath`/`BottleneckBps`
+// still reflect the relayed path.
+public struct PathSummary {
+  public bool HasPath;
+  public double BottleneckBps;
+  public double DirectSnr;
+  public double DirectRateBps;
+  public double DirectMaxRateBps;
 }
