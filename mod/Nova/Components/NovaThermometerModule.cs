@@ -20,6 +20,13 @@ namespace Nova.Components;
 // VirtualVessel.Tick.
 public class NovaThermometerModule : NovaPartModule {
 
+  // Per-frame state for atm-profile layer-boundary snap. We need both
+  // previous altitude (to derive ascent/descent direction) and previous
+  // layer (to detect entry/exit). Reset whenever the experiment is
+  // disabled so a re-enable starts fresh.
+  private double prevAtmAltitude = double.NaN;
+  private string prevAtmLayer = null;
+
   public void FixedUpdate() {
     if (!HighLogic.LoadedSceneIsFlight || vessel == null || Components == null) return;
 
@@ -39,24 +46,49 @@ public class NovaThermometerModule : NovaPartModule {
   }
 
   // Direct-measurement update. While enabled and in an applicable
-  // layer, push a reading into the file each tick. `WriteAtmReading`
-  // creates-or-upserts the file; no separate "seal" step.
-  private static void UpdateAtmosphericProfile(
+  // layer, push a reading into the file each tick. WriteAtmReading
+  // creates-or-upserts the file; layer-boundary transitions trigger
+  // a SnapAtmBoundary call so recorded_min/max latch on the exact
+  // layer edge instead of the FixedUpdate-discrete sample value.
+  private void UpdateAtmosphericProfile(
       Thermometer thermometer,
       Nova.Core.Components.IVesselContext c,
       double ut) {
     if (!thermometer.AtmEnabled) {
       thermometer.AtmActive = false;
       thermometer.AtmCurrentLayer = null;
+      prevAtmAltitude = double.NaN;
+      prevAtmLayer = null;
       return;
     }
 
-    var layer = AtmosphericProfileExperiment.LayerAt(c.BodyName, c.Altitude);
-    thermometer.AtmCurrentLayer = layer;
-    thermometer.AtmActive = layer != null;
+    var newLayer = AtmosphericProfileExperiment.LayerAt(c.BodyName, c.Altitude);
+    thermometer.AtmCurrentLayer = newLayer;
+    thermometer.AtmActive = newLayer != null;
 
-    if (layer == null) return;
-    thermometer.WriteAtmReading(c.BodyName, layer, c.Altitude, ut);
+    // First tick after enable has no prior altitude — assume ascending
+    // (the typical launch case). Subsequent ticks use real direction.
+    bool ascending = double.IsNaN(prevAtmAltitude) || c.Altitude > prevAtmAltitude;
+    bool layerChanged = newLayer != prevAtmLayer;
+
+    // Exit snap: rocket left prevAtmLayer this tick. Snap the boundary
+    // it crossed on the way out (top if ascending, floor if descending).
+    if (layerChanged && prevAtmLayer != null) {
+      thermometer.SnapAtmBoundary(c.BodyName, prevAtmLayer, snapTop: ascending);
+    }
+
+    if (newLayer != null) {
+      thermometer.WriteAtmReading(c.BodyName, newLayer, c.Altitude, ut);
+      // Entry snap: rocket entered newLayer this tick. Snap the boundary
+      // it crossed on the way in (floor if ascending, top if descending).
+      // After WriteAtmReading so the file is guaranteed to exist.
+      if (layerChanged) {
+        thermometer.SnapAtmBoundary(c.BodyName, newLayer, snapTop: !ascending);
+      }
+    }
+
+    prevAtmLayer = newLayer;
+    prevAtmAltitude = c.Altitude;
   }
 
   // Interpolated-measurement creation. We only need to ensure a file

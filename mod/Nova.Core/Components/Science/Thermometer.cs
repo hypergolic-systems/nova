@@ -111,15 +111,55 @@ public class Thermometer : VirtualComponent {
     file.Fidelity = AtmosphericProfileExperiment.FidelityFromAltCoverage(
         file.RecordedMinAltM, file.RecordedMaxAltM,
         bottomAlt.Value, layer.Value.topAltMeters);
-    // Mark complete the moment the layer is fully covered. Eligibility
-    // for transmission to KSC is gated on this flag — partial profiles
-    // stay local until the player completes the layer or discards the
-    // file. A re-entered layer would reset min/max and re-derive
-    // fidelity downward, but is_complete latches to true once set
-    // (the file has nothing more to learn).
-    if (file.Fidelity >= 1.0) file.IsComplete = true;
+    // Once the layer is fully covered, latch is_complete so the
+    // transmission queue can pick it up. With layer-boundary snapping
+    // (see SnapAtmBoundary) fidelity hits 1.0 exactly on a clean
+    // traversal; the 0.999 floor is a safety margin for any path that
+    // bypasses the snap (e.g. re-entry from above without crossing
+    // both boundaries).
+    if (file.Fidelity >= 0.999) file.IsComplete = true;
 
     storage.Upsert(file, AtmosphericProfileExperiment.FileSizeBytes);
+  }
+
+  // Snap the recorded-altitude bound for `subject` to the layer's
+  // floor or top. Called by the mod-side adapter on layer-boundary
+  // crossings: the per-tick WriteAtmReading samples are FixedUpdate-
+  // discrete, so the sample landing inside a layer is always δ past
+  // the boundary the rocket just crossed (or about to cross on exit).
+  // Without snapping, fidelity asymptotes at ~0.999 instead of 1.0.
+  //
+  // No-op if the file for `subject` doesn't exist yet — caller is
+  // expected to call this AFTER WriteAtmReading on entry, so the
+  // file is in place.
+  public void SnapAtmBoundary(string bodyName, string layerName, bool snapTop) {
+    if (Vessel == null) return;
+    var layer = AtmosphericProfileExperiment.LayerByName(bodyName, layerName);
+    if (!layer.HasValue) return;
+    var bottomAlt = AtmosphericProfileExperiment.LayerBottomAlt(bodyName, layerName);
+    if (!bottomAlt.HasValue) return;
+
+    var subjectId = new SubjectKey(
+        AtmosphericProfileExperiment.ExperimentId, bodyName, layerName).ToString();
+
+    DataStorage holding = null;
+    foreach (var s in Vessel.AllComponents().OfType<DataStorage>()) {
+      if (s.HasSubject(subjectId)) { holding = s; break; }
+    }
+    if (holding == null) return;
+
+    var file = holding.FindBySubject(subjectId);
+    if (file == null) return;
+
+    if (snapTop) {
+      file.RecordedMaxAltM = Math.Max(file.RecordedMaxAltM, layer.Value.topAltMeters);
+    } else {
+      file.RecordedMinAltM = Math.Min(file.RecordedMinAltM, bottomAlt.Value);
+    }
+    file.Fidelity = AtmosphericProfileExperiment.FidelityFromAltCoverage(
+        file.RecordedMinAltM, file.RecordedMaxAltM,
+        bottomAlt.Value, layer.Value.topAltMeters);
+    if (file.Fidelity >= 0.999) file.IsComplete = true;
   }
 
   // Interpolated-measurement creation for lts. Idempotent: if a file
