@@ -175,15 +175,30 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     return NovaBodyRegistry.ExtractKepler(orbit, NovaBodyRegistry.For(orbit.referenceBody));
   }
 
-  // Refresh a vessel's endpoint — drop and re-add. Used when the
-  // vessel transitions on/off rails so Motion is re-evaluated.
+  // Refresh a vessel's endpoint — re-evaluate Motion / PrimaryBody in
+  // place on the existing Endpoint object. Used when the vessel
+  // transitions on/off rails or crosses an SOI. Mutating in place
+  // (rather than drop + re-add) preserves any in-flight Job whose
+  // Source field references this endpoint — a drop/re-add would
+  // strand active Packets on the deallocated endpoint and force them
+  // to be cancelled, losing all DeliveredBytes progress.
   public void RefreshVesselEndpoint(Vessel v) {
     if (v == null) return;
     if (!vesselEndpoints.TryGetValue(v.id, out var existing)) return;
-    var antennas = existing.Antennas.ToList();
-    Network.RemoveEndpoint(existing);
-    vesselEndpoints.Remove(v.id);
-    AddVesselEndpoint(v, antennas);
+
+    var orbit = v.orbitDriver?.orbit;
+    var refBody = orbit?.referenceBody;
+
+    existing.Motion = ExtractMotionFor(v, orbit);
+    existing.IsPredictable = existing.Motion != null;
+    existing.PrimaryBody = refBody != null ? NovaBodyRegistry.For(refBody) : null;
+
+    // Motion / SOI change invalidates the per-link horizon + occluder
+    // cache; same flow as drop/re-add used to trigger via AddEndpoint.
+    Network.Invalidate();
+
+    var motionTag = existing.Motion is KeplerMotion ? "rails-Kepler" : "active/surface";
+    NovaLog.Log($"[Comms] ~endpoint {v.vesselName} ({motionTag})");
   }
 
   public void RemoveVesselEndpoint(Guid vesselId) {
