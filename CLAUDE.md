@@ -47,7 +47,7 @@ ui/                     # Svelte UI app, deployed to GameData/Nova/UI/
   packages/             # @nova/* shared libs (placeholder)
   external/dragonglass  # symlink → $DRAGONGLASS_PATH (gitignored)
 crates/                 # Cargo workspace (members = crates/*)
-  save-cli/             # nova-save-cli — inspector for .hgs / .hgc files
+  save-cli/             # nova-save-cli — inspector for .nvs / .nvc files
 proto/nova.proto        # persistence schema, source-of-truth for both C# and Rust
 configs/overrides/      # ModuleManager .cfg patches → GameData/Nova/Patches/
 stubs/                  # KSP/Unity managed DLLs (KSP 1.12.5)
@@ -122,11 +122,11 @@ KSP 1.x is dead; Squad will never ship another patch. The decompiled IL in `~/de
 
 ### Persistence wire format (`proto/nova.proto`)
 
-The `.hgc` (craft) and `.hgs` (save) file formats are defined by `proto/nova.proto`. `just proto` regenerates `mod/Nova.Core/Persistence/Protos/Generated/nova.cs` via the `protobuf-net.protogen` dotnet tool (versioned in `.config/dotnet-tools.json`). Generated files are gitignored.
+The `.nvc` (craft) and `.nvs` (save) file formats are defined by `proto/nova.proto`. `just proto` regenerates `mod/Nova.Core/Persistence/Protos/Generated/nova.cs` via the `protobuf-net.protogen` dotnet tool (versioned in `.config/dotnet-tools.json`). Generated files are gitignored.
 
 Conventions:
 - **Don't edit the generated `.cs`** — regenerate from the proto.
-- **No backwards compatibility.** Old proto bytes, old `.hgc`/`.hgs` files, old sidecar instances are all fair game to break. Field numbers can be reused freely; retired fields don't need to be `reserved`. Active-development mod, single user — re-saves and reinstalls are cheap, fallback/migration code in loaders is permanent overhead. If a schema change breaks an existing save, the right answer is "rebuild the craft," not a defensive load.
+- **No backwards compatibility.** Old proto bytes, old `.nvc`/`.nvs` files, old sidecar instances are all fair game to break. Field numbers can be reused freely; retired fields don't need to be `reserved`. Active-development mod, single user — re-saves and reinstalls are cheap, fallback/migration code in loaders is permanent overhead. If a schema change breaks an existing save, the right answer is "rebuild the craft," not a defensive load.
 - **Generated property names** follow protogen's pluralization (`repeated Kerbal crew` → `Crews`) and casing (`launch_id` → `LaunchId`). When a field name surprises you, check the generated file.
 - **Repeated message types** become get-only `List<T>` (use collection-initializer `Foo = { … }` or `.AddRange(…)`); **repeated primitive types** become `T[]` (writable).
 
@@ -138,7 +138,7 @@ ModuleManager patches that strip stock modules and inject Nova's. Module names m
 
 - **Google.OrTools 9.8.3296** + `osx-x64` native runtime — LP solver. The native `.dylib` ships in `GameData/Nova/` (justfile dist recipe).
 - **Lib.Harmony 2.2.2** — runtime KSP patching. Bundled with `Nova.dll`.
-- **protobuf-net 2.4.8** — binary serialization for `.hgs`/`.hgc` files. Bindings generated from `proto/nova.proto` by `protobuf-net.protogen`.
+- **protobuf-net 2.4.8** — binary serialization for `.nvs`/`.nvc` files. Bindings generated from `proto/nova.proto` by `protobuf-net.protogen`.
 - **Moq 4.20.70** — mocking, tests only.
 - **Dragonglass** (`~/dev/dragonglass` via `$DRAGONGLASS_PATH`) — hard runtime dep. `Dragonglass.Telemetry.dll` for telemetry topic types; `Dragonglass.Hud.dll` for `SidecarHost.OverrideEntry`. DLLs vendored into `stubs/dragonglass/` by `just sync-dragonglass-stubs`. Nova does NOT ship them — Dragonglass installs them from its own deploy.
 
@@ -166,11 +166,11 @@ Don't add bridge/CLI commands inside Nova — they live in kspcli.
 
 ## save-cli (Rust)
 
-`crates/save-cli/` produces the `nova-save-cli` binary — a stand-alone inspector for the binary `.hgs` / `.hgc` files Nova writes. It auto-detects file type from the HGS magic-byte header and prints the decoded proto tree to stdout.
+`crates/save-cli/` produces the `nova-save-cli` binary — a stand-alone inspector for the binary `.nvs` / `.nvc` files Nova writes. It auto-detects file type from the HGS magic-byte header and prints the decoded proto tree to stdout.
 
 ```
 just save-cli-build
-just save-cli -- dump path/to/some.hgs
+just save-cli -- dump path/to/some.nvs
 ```
 
 The build script (`crates/save-cli/build.rs`) compiles `proto/nova.proto` via `prost-build`, so the Rust types stay in lockstep with the C# bindings — `proto/nova.proto` is the single source of truth for both. When you add a field to the proto, both `just proto` (C# regen) and `cargo build` (Rust regen) need to run.

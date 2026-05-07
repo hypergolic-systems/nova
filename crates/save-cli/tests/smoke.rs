@@ -83,7 +83,7 @@ fn dump_craft_roundtrip() {
 
     let payload = craft.encode_to_vec();
     let dir = tempdir();
-    let path = dir.join("test.hgc");
+    let path = dir.join("test.nvc");
     write_hgs_fixture('C', &payload, &path);
 
     let (code, stdout, stderr) = run_dump(&path);
@@ -123,7 +123,7 @@ fn dump_save_roundtrip() {
 
     let payload = save.encode_to_vec();
     let dir = tempdir();
-    let path = dir.join("test.hgs");
+    let path = dir.join("test.nvs");
     write_hgs_fixture('S', &payload, &path);
 
     let (code, stdout, stderr) = run_dump(&path);
@@ -140,7 +140,7 @@ fn dump_save_roundtrip() {
 #[test]
 fn rejects_bad_magic() {
     let dir = tempdir();
-    let path = dir.join("garbage.hgs");
+    let path = dir.join("garbage.nvs");
     fs::write(&path, b"not a real save").unwrap();
 
     let (code, _, stderr) = run_dump(&path);

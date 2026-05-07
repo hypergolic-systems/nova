@@ -13,7 +13,7 @@ using Proto = Nova.Core.Persistence.Protos;
 namespace Nova.Patches;
 
 /// <summary>
-/// Make the craft browser work with .hgc files. Metadata and thumbnails
+/// Make the craft browser work with .nvc files. Metadata and thumbnails
 /// are read from the embedded CraftMetadata (protobuf field 1) without
 /// parsing the full vessel payload.
 /// Stock craft are excluded entirely.
@@ -37,14 +37,14 @@ public static class CraftBrowserPatches {
     try {
       if (isAll) {
         var opt = isSub ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-        __result = GetAllGameHgcFiles(__instance, opt);
+        __result = GetAllGameNvcFiles(__instance, opt);
         return false;
       }
       var dc = (DirectoryController)directoryControllerField.GetValue(__instance);
       var dir = new DirectoryInfo(dc.CurrentSelectedDirectoryPath);
       if (!dir.Exists) dir.Create();
       var search = isSub ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-      __result = dir.GetFiles("*.hgc", search);
+      __result = dir.GetFiles("*.nvc", search);
     } catch {
       __result = new FileInfo[0];
     }
@@ -64,12 +64,12 @@ public static class CraftBrowserPatches {
 
   /// <summary>
   /// Stock pipeSelectedItem runs KSPUpgradePipeline.Process on the craft's
-  /// ConfigNode, which is null for .hgc files. Skip the pipeline and call
+  /// ConfigNode, which is null for .nvc files. Skip the pipeline and call
   /// the file-selected callback directly.
   /// </summary>
   /// <summary>
   /// Stock pipeSelectedItem runs KSPUpgradePipeline.Process on the craft's
-  /// ConfigNode, which is null for .hgc files. Skip the pipeline and use
+  /// ConfigNode, which is null for .nvc files. Skip the pipeline and use
   /// the file-path load path instead (EditorLogic registers with
   /// OnConfigNodeSelected, not OnFileSelected, so we call LoadShipFromFile).
   /// </summary>
@@ -77,7 +77,7 @@ public static class CraftBrowserPatches {
   [HarmonyPatch("pipeSelectedItem")]
   public static bool PipeSelectedItem_Prefix(CraftBrowserDialog __instance,
       CraftEntry sItem, CraftBrowserDialog.LoadType loadType) {
-    if (!sItem.fullFilePath.EndsWith(".hgc")) return true;
+    if (!sItem.fullFilePath.EndsWith(".nvc")) return true;
 
     AccessTools.Method(typeof(CraftBrowserDialog), "HideForLater")
       .Invoke(__instance, null);
@@ -85,7 +85,7 @@ public static class CraftBrowserPatches {
     return false;
   }
 
-  static FileInfo[] GetAllGameHgcFiles(CraftBrowserDialog instance, SearchOption searchOption) {
+  static FileInfo[] GetAllGameNvcFiles(CraftBrowserDialog instance, SearchOption searchOption) {
     var fac = (EditorFacility)facilityField.GetValue(instance);
     var nonGameDirs = (string[])nonGameSaveDirsField.GetValue(instance);
 
@@ -98,7 +98,7 @@ public static class CraftBrowserPatches {
       if (System.Array.IndexOf(nonGameDirs, sub.Name) >= 0) continue;
       var shipsDir = new DirectoryInfo(ShipConstruction.GetShipsPathFor(sub.Name, fac));
       if (!shipsDir.Exists) continue;
-      list.AddRange(shipsDir.GetFiles("*.hgc", searchOption));
+      list.AddRange(shipsDir.GetFiles("*.nvc", searchOption));
     }
     return list.ToArray();
   }
@@ -121,7 +121,7 @@ public static class DirectoryControllerPatches {
 
   /// <summary>
   /// BuildGameNameDirectories skips any save folder that lacks persistent.sfs.
-  /// Nova saves only write persistent.hgs, so without this rewrite the player's
+  /// Nova saves only write persistent.nvs, so without this rewrite the player's
   /// save never appears in the dialog's directory tree and no craft files are
   /// listed. Replace the string literal in IL.
   /// </summary>
@@ -131,7 +131,7 @@ public static class DirectoryControllerPatches {
       IEnumerable<CodeInstruction> instructions) {
     foreach (var ins in instructions) {
       if (ins.opcode == OpCodes.Ldstr && (string)ins.operand == "persistent.sfs") {
-        yield return new CodeInstruction(OpCodes.Ldstr, "persistent.hgs");
+        yield return new CodeInstruction(OpCodes.Ldstr, "persistent.nvs");
       } else {
         yield return ins;
       }
@@ -140,7 +140,7 @@ public static class DirectoryControllerPatches {
 }
 
 /// <summary>
-/// Patch DirectoryActionGroup to count .hgc files instead of .craft.
+/// Patch DirectoryActionGroup to count .nvc files instead of .craft.
 /// </summary>
 [HarmonyPatch(typeof(DirectoryActionGroup))]
 public static class DirectoryActionGroupPatches {
@@ -155,7 +155,7 @@ public static class DirectoryActionGroupPatches {
     int count = 0;
     try {
       var dir = new DirectoryInfo(__instance.Path);
-      if (dir.Exists) count = dir.GetFiles("*.hgc").Length;
+      if (dir.Exists) count = dir.GetFiles("*.nvc").Length;
     } catch { }
     var header = (TMPro.TextMeshProUGUI)directoryHeaderField.GetValue(__instance);
     header.text = $"{name} ({count})";
@@ -165,7 +165,7 @@ public static class DirectoryActionGroupPatches {
 
 /// <summary>
 /// Patch CraftEntry.Init to read metadata from embedded CraftMetadata
-/// in the .hgc file instead of .loadmeta + separate thumbnail.
+/// in the .nvc file instead of .loadmeta + separate thumbnail.
 /// </summary>
 [HarmonyPatch(typeof(CraftEntry))]
 public static class CraftEntryPatches {
@@ -179,14 +179,14 @@ public static class CraftEntryPatches {
 
   /// <summary>
   /// Prefix on Init(FileInfo, bool, bool, SteamCraftInfo) — the 4-arg overload
-  /// called by Create(). For .hgc files, read embedded metadata and thumbnail,
+  /// called by Create(). For .nvc files, read embedded metadata and thumbnail,
   /// then set up the UI the same way stock Init does.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch("Init", typeof(FileInfo), typeof(bool), typeof(bool), typeof(SteamCraftInfo))]
   public static bool Init_Prefix(CraftEntry __instance,
       FileInfo fInfo, bool stock, bool steamItem, SteamCraftInfo steamCraftInfo) {
-    if (fInfo == null || fInfo.Extension != ".hgc") return true;
+    if (fInfo == null || fInfo.Extension != ".nvc") return true;
 
     __instance.craftName = fInfo.Name.Replace(fInfo.Extension, "");
     __instance.fullFilePath = fInfo.FullName;

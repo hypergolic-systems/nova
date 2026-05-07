@@ -10,7 +10,7 @@ using Proto = Nova.Core.Persistence.Protos;
 namespace Nova.Patches;
 
 /// <summary>
-/// Intercepts all game load paths. Disk reads only happen through TryLoadHgs
+/// Intercepts all game load paths. Disk reads only happen through TryLoadNvs
 /// (called by explicit user actions: main menu load, quickload, esc menu load).
 /// Scene transitions never trigger loads — state is persistent in memory.
 /// </summary>
@@ -22,21 +22,21 @@ public static class LoadGamePatches {
   };
 
   /// <summary>
-  /// Load an .hgs save file from disk. Only called from explicit user actions.
+  /// Load an .nvs save file from disk. Only called from explicit user actions.
   /// Sets PendingProto/PendingGame so Game.Load creates vessels.
   /// </summary>
-  static Game TryLoadHgs(string saveFolder, string filename) {
+  static Game TryLoadNvs(string saveFolder, string filename) {
     var dir = Path.Combine(KSPUtil.ApplicationRootPath, "saves", saveFolder);
-    var hgsPath = Path.Combine(dir, filename + ".hgs");
-    if (!File.Exists(hgsPath)) return null;
+    var nvsPath = Path.Combine(dir, filename + ".nvs");
+    if (!File.Exists(nvsPath)) return null;
 
     Proto.SaveFile save;
-    using (var stream = File.OpenRead(hgsPath)) {
+    using (var stream = File.OpenRead(nvsPath)) {
       var (type, version) = NovaFileFormat.ReadPrefix(stream);
       save = ProtoBuf.Serializer.Deserialize<Proto.SaveFile>(stream);
     }
 
-    NovaLog.Log($"[LoadGame] Loaded {hgsPath} ({save.Vessels.Count} vessels, {save.Crews.Count} crew)");
+    NovaLog.Log($"[LoadGame] Loaded {nvsPath} ({save.Vessels.Count} vessels, {save.Crews.Count} crew)");
 
     var game = NovaSaveLoader.BuildGameFromProto(save);
     NovaSaveLoader.PendingProto = save;
@@ -46,7 +46,7 @@ public static class LoadGamePatches {
 
   /// <summary>
   /// GamePersistence.LoadGame — returns in-memory game state.
-  /// Never reads from disk. Loading from disk only happens through TryLoadHgs.
+  /// Never reads from disk. Loading from disk only happens through TryLoadNvs.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch(typeof(GamePersistence), "LoadGame",
@@ -57,7 +57,7 @@ public static class LoadGamePatches {
   }
 
   /// <summary>
-  /// Replace LoadGameDialog.PersistentLoadGame — scan for .hgs files instead
+  /// Replace LoadGameDialog.PersistentLoadGame — scan for .nvs files instead
   /// of .sfs. Build save metadata from proto directly. No compatibility checks,
   /// no KSPUpgradePipeline, no .loadmeta files.
   /// </summary>
@@ -87,13 +87,13 @@ public static class LoadGamePatches {
       foreach (var subDir in new DirectoryInfo(savesPath).GetDirectories()) {
         if (ExcludedDirs.Contains(subDir.Name)) continue;
 
-        var hgsPath = Path.Combine(subDir.FullName, "persistent.hgs");
-        if (!File.Exists(hgsPath)) continue;
+        var nvsPath = Path.Combine(subDir.FullName, "persistent.nvs");
+        if (!File.Exists(nvsPath)) continue;
 
         var info = Activator.CreateInstance(ProfileType);
         AccessTools.Field(ProfileType, "name").SetValue(info, subDir.Name);
         try {
-          using (var stream = File.OpenRead(hgsPath)) {
+          using (var stream = File.OpenRead(nvsPath)) {
             NovaFileFormat.ReadPrefix(stream);
             var save = ProtoBuf.Serializer.Deserialize<Proto.SaveFile>(stream);
 
@@ -104,7 +104,7 @@ public static class LoadGamePatches {
               AccessTools.Field(ProfileType, "gameMode").SetValue(info, (Game.Modes)save.Game.Mode);
           }
           AccessTools.Field(ProfileType, "lastWriteTime")
-            .SetValue(info, new FileInfo(hgsPath).LastWriteTimeUtc.Ticks);
+            .SetValue(info, new FileInfo(nvsPath).LastWriteTimeUtc.Ticks);
         } catch (Exception e) {
           AccessTools.Field(ProfileType, "errorAccess").SetValue(info, true);
           AccessTools.Field(ProfileType, "errorDetails").SetValue(info, e.Message);
@@ -125,7 +125,7 @@ public static class LoadGamePatches {
 
   /// <summary>
   /// MainMenu.OnLoadDialogFinished — user selected a save from the load dialog.
-  /// Reads .hgs from disk and starts the game.
+  /// Reads .nvs from disk and starts the game.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch(typeof(MainMenu), "OnLoadDialogFinished")]
@@ -133,7 +133,7 @@ public static class LoadGamePatches {
     InputLockManager.RemoveControlLock("loadGameDialog");
     if (string.IsNullOrEmpty(save)) return false;
 
-    var game = TryLoadHgs(save, "persistent");
+    var game = TryLoadNvs(save, "persistent");
     if (game == null) return true;
 
     var savesDir = Path.Combine(KSPUtil.ApplicationRootPath, "saves", save);
@@ -154,7 +154,7 @@ public static class LoadGamePatches {
   [HarmonyPrefix]
   [HarmonyPatch(typeof(KSCPauseMenu), "quickLoad")]
   public static bool KSCQuickLoad_Prefix(string filename, string folder) {
-    var game = TryLoadHgs(folder, filename);
+    var game = TryLoadNvs(folder, filename);
     if (game == null) return true;
 
     // Restore saved scene

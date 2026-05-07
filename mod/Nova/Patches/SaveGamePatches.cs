@@ -30,14 +30,14 @@ public static class SaveGamePatches {
         Directory.CreateDirectory(dir);
 
       var save = NovaSaveBuilder.Build();
-      var hgsPath = Path.Combine(dir, saveFileName + ".hgs");
+      var nvsPath = Path.Combine(dir, saveFileName + ".nvs");
 
-      using var stream = File.Create(hgsPath);
+      using var stream = File.Create(nvsPath);
       NovaFileFormat.WritePrefix(stream, 'S');
       ProtoBuf.Serializer.Serialize(stream, save);
-      NovaLog.Log($"Saved: {hgsPath} ({stream.Length} bytes, {save.Vessels.Count} vessels, {save.Crews.Count} crew)");
+      NovaLog.Log($"Saved: {nvsPath} ({stream.Length} bytes, {save.Vessels.Count} vessels, {save.Crews.Count} crew)");
     } catch (System.Exception e) {
-      NovaLog.Log($"Failed to save .hgs: {e.Message}\n{e.StackTrace}");
+      NovaLog.Log($"Failed to save .nvs: {e.Message}\n{e.StackTrace}");
     }
 
     __result = saveFileName;

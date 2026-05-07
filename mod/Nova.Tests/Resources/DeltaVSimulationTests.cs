@@ -493,7 +493,7 @@ public class DeltaVSimulationTests {
   // ULP-sized steps until the cap. Fix: capacity-relative threshold
   // via IsAlive(b) in StagingFlowSystem.
   //
-  // Mirrors the user's actual Comms I .hgc layout, including the live-
+  // Mirrors the user's actual Comms I .nvc layout, including the live-
   // vs-clone time drift caused by Recompute running on a Unity-frame
   // cadence rather than FixedUpdate.
   [TestMethod]

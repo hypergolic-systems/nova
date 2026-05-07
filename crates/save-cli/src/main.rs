@@ -6,7 +6,7 @@ mod dump;
 mod proto;
 
 #[derive(Parser)]
-#[command(name = "nova-save-cli", version, about = "Inspector for Nova .hgs/.hgc files")]
+#[command(name = "nova-save-cli", version, about = "Inspector for Nova .nvs/.nvc files")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -14,10 +14,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Dump a .hgs (save) or .hgc (craft) file as text. File type is
+    /// Dump a .nvs (save) or .nvc (craft) file as text. File type is
     /// auto-detected from the HGS magic-byte header.
     Dump {
-        /// Path to a .hgs or .hgc file.
+        /// Path to a .nvs or .nvc file.
         file: PathBuf,
     },
 }

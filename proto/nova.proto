@@ -3,7 +3,7 @@ syntax = "proto3";
 package nova.v1;
 option csharp_namespace = "Nova.Core.Persistence.Protos";
 
-// Nova on-disk file format. Messages here back .hgc (craft) and .hgs
+// Nova on-disk file format. Messages here back .nvc (craft) and .nvs
 // (save) files. No backwards compatibility — Nova is an active-dev
 // mod with one user; old saves break freely on schema changes.
 // See `CLAUDE.md` → "Persistence wire format".

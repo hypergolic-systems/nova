@@ -14,7 +14,7 @@ using Proto = Nova.Core.Persistence.Protos;
 namespace Nova.Persistence;
 
 /// <summary>
-/// Loads game state from .hgs files.
+/// Loads game state from .nvs files.
 ///
 /// Two load paths:
 /// - Quickload (TryQuickload): running scene exists, diff against it
@@ -36,16 +36,16 @@ public static class NovaSaveLoader {
   public static Game PendingGame;
 
   /// <summary>
-  /// Quickload from .hgs. Returns true if handled (caller should
-  /// skip stock quickload), false if no .hgs file exists.
+  /// Quickload from .nvs. Returns true if handled (caller should
+  /// skip stock quickload), false if no .nvs file exists.
   /// </summary>
   public static bool TryQuickload(string filename, string folder) {
     var dir = Path.Combine(KSPUtil.ApplicationRootPath, "saves", folder);
-    var hgsPath = Path.Combine(dir, filename + ".hgs");
-    if (!File.Exists(hgsPath)) return false;
+    var nvsPath = Path.Combine(dir, filename + ".nvs");
+    if (!File.Exists(nvsPath)) return false;
 
     Proto.SaveFile save;
-    using (var stream = File.OpenRead(hgsPath)) {
+    using (var stream = File.OpenRead(nvsPath)) {
       var (type, version) = NovaFileFormat.ReadPrefix(stream);
       save = ProtoBuf.Serializer.Deserialize<Proto.SaveFile>(stream);
     }
@@ -473,9 +473,9 @@ public static class NovaSaveLoader {
     FlightGlobals.AddVessel(vessel);
 
     // 14. Build VirtualVessel (must exist before OnStartFlight)
-    var hgsMod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
-    if (hgsMod != null)
-      hgsMod.Virtual = BuildVirtualVessel(structure, state, parts);
+    var novaMod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
+    if (novaMod != null)
+      novaMod.Virtual = BuildVirtualVessel(structure, state, parts);
 
     // 15. Synchronous physics init — create rigidbodies and joints NOW
     // instead of waiting for Part.Start (which runs next frame).

@@ -1,6 +1,6 @@
 [package]
 name = "nova-save-cli"
-description = "Inspector for Nova .hgs (save) and .hgc (craft) binary files."
+description = "Inspector for Nova .nvs (save) and .nvc (craft) binary files."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

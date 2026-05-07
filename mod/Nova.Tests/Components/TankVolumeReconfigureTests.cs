@@ -51,7 +51,7 @@ public class TankVolumeReconfigureTests {
   public void Reconfigure_RoundTripsThroughStructure() {
     // Reconfigure → SaveStructure → load into a fresh TankVolume:
     // the new shape must survive a proto round-trip (the path that
-    // carries an editor-time mutation through .hgc into flight).
+    // carries an editor-time mutation through .nvc into flight).
     var tank = new TankVolume { Volume = 4000 };
     tank.Tanks.Add(new Buffer { Resource = Resource.RP1, Capacity = 1600 });
     tank.Tanks.Add(new Buffer { Resource = Resource.LiquidOxygen, Capacity = 2400 });

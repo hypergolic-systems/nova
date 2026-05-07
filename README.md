@@ -27,7 +27,7 @@ just install ~/KSP_osx # build + install into a KSP directory
 ## Layout
 
 - `mod/` — C# (Nova.Core, Nova, Nova.Tests).
-- `crates/save-cli/` — Rust binary (`nova-save-cli`) for inspecting `.hgs` / `.hgc` files.
+- `crates/save-cli/` — Rust binary (`nova-save-cli`) for inspecting `.nvs` / `.nvc` files.
 - `proto/nova.proto` — persistence schema, single source of truth for both C# and Rust bindings.
 - `configs/overrides/` — ModuleManager patches that swap stock modules for Nova's.
 - `stubs/` — stripped KSP/Unity managed DLLs used as build references.

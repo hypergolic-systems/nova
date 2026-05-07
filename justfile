@@ -93,7 +93,7 @@ mod-test config="Release": (mod-build config)
 save-cli-build:
     cargo build --release -p nova-save-cli
 
-# Run save-cli (forward args, e.g. `just save-cli dump some.hgs`).
+# Run save-cli (forward args, e.g. `just save-cli dump some.nvs`).
 save-cli *args: save-cli-build
     target/release/nova-save-cli "$@"
 

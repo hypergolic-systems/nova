@@ -31,7 +31,7 @@ public static class LaunchSiteFacilityPatches {
       IEnumerable<CodeInstruction> instructions) {
     foreach (var ins in instructions) {
       if (ins.opcode == OpCodes.Ldstr && (string)ins.operand == "*.craft") {
-        yield return new CodeInstruction(OpCodes.Ldstr, "*.hgc");
+        yield return new CodeInstruction(OpCodes.Ldstr, "*.nvc");
       } else {
         yield return ins;
       }
@@ -40,7 +40,7 @@ public static class LaunchSiteFacilityPatches {
 }
 
 /// <summary>
-/// Make the launch pad's VesselSpawnDialog work with .hgc files.
+/// Make the launch pad's VesselSpawnDialog work with .nvc files.
 /// Replaces the craft list coroutine, intercepts the internal
 /// VesselDataItem constructor, and skips the upgrade pipeline at launch.
 /// </summary>
@@ -112,20 +112,20 @@ public static class VesselSpawnPatches {
     AccessTools.Method(scrollListField.FieldType, "Clear", new[] { typeof(bool) });
 
   /// <summary>
-  /// Replace the craft list coroutine with one that searches *.hgc in
+  /// Replace the craft list coroutine with one that searches *.nvc in
   /// the player save directory only. Stock and expansion craft are skipped.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch("CreateVesselList")]
   public static bool CreateVesselList_Prefix(VesselSpawnDialog __instance,
       string craftSubfolder, string profileName, ref IEnumerator __result) {
-    __result = CreateHgcVesselList(__instance, craftSubfolder, profileName);
+    __result = CreateNvcVesselList(__instance, craftSubfolder, profileName);
     return false;
   }
 
   /// <summary>
-  /// Skip KSPUpgradePipeline for .hgc files — it runs against a ConfigNode
-  /// and would try to overwrite the binary .hgc with text on save. Launch
+  /// Skip KSPUpgradePipeline for .nvc files — it runs against a ConfigNode
+  /// and would try to overwrite the binary .nvc with text on save. Launch
   /// directly instead.
   /// </summary>
   [HarmonyPrefix]
@@ -134,7 +134,7 @@ public static class VesselSpawnPatches {
     var selected = selectedDataItemField.GetValue(__instance);
     if (selected == null) return true;
     var path = (string)vdiFullFilePath.GetValue(selected);
-    if (path == null || !path.EndsWith(".hgc")) return true;
+    if (path == null || !path.EndsWith(".nvc")) return true;
 
     var info = (CraftProfileInfo)vdiCraftProfileInfo.GetValue(selected);
     if (info != null && (!info.shipPartsUnlocked || !info.shipPartModulesAvailable))
@@ -145,7 +145,7 @@ public static class VesselSpawnPatches {
     return false;
   }
 
-  static IEnumerator CreateHgcVesselList(VesselSpawnDialog instance,
+  static IEnumerator CreateNvcVesselList(VesselSpawnDialog instance,
       string craftSubfolder, string profileName) {
     yield return null;
 
@@ -163,7 +163,7 @@ public static class VesselSpawnPatches {
 
     FileInfo[] files;
     try {
-      files = new DirectoryInfo(dir).GetFiles("*.hgc");
+      files = new DirectoryInfo(dir).GetFiles("*.nvc");
     } catch (Exception e) {
       NovaLog.Log($"VesselSpawnDialog: failed to enumerate {dir}: {e.Message}");
       files = new FileInfo[0];
@@ -207,12 +207,12 @@ public static class VesselSpawnPatches {
 
   /// <summary>
   /// Manually patched on VesselDataItem's (FileInfo, bool, bool) constructor
-  /// from HarmonyPatcher. Reads embedded CraftMetadata + structure from .hgc
+  /// from HarmonyPatcher. Reads embedded CraftMetadata + structure from .nvc
   /// and populates the item without touching the disk via ConfigNode.Load.
   /// </summary>
   public static bool VesselDataItem_Ctor_Prefix(object __instance,
       FileInfo fInfo, bool stock, bool steamItem) {
-    if (fInfo == null || fInfo.Extension != ".hgc") return true;
+    if (fInfo == null || fInfo.Extension != ".nvc") return true;
 
     Proto.CraftFile craft;
     using (var stream = fInfo.OpenRead()) {
@@ -276,12 +276,12 @@ public static class VesselSpawnPatches {
   }
 
   /// <summary>
-  /// Populate a ShipTemplate's fields directly from an .hgc file, bypassing
+  /// Populate a ShipTemplate's fields directly from an .nvc file, bypassing
   /// ShipTemplate.LoadShip(ConfigNode). Called from the launchChecks
   /// transpiler below. Only sets the fields the stock preflight tests read
   /// (shipName, shipSize, partCount, stageCount, totalMass, totalCost).
   /// </summary>
-  public static void LoadShipTemplateFromHgc(ShipTemplate template, string path) {
+  public static void LoadShipTemplateFromNvc(ShipTemplate template, string path) {
     Proto.CraftFile craft;
     using (var stream = File.OpenRead(path)) {
       NovaFileFormat.ReadPrefix(stream);
@@ -305,12 +305,12 @@ public static class VesselSpawnPatches {
 /// <summary>
 /// LaunchSiteFacility.launchChecks builds a ShipTemplate via
 /// `new ShipTemplate(); template.LoadShip(ConfigNode.Load(path));`, which
-/// is useless for our binary .hgc files — the ConfigNode is empty, shipSize
+/// is useless for our binary .nvc files — the ConfigNode is empty, shipSize
 /// stays zero, and CraftWithinSizeLimits fails with "no size information".
 ///
 /// Transpile the pair of calls away: remove `ConfigNode.Load(path)` and
 /// replace `ShipTemplate.LoadShip(ConfigNode)` with a call to our helper
-/// that reads proto fields from the .hgc directly. The path argument
+/// that reads proto fields from the .nvc directly. The path argument
 /// pushed for ConfigNode.Load stays on the stack and is consumed by our
 /// helper instead.
 /// </summary>
@@ -321,8 +321,8 @@ public static class LaunchSiteFacilityLaunchChecksPatches {
     AccessTools.Method(typeof(ConfigNode), "Load", new[] { typeof(string) });
   static readonly MethodInfo shipTemplateLoadShip =
     AccessTools.Method(typeof(ShipTemplate), "LoadShip", new[] { typeof(ConfigNode) });
-  static readonly MethodInfo hgcHelper =
-    AccessTools.Method(typeof(VesselSpawnPatches), nameof(VesselSpawnPatches.LoadShipTemplateFromHgc));
+  static readonly MethodInfo nvcHelper =
+    AccessTools.Method(typeof(VesselSpawnPatches), nameof(VesselSpawnPatches.LoadShipTemplateFromNvc));
 
   [HarmonyTranspiler]
   [HarmonyPatch("launchChecks")]
@@ -335,7 +335,7 @@ public static class LaunchSiteFacilityLaunchChecksPatches {
       }
       if (ins.Calls(shipTemplateLoadShip)) {
         // Replace LoadShip(ConfigNode) with our helper(ShipTemplate, string).
-        yield return new CodeInstruction(OpCodes.Call, hgcHelper);
+        yield return new CodeInstruction(OpCodes.Call, nvcHelper);
         continue;
       }
       yield return ins;

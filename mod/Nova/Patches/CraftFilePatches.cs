@@ -15,14 +15,14 @@ public static class CraftFilePatches {
 
   /// <summary>
   /// CheckCraftFileType normally does ConfigNode.Load(path) and reads the
-  /// "type" field. Binary .hgc files return null from ConfigNode.Load, so
+  /// "type" field. Binary .nvc files return null from ConfigNode.Load, so
   /// the stock path returns EditorFacility.None and WrongVesselTypeForLaunchSite
-  /// fails. Read Facility straight from the .hgc metadata instead.
+  /// fails. Read Facility straight from the .nvc metadata instead.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch("CheckCraftFileType")]
   public static bool CheckCraftFileType_Prefix(string filePath, ref EditorFacility __result) {
-    if (filePath == null || !filePath.EndsWith(".hgc")) return true;
+    if (filePath == null || !filePath.EndsWith(".nvc")) return true;
 
     using var stream = File.OpenRead(filePath);
     NovaFileFormat.ReadPrefix(stream);
@@ -32,19 +32,19 @@ public static class CraftFilePatches {
   }
 
   /// <summary>
-  /// Intercept craft loading. Resolves .hgc path from whatever stock passes
+  /// Intercept craft loading. Resolves .nvc path from whatever stock passes
   /// (usually a .craft path), loads from Nova binary, and sets ShipConfig
   /// so the editor's crew assignment and backup systems still work.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch("LoadShip", typeof(string))]
   public static bool LoadShip_Prefix(string filePath, ref ShipConstruct __result) {
-    var hgcPath = ResolveHgcPath(filePath);
-    if (hgcPath == null) return true;
+    var nvcPath = ResolveNvcPath(filePath);
+    if (nvcPath == null) return true;
 
     try {
       Proto.CraftFile craft;
-      using (var stream = File.OpenRead(hgcPath)) {
+      using (var stream = File.OpenRead(nvcPath)) {
         NovaFileFormat.ReadPrefix(stream);
         craft = ProtoBuf.Serializer.Deserialize<Proto.CraftFile>(stream);
       }
@@ -56,7 +56,7 @@ public static class CraftFilePatches {
       }
 
       ShipConstruction.ShipConfig = __result.SaveShip();
-      NovaLog.Log($"Loaded craft from Nova: {hgcPath} ({__result.parts.Count} parts)");
+      NovaLog.Log($"Loaded craft from Nova: {nvcPath} ({__result.parts.Count} parts)");
       return false;
     } catch (System.Exception e) {
       NovaLog.Log($"Nova craft load error: {e.Message}\n{e.StackTrace}");
@@ -66,18 +66,18 @@ public static class CraftFilePatches {
 
   /// <summary>
   /// Editor "Save" button — SaveShipToPath(shipName, path).
-  /// Capture thumbnail, embed in metadata, write .hgc.
+  /// Capture thumbnail, embed in metadata, write .nvc.
   /// </summary>
   [HarmonyPrefix]
   [HarmonyPatch("SaveShipToPath", typeof(string), typeof(string))]
   public static bool SaveShipToPath_Prefix(string shipName, string path, ref string __result) {
     if (EditorLogic.fetch?.ship == null) { __result = ""; return false; }
     var sanitized = KSPUtil.SanitizeString(shipName, '_', true);
-    var hgcPath = path + "/" + sanitized + ".hgc";
+    var nvcPath = path + "/" + sanitized + ".nvc";
     var thumbName = HighLogic.SaveFolder + "_"
                   + ShipConstruction.GetShipsSubfolderFor(EditorDriver.editorFacility)
                   + "_" + sanitized;
-    SaveHgsCraftWithThumbnail(hgcPath, EditorLogic.fetch.ship, "thumbs", thumbName);
+    SaveNvcWithThumbnail(nvcPath, EditorLogic.fetch.ship, "thumbs", thumbName);
     __result = path;
     return false;
   }
@@ -97,7 +97,7 @@ public static class CraftFilePatches {
     var thumbName = HighLogic.SaveFolder + "_"
                   + ShipConstruction.GetShipsSubfolderFor(editorFacility)
                   + "_" + sanitized;
-    SaveHgsCraftWithThumbnail(dir + "/" + sanitized + ".hgc", EditorLogic.fetch.ship, "thumbs", thumbName);
+    SaveNvcWithThumbnail(dir + "/" + sanitized + ".nvc", EditorLogic.fetch.ship, "thumbs", thumbName);
     __result = dir;
     return false;
   }
@@ -111,19 +111,19 @@ public static class CraftFilePatches {
     var dir = KSPUtil.ApplicationRootPath + "saves/" + HighLogic.SaveFolder
             + "/Ships/" + ShipConstruction.GetShipsSubfolderFor(EditorDriver.editorFacility);
     if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-    var hgcPath = dir + "/" + shipFilename + ".hgc";
+    var nvcPath = dir + "/" + shipFilename + ".nvc";
     var thumbName = HighLogic.SaveFolder + "_"
                   + ShipConstruction.GetShipsSubfolderFor(EditorDriver.editorFacility)
                   + "_" + shipFilename;
-    SaveHgsCraftWithThumbnail(hgcPath, ship, "thumbs", thumbName);
-    __result = hgcPath;
+    SaveNvcWithThumbnail(nvcPath, ship, "thumbs", thumbName);
+    __result = nvcPath;
     return false;
   }
 
   /// <summary>
   /// SaveShip(string) — launch path and editor auto-save. Always
   /// re-serialize from the live ShipConstruct so editor-time mutations
-  /// (e.g. Set Tank Config) flow through to the .hgc that flight will
+  /// (e.g. Set Tank Config) flow through to the .nvc that flight will
   /// actually load. We pin craftIDs from the cached ShipConfig so the
   /// just-built crew manifest still matches the parts flight will see.
   ///
@@ -132,7 +132,7 @@ public static class CraftFilePatches {
   /// after events like `onAboutToSaveShip` or thumbnail capture. Reading
   /// IDs straight out of ShipConfig avoids that entire class of drift.
   ///
-  /// Earlier this prefix short-circuited when the .hgc already existed
+  /// Earlier this prefix short-circuited when the .nvc already existed
   /// (assuming an explicit Save had just written it), but that lost
   /// any mutation made between the prior save/auto-save and Launch —
   /// the most common path being: place tank → right-click → Set Tank
@@ -144,7 +144,7 @@ public static class CraftFilePatches {
     var dir = KSPUtil.ApplicationRootPath + "saves/" + HighLogic.SaveFolder
             + "/Ships/" + ShipConstruction.GetShipsSubfolderFor(EditorDriver.editorFacility);
     var sanitized = KSPUtil.SanitizeString(shipFilename, '_', true);
-    var hgcPath = dir + "/" + sanitized + ".hgc";
+    var nvcPath = dir + "/" + sanitized + ".nvc";
 
     var ship = EditorLogic.fetch?.ship;
     var shipConfig = ShipConstruction.ShipConfig;
@@ -158,10 +158,10 @@ public static class CraftFilePatches {
     var thumbName = HighLogic.SaveFolder + "_"
                   + ShipConstruction.GetShipsSubfolderFor(EditorDriver.editorFacility)
                   + "_" + sanitized;
-    SaveHgsCraftWithThumbnail(hgcPath, ship, "thumbs", thumbName,
+    SaveNvcWithThumbnail(nvcPath, ship, "thumbs", thumbName,
       idSelector: p => idMap.TryGetValue(p, out var id) ? id : p.craftID);
 
-    __result = hgcPath;
+    __result = nvcPath;
     return false;
   }
 
@@ -187,13 +187,13 @@ public static class CraftFilePatches {
     return map;
   }
 
-  static string ResolveHgcPath(string filePath) {
-    if (filePath.EndsWith(".hgc") && File.Exists(filePath))
+  static string ResolveNvcPath(string filePath) {
+    if (filePath.EndsWith(".nvc") && File.Exists(filePath))
       return filePath;
 
     if (filePath.EndsWith(".craft")) {
-      var hgc = filePath.Substring(0, filePath.Length - 6) + ".hgc";
-      if (File.Exists(hgc)) return hgc;
+      var nvc = filePath.Substring(0, filePath.Length - 6) + ".nvc";
+      if (File.Exists(nvc)) return nvc;
     }
 
     return null;
@@ -201,9 +201,9 @@ public static class CraftFilePatches {
 
   /// <summary>
   /// Capture thumbnail via stock, intercept the PNG bytes via the
-  /// OnSnapshotCapture event, then write the .hgc with embedded thumbnail.
+  /// OnSnapshotCapture event, then write the .nvc with embedded thumbnail.
   /// </summary>
-  static void SaveHgsCraftWithThumbnail(string hgcPath, ShipConstruct ship,
+  static void SaveNvcWithThumbnail(string nvcPath, ShipConstruct ship,
       string thumbFolder, string thumbName,
       NovaVesselBuilder.PartIdSelector idSelector = null) {
     byte[] thumbBytes = null;
@@ -217,17 +217,17 @@ public static class CraftFilePatches {
       CraftThumbnail.OnSnapshotCapture.Remove(handler);
     }
 
-    SaveHgsCraft(hgcPath, ship, thumbBytes, idSelector);
+    SaveNvc(nvcPath, ship, thumbBytes, idSelector);
   }
 
-  static void SaveHgsCraft(string hgcPath, ShipConstruct ship, byte[] thumbnail,
+  static void SaveNvc(string nvcPath, ShipConstruct ship, byte[] thumbnail,
       NovaVesselBuilder.PartIdSelector idSelector = null) {
     try {
       var craft = BuildCraftFile(ship, thumbnail, idSelector);
-      using var stream = File.Create(hgcPath);
+      using var stream = File.Create(nvcPath);
       NovaFileFormat.WritePrefix(stream, 'C');
       ProtoBuf.Serializer.Serialize(stream, craft);
-      NovaLog.Log($"Saved craft: {hgcPath} ({stream.Length} bytes, thumb={thumbnail?.Length ?? 0})");
+      NovaLog.Log($"Saved craft: {nvcPath} ({stream.Length} bytes, thumb={thumbnail?.Length ?? 0})");
     } catch (System.Exception e) {
       NovaLog.Log($"Failed to save craft: {e.Message}\n{e.StackTrace}");
     }
