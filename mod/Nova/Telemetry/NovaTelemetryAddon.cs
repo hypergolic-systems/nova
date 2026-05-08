@@ -39,6 +39,9 @@ public class NovaTelemetryAddon : MonoBehaviour {
       if (host != null && TopicRegistry.Instance != null) {
         // Topic overrides — register before any Flight-scene
         // installer runs so Resolve<T>() returns the Nova subclass.
+        // FlightTopic stays stock (it's a pure flight-frame instrument
+        // — Δv/TWR live on StageTopic now); only the engine + stage
+        // topics need Nova-specific data sources.
         TopicRegistry.Instance.RegisterOverride<EngineTopic, NovaEngineTopic>();
         TopicRegistry.Instance.RegisterOverride<StageTopic, NovaStageTopic>();
         NovaLog.Log("Topic overrides registered: EngineTopic → NovaEngineTopic, StageTopic → NovaStageTopic");

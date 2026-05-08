@@ -454,6 +454,27 @@ public class NovaVesselModule : VesselModule {
   private int wheelSlotCount;
   private int gimbalSlotStart;
 
+  // Per-gimbal-engine vessel-local geometry, captured at solver-build
+  // time. Engine pivot, gimbal axes, nominal thrust direction, and
+  // sideMag are rigid-vessel invariants — they don't move during a
+  // burn and so don't need re-reading from Unity transforms each tick.
+  // Lever (engine pivot − CoM) is the only piece that drifts; we
+  // refresh slot torques from these cached parts plus live CoM
+  // whenever CoM has moved past `GimbalCoMThreshold` since the last
+  // refresh (or on the first tick after a fresh build, where the
+  // build-time CoM can be transient — staging fires events before
+  // VesselPrecalculate has redone its mass walk for the new part set).
+  private struct GimbalSlotGeometry {
+    public Vec3d EnginePos;
+    public Vec3d PitchSide;
+    public Vec3d YawSide;
+    public double SideMag;
+  }
+  private GimbalSlotGeometry[] gimbalSlotGeom;
+  private Vec3d lastGimbalRefreshCoM;
+  private bool gimbalRefreshPending;
+  private const double GimbalCoMThreshold = 0.1;
+
   // RCS input cached from Update() to match stock ModuleRCS timing.
   private Vec3d cachedInputLin;
   private Vec3d cachedInputRot;
@@ -595,9 +616,14 @@ public class NovaVesselModule : VesselModule {
       }
 
       // Engine gimbal slots: 4 per engine (+pitch, -pitch, +yaw, -yaw).
-      // Each slot's Torque = lever × F_lat where F_lat is the lateral
-      // force at full deflection: T_max · sin(θ_max) · (axis × thrustDir).Normalized.
-      foreach (var mod in gimbalEngines) {
+      // Cache rigid-vessel geometry per engine — engine pivot, gimbal
+      // axes, nominal thrust direction, and sideMag don't move during
+      // a burn. Slot torques (lever × F_lat) drift with CoM, so we
+      // seed them with build-time CoM here and refresh below whenever
+      // CoM moves past `GimbalCoMThreshold`.
+      gimbalSlotGeom = new GimbalSlotGeometry[gimbalEngines.Count];
+      for (int gi = 0; gi < gimbalEngines.Count; gi++) {
+        var mod = gimbalEngines[gi];
         var e = mod.Engine;
         var gt = mod.GimbalTransform;
         var localPosV = refXform.InverseTransformPoint(gt.position);
@@ -615,7 +641,6 @@ public class NovaVesselModule : VesselModule {
         var pitchAxis = new Vec3d(pitchAxisV.x, pitchAxisV.y, pitchAxisV.z);
         var yawAxis = new Vec3d(yawAxisV.x, yawAxisV.y, yawAxisV.z);
         var thrustDir = new Vec3d(thrustDirV.x, thrustDirV.y, thrustDirV.z);
-        var lever = pos - buildCoM;
         var sideMag = e.Thrust * Math.Sin(e.GimbalRangeRad);
 
         var pitchSide = Vec3d.Cross(pitchAxis, thrustDir);
@@ -623,6 +648,14 @@ public class NovaVesselModule : VesselModule {
         var yawSide = Vec3d.Cross(yawAxis, thrustDir);
         if (yawSide.SqrMagnitude > 1e-12) yawSide = yawSide.Normalized;
 
+        gimbalSlotGeom[gi] = new GimbalSlotGeometry {
+          EnginePos = pos,
+          PitchSide = pitchSide,
+          YawSide = yawSide,
+          SideMag = sideMag,
+        };
+
+        var lever = pos - buildCoM;
         var pitchTorque = Vec3d.Cross(lever, pitchSide * sideMag);
         var yawTorque = Vec3d.Cross(lever, yawSide * sideMag);
 
@@ -631,6 +664,11 @@ public class NovaVesselModule : VesselModule {
         thrusters[ti++] = new RcsSolver.Thruster { Torque = yawTorque, IsGimbal = true };
         thrusters[ti++] = new RcsSolver.Thruster { Torque = -1.0 * yawTorque, IsGimbal = true };
       }
+      // Force a torque refresh on the first tick after a fresh build:
+      // `buildCoM` here can be transient at staging (events fire from
+      // mid-Update before the next FixedUpdate's VesselPrecalculate
+      // has rerun the mass walk for the post-stage parts list).
+      gimbalRefreshPending = true;
 
       rcsSolver.SetThrusters(thrusters);
 
@@ -639,10 +677,31 @@ public class NovaVesselModule : VesselModule {
                   $"{gimbalEngines.Count} gimbal engines ({nGimbalSlots} virtual slots)");
     }
 
-    // Per-tick gimbal capacity. Each engine's gimbal authority scales
-    // linearly with its current LP-solved output — a 30 %-throttle
-    // engine exposes only 30 % of full-deflection torque, an idle
-    // engine zero. Cheap to update each frame; doesn't invalidate Q.
+    // Per-tick gimbal slot updates.
+    //
+    //   MaxThrottle = engine's current `NormalizedOutput`. A
+    //   30 %-throttle engine exposes 30 % of full-deflection torque;
+    //   an idle engine zero. Updates every tick — cheap, doesn't
+    //   invalidate Q.
+    //
+    //   Slot torque = `lever × F_lat` where `lever = engine_pivot −
+    //   vessel.CoM`. The pivot is rigid relative to the vessel; the
+    //   CoM drifts as fuel burns and jumps at staging. Once the CoM
+    //   crosses the pivot's vessel-local height the slot's torque
+    //   sign flips, and if we keep serving the QP the old value, it
+    //   fires the +pitch slot for a +X demand while the deflected
+    //   bell physically produces −X — runaway spin. We refresh on
+    //   CoM drift past `GimbalCoMThreshold` (matches the solver's
+    //   own Q-rebuild threshold) plus once unconditionally on the
+    //   first tick after a solver rebuild, since `buildCoM` can be
+    //   transient at staging.
+    var refXformLive = vessel.ReferenceTransform;
+    var liveCoMV = refXformLive.InverseTransformPoint(vessel.CoM);
+    var liveCoM = new Vec3d(liveCoMV.x, liveCoMV.y, liveCoMV.z);
+    bool refreshGimbalTorques = gimbalRefreshPending
+        || (liveCoM - lastGimbalRefreshCoM).SqrMagnitude
+            > GimbalCoMThreshold * GimbalCoMThreshold;
+
     for (int gi = 0; gi < gimbalEngines.Count; gi++) {
       var e = gimbalEngines[gi].Engine;
       double maxT = e.NormalizedOutput;
@@ -651,6 +710,21 @@ public class NovaVesselModule : VesselModule {
       rcsSolver.SetSlotMaxThrottle(slotBase + 1, maxT);
       rcsSolver.SetSlotMaxThrottle(slotBase + 2, maxT);
       rcsSolver.SetSlotMaxThrottle(slotBase + 3, maxT);
+
+      if (refreshGimbalTorques) {
+        var geom = gimbalSlotGeom[gi];
+        var lever = geom.EnginePos - liveCoM;
+        var pitchTorque = Vec3d.Cross(lever, geom.PitchSide * geom.SideMag);
+        var yawTorque = Vec3d.Cross(lever, geom.YawSide * geom.SideMag);
+        rcsSolver.SetSlotTorque(slotBase + 0, pitchTorque);
+        rcsSolver.SetSlotTorque(slotBase + 1, -1.0 * pitchTorque);
+        rcsSolver.SetSlotTorque(slotBase + 2, yawTorque);
+        rcsSolver.SetSlotTorque(slotBase + 3, -1.0 * yawTorque);
+      }
+    }
+    if (refreshGimbalTorques) {
+      lastGimbalRefreshCoM = liveCoM;
+      gimbalRefreshPending = false;
     }
 
     // CoM in vessel-local space.

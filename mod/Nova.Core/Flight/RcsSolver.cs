@@ -144,6 +144,29 @@ public class RcsSolver {
   }
 
   /// <summary>
+  /// Update a pure-torque slot's torque vector. Used for gimbal slots,
+  /// whose <see cref="Thruster.Torque"/> is `lever × F_lat` and so
+  /// drifts as the vessel's CoM moves (fuel burn, staging). Force-
+  /// producing slots automatically pick up CoM drift via
+  /// <see cref="BuildQ"/>'s `Cross(positions[i] - com, forces[i])`,
+  /// but pure-torque slots use the stored value directly — without
+  /// this hook, a fueled-up upper stage's gimbal authority freezes at
+  /// the build-time geometry, and once CoM drifts past the gimbal
+  /// pivot the slot's stored torque sign no longer matches physics:
+  /// SAS commands torque, the QP picks the slot it thinks helps, the
+  /// engine deflects, and the vessel spins the wrong way.
+  /// <para>
+  /// Invalidates the cached Q so the next <see cref="Solve"/> picks
+  /// up the new value.
+  /// </para>
+  /// </summary>
+  public void SetSlotTorque(int slot, Vec3d torque) {
+    if (slot < 0 || slot >= n) return;
+    directTorques[slot] = torque;
+    cachedQ = null;
+  }
+
+  /// <summary>
   /// Solve for per-thruster throttle values via projected gradient descent.
   /// </summary>
   public double[] Solve(Input input) {
