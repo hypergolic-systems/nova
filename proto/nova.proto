@@ -168,6 +168,7 @@ message PartState {
   ReactionWheelState  reaction_wheel = 8;
   DataStorageState    data_storage   = 9;
   ThermometerState    thermometer    = 10;
+  RtgState            rtg            = 11;
 }
 
 message TankVolumeState {
@@ -199,6 +200,13 @@ message FuelCellState {
 message ReactionWheelState {
   bool              refill_active = 1;
   AccumulatorState buffer        = 2;
+}
+
+// Pu-238 RTG decay clock. Power output decays as
+// referencePower × (1 - stepDrop)^floor((UT - reference_ut) / stepDur),
+// where stepDrop and halfLife live on the component.
+message RtgState {
+  double reference_ut = 1;   // UT at which decay clock started
 }
 
 // --- Science state ---

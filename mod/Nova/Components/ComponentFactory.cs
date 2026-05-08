@@ -36,6 +36,7 @@ public static class ComponentFactory {
     ["NovaThermometerModule"] = "Thermometer",
     ["NovaDataStorageModule"] = "DataStorage",
     ["NovaAntennaModule"] = "Antenna",
+    ["NovaRtgModule"] = "Rtg",
   };
 
   public static void RegisterModuleMapping(string moduleName, string typeName) {
@@ -74,6 +75,7 @@ public static class ComponentFactory {
       "Thermometer" => CreateThermometer(moduleNode),
       "DataStorage" => CreateDataStorage(moduleNode),
       "Antenna" => CreateAntenna(moduleNode),
+      "Rtg" => CreateRtg(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
@@ -250,6 +252,14 @@ public static class ComponentFactory {
       Gain = double.Parse(node.GetValue("gain")),
       MaxRate = double.Parse(node.GetValue("maxRate")),
       RefDistance = double.Parse(node.GetValue("refDistance")),
+    };
+  }
+
+  public static Rtg CreateRtg(ConfigNode node) {
+    return new Rtg {
+      ReferencePower = double.Parse(node.GetValue("referencePower")),
+      HalfLifeDays   = double.Parse(node.GetValue("halfLifeDays")),
+      ReferenceUT    = 0,
     };
   }
 }
