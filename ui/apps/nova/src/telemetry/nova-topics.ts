@@ -59,6 +59,13 @@ export type NovaFuelCellFrame = [
   manifoldFraction: number,
   refillActive: 0 | 1,
 ];
+export type NovaRtgFrame = [
+  'R',
+  currentRate: number,
+  currentPower: number,
+  referencePower: number,
+  declineWattsPerKerbinYear: number,
+];
 
 // One progressive observation record on disk. The wire shape mirrors
 // the proto fields. Direct vs interpolated is determined by which set
@@ -162,7 +169,8 @@ export type NovaComponentFrame =
   | NovaLightFrame
   | NovaTankFrame
   | NovaCommandFrame
-  | NovaFuelCellFrame;
+  | NovaFuelCellFrame
+  | NovaRtgFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -442,6 +450,21 @@ export interface FuelCellState {
   refillActive: boolean;
 }
 
+export interface RtgState {
+  /** LP-throttled actual flow into the EC bus. Equals `currentPower`
+   *  unless consumers can't absorb the full output (rare for RTGs). */
+  currentRate: number;
+  /** Decay-limited maximum the RTG can produce now —
+   *  `referencePower × (1 − stepDrop)^stepIndex(UT)` from the
+   *  Pu-238 decay curve. */
+  currentPower: number;
+  /** Beginning-of-Life design output. Constant for the part's
+   *  lifetime; the gauge denominator. */
+  referencePower: number;
+  /** Predicted output loss over the next Kerbin year, in W. */
+  declineWattsPerKerbinYear: number;
+}
+
 export interface NovaPart {
   id: string;
   resources: NovaResourceFlow[];
@@ -452,6 +475,7 @@ export interface NovaPart {
   tank: TankState[];
   command: CommandState[];
   fuelCell: FuelCellState[];
+  rtg: RtgState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -899,6 +923,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     tank: [],
     command: [],
     fuelCell: [],
+    rtg: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -944,6 +969,14 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           validUntilSec: c[4],
           manifoldFraction: c[5],
           refillActive: c[6] === 1,
+        });
+        break;
+      case 'R':
+        out.rtg.push({
+          currentRate:               c[1],
+          currentPower:              c[2],
+          referencePower:            c[3],
+          declineWattsPerKerbinYear: c[4],
         });
         break;
     }

@@ -43,6 +43,9 @@ public static class SystemTags {
         case FuelCell _:
           set.Add(PowerGen);
           break;
+        case Rtg _:
+          set.Add(PowerGen);
+          break;
         case Battery _:
           set.Add(PowerStore);
           set.Add(Storage);

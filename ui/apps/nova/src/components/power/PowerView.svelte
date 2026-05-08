@@ -61,6 +61,7 @@
     let total = 0;
     for (const s of p.state.solar) total += s.rate;
     for (const fc of p.state.fuelCell) total += fc.currentOutput;
+    for (const r of p.state.rtg) total += r.currentRate;
     return total;
   }
 
@@ -206,6 +207,7 @@
   // Per-row icon choice. State-driven when loaded; falls back to the
   // section's dominant kind so first-frame rows aren't iconless.
   function genKind(p: NovaTaggedPart): ComponentKind {
+    if (p.state && p.state.rtg.length > 0) return 'rtg';
     if (p.state && p.state.fuelCell.length > 0) return 'fuelCell';
     return 'solar';
   }
@@ -214,6 +216,35 @@
   }
   function isFuelCellPart(p: NovaTaggedPart): boolean {
     return !!p.state && p.state.fuelCell.length > 0;
+  }
+  function isRtgPart(p: NovaTaggedPart): boolean {
+    return !!p.state && p.state.rtg.length > 0;
+  }
+
+  // Per-part RTG aggregate. Stock has one RTG per part, but the wire
+  // supports multiple components per part — sum across them so a
+  // future multi-RTG part renders one cohesive row.
+  function rtgOutput(p: NovaTaggedPart): {
+    current: number; max: number; reference: number; decline: number;
+  } {
+    let current = 0, max = 0, reference = 0, decline = 0;
+    if (p.state) {
+      for (const r of p.state.rtg) {
+        current   += r.currentRate;
+        max       += r.currentPower;
+        reference += r.referencePower;
+        decline   += r.declineWattsPerKerbinYear;
+      }
+    }
+    return { current, max, reference, decline };
+  }
+
+  // Decay state (max / reference). Drives the gauge fraction —
+  // independent of LP throttling, so the gauge represents the
+  // physics, not the consumer load.
+  function rtgDesignFraction(p: NovaTaggedPart): number {
+    const { max, reference } = rtgOutput(p);
+    return reference > 0 ? max / reference : 0;
   }
 
   const genGroups = $derived.by(() => {
@@ -620,7 +651,35 @@
             </li>
           {/if}
           {#each genGroups.inline as p (p.struct.id)}
-            {#if isFuelCellPart(p)}
+            {#if isRtgPart(p)}
+              {@const ro = rtgOutput(p)}
+              {@const rr = fmtRatePair(ro.current, ro.reference)}
+              {@const dr = fmtRate(ro.decline)}
+              <li class="pwr__row pwr__row--storage pwr__row--rtg"
+                  onmouseenter={() => highlightOn([p.struct.id])}
+                  onmouseleave={highlightOff}>
+                <span class="pwr__row-icon">
+                  <ComponentIcon kind="rtg" />
+                </span>
+                <div class="pwr__row-stack">
+                  <div class="pwr__row-line">
+                    <span class="pwr__row-name">{p.struct.title}</span>
+                    <span class="pwr__row-rate"
+                          class:pwr__row-rate--zero={isZero(ro.current)}>
+                      <span class="pwr__row-rate-cur">{rr.cMag}</span><span
+                        class="pwr__row-rate-max">/{rr.mMag}</span><em>{rr.unit}</em>
+                    </span>
+                  </div>
+                  <div class="pwr__row-line pwr__row-line--gauge">
+                    <SegmentGauge fraction={rtgDesignFraction(p)} />
+                    <span class="pwr__rtg-decline"
+                          title="Predicted output loss over the next Kerbin year">
+                      ↓ {dr.mag}<em>{dr.unit}/Ky</em>
+                    </span>
+                  </div>
+                </div>
+              </li>
+            {:else if isFuelCellPart(p)}
               {@const fc = p.state!.fuelCell[0]}
               {@const fco = fuelCellOutput(p)}
               {@const fcr = fmtRatePair(fco.current, fco.max)}
@@ -1187,6 +1246,26 @@
      glow is the "actively refilling from main tanks" cue. */
   .pwr__fc-gauge--refilling :global(.sg) {
     filter: drop-shadow(0 0 2px var(--accent-glow));
+  }
+
+  /* RTG row: gauge on line 2 shares space with a small forward-looking
+     decline label. Gauge gets the elastic share; the decline is fixed-
+     width so it doesn't compress at narrow panel widths. */
+  .pwr__row--rtg .pwr__row-line--gauge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pwr__row--rtg .pwr__row-line--gauge :global(.sg) {
+    flex: 1 1 auto;
+  }
+  .pwr__rtg-decline {
+    flex: 0 0 auto;
+    color: var(--fg-dim);
+    font-size: 9px;
+    line-height: 11px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
   }
 
   /* Empty leading slot used by flat consumer rows so their icons sit

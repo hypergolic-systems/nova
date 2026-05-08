@@ -52,6 +52,8 @@ namespace Nova.Telemetry;
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
 //          manifoldFraction, refillActive]                             FuelCell
 //   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
+//   ["R", currentRate, currentPower, referencePower,
+//          declineWattsPerKerbinYear]                                  Rtg
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -78,6 +80,11 @@ namespace Nova.Telemetry;
 //                                id is unknown.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
+
+  // Stock Kerbin year length, used purely as a UI display unit for
+  // the RTG decline rate. RTG decay is computed in real seconds; the
+  // Kerbin-year conversion is a presentation concern, not physics.
+  private const double KerbinYearSeconds = 9_203_545.0;
 
   private Part _part;
   private string _name;
@@ -367,6 +374,26 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, fuelCell.ValidUntilSeconds, ref f);
         WriteNum(sb, fuelCell.Manifold.FillFraction, ref f);
         WriteBit(sb, fuelCell.RefillActive, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case Rtg rtg: {
+        if (rtg.Vessel == null) return false;
+        double now = rtg.Vessel.Systems.Clock.UT;
+        double currentPower = rtg.ReferencePower * rtg.DecayFactor(now);
+        double halfLifeSec = rtg.HalfLifeDays * 86400.0;
+        // P(t+Ky) = P(t) × 2^(-Ky / halfLife) → decline = P × (1 - …).
+        double decayFracOverKy = 1.0 - System.Math.Pow(2.0, -KerbinYearSeconds / halfLifeSec);
+        double declineWattsPerKy = currentPower * decayFracOverKy;
+
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "R", ref f);
+        WriteNum(sb, rtg.CurrentRate, ref f);
+        WriteNum(sb, currentPower, ref f);
+        WriteNum(sb, rtg.ReferencePower, ref f);
+        WriteNum(sb, declineWattsPerKy, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

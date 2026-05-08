@@ -16,7 +16,8 @@
     | 'fuelCell'
     | 'command'
     | 'dataStorage'
-    | 'thermometer';
+    | 'thermometer'
+    | 'rtg';
 
   let { kind }: { kind: ComponentKind } = $props();
 </script>
@@ -127,6 +128,17 @@
       <line x1="6" y1="1.4" x2="6" y2="8" stroke-width="1.3" />
       <line x1="7.5" y1="4.2" x2="8.6" y2="4.2" />
       <line x1="7.5" y1="6.4" x2="8.6" y2="6.4" />
+    </g>
+  {:else if kind === 'rtg'}
+    <!-- Radiation trefoil: solid hub + three 60° blades at 120°
+         intervals (one up, two down-flanking). ISO-361 silhouette
+         simplified to flat-arc polygons so the shape stays crisp at
+         12 px without needing tiny SVG arcs. -->
+    <circle cx="6" cy="6" r="1.5" fill="currentColor" />
+    <g fill="currentColor">
+      <path d="M 3.5 1.67 L 6 1 L 8.5 1.67 L 6 3.5 Z" />
+      <path d="M 11 6 L 10.33 8.5 L 8.5 10.33 L 8.17 7.25 Z" />
+      <path d="M 1 6 L 1.67 8.5 L 3.5 10.33 L 3.83 7.25 Z" />
     </g>
   {/if}
 </svg>
