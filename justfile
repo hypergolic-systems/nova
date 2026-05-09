@@ -80,7 +80,7 @@ mod-clean:
     rm -rf mod/Nova.Core/build mod/Nova/build mod/Nova.Tests/bin mod/Nova.Tests/obj
 
 # Run all test suites — C# (mod/) + Rust (crates/).
-test config="Release": (mod-build config) save-cli-test
+test config="Release": (mod-build config) save-cli-test sim-test
     cd mod && dotnet test Nova.sln -c {{config}} --no-build
 
 # C#-only tests.
@@ -104,6 +104,15 @@ save-cli-test:
 # Install nova-save-cli to ~/.cargo/bin/ for use anywhere on PATH.
 save-cli-install:
     cargo install --path crates/save-cli
+
+# Build the nova-sim simulation engine (pure Rust, no FFI yet).
+sim-build:
+    cargo build --release -p nova-sim
+
+# Run nova-sim's tests — unit + standalone scenario tests that
+# exercise the simulator without KSP or FFI.
+sim-test:
+    cargo test --release -p nova-sim
 
 # --- Release packaging ---
 
@@ -172,6 +181,6 @@ install ksp_path: dist
 
 # --- All ---
 
-build: mod-build save-cli-build
+build: mod-build save-cli-build sim-build
 
 check: build test
