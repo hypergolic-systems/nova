@@ -142,10 +142,36 @@ public sealed unsafe class NovaWorldAddon : MonoBehaviour {
     return handle;
   }
 
+  /// <summary>
+  /// Look up an already-registered handle by vessel id. Returns
+  /// <c>null</c> if the vessel was never registered (which under the
+  /// "Rust drives spawning" rule indicates a bug in the spawn path —
+  /// every KSP <see cref="Vessel"/> Nova sees should have a Rust
+  /// counterpart created before it).
+  /// </summary>
+  public NovaVesselHandle LookupHandle(uint vesselId) {
+    return _byVesselId.TryGetValue(vesselId, out var h) ? h : null;
+  }
+
   public void UnregisterVessel(uint vesselId) {
     if (_byVesselId.TryGetValue(vesselId, out var h)) {
       h?.Dispose();
       _byVesselId.Remove(vesselId);
     }
+  }
+
+  /// <summary>
+  /// Push an updated orbit for a vessel that was registered as
+  /// <c>Situation::Abstract</c>. Used when KSP populates
+  /// <c>orbitDriver</c> after our initial registration.
+  /// </summary>
+  public void SetVesselOrbit(uint vesselId, double semiMajorAxis, double eccentricity,
+      double inclination, double lan, double argPeriapsis, double meanAnomalyAtEpoch,
+      double epoch, uint bodyIndex) {
+    if (!_initialized || _world == null) return;
+    int rc = NovaNative.nova_vessel_set_situation_orbit(_world, vesselId,
+        semiMajorAxis, eccentricity, inclination, lan, argPeriapsis,
+        meanAnomalyAtEpoch, epoch, bodyIndex);
+    if (rc != 0) NovaLog.LogError($"nova_vessel_set_situation_orbit({vesselId}) rc={rc}");
   }
 }

@@ -21,6 +21,7 @@ pub mod orbit;
 pub mod resource;
 pub mod resources;
 pub mod sim_clock;
+pub mod situation;
 pub mod systems;
 pub mod world;
 pub mod world_context;
@@ -41,6 +42,7 @@ pub use orbit::OrbitalElements;
 pub use resource::{Resource, ResourceDomain};
 pub use resources::{Orbit, PanelGeometry, SolarEvent, SolarForecaster};
 pub use sim_clock::SimClock;
+pub use situation::Situation;
 pub use systems::{
     BufferId, Consumer, ConsumerId, ConsumerInput, Device, DeviceHandle, DeviceId, Node, NodeId,
     Priority, ProcessFlowSystem, StagingFlowSystem, VesselSystems,

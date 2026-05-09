@@ -377,13 +377,19 @@ fn synthesise_vessel_endpoints(world: &World) -> Vec<Endpoint> {
         if antennas.is_empty() {
             continue;
         }
-        let motion = MotionModel::Kepler { parent: v.parent, elements: v.orbit };
+        // Abstract vessels (editor preview, pre-launch) have no orbit
+        // and therefore no comms motion model — skip. Once the host
+        // transitions to `Orbit`, the endpoint appears next solve.
+        let Some((parent, elements)) = v.situation.as_orbit() else {
+            continue;
+        };
+        let motion = MotionModel::Kepler { parent, elements };
         out.push(Endpoint {
             id: EndpointId::Vessel(v.id),
             name: v.name.clone(),
             kind: EndpointKind::Vessel(v.id),
             motion: Some(motion),
-            primary_body: Some(v.parent),
+            primary_body: Some(parent),
             antennas,
             is_predictable: true,
             path_to_home: PathSummary::default(),

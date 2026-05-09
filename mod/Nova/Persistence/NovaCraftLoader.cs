@@ -1,42 +1,42 @@
 using System.Collections.Generic;
 using System.IO;
+using Nova.Ffi;
 using UnityEngine;
 using Proto = Nova.Core.Persistence.Protos;
 
 namespace Nova.Persistence;
 
 /// <summary>
-/// Load a <see cref="Proto.CraftFile"/> into a KSP
-/// <see cref="ShipConstruct"/> AND stash a remapped
-/// <see cref="Proto.Vessel"/> for the Rust simulator to pick up
-/// once KSP spawns the live <see cref="Vessel"/>.
+/// Load a <see cref="Proto.CraftFile"/> when the player clicks Launch.
+/// Rust-first spawn order:
 ///
-/// The proto is canonical: every craft launched from the editor
-/// goes through this method, so the .nvc bytes flow into both
-/// the KSP-side <see cref="Part"/> graph (via
-/// <see cref="NovaPartInstantiator"/>) and the Rust-side
-/// <c>nova-sim</c> vessel (via <see cref="PendingVessel"/> →
-/// <c>NovaVesselModule.OnPartCountChanged</c> →
-/// <c>RegisterFromProto</c>).
+/// 1. Generate persistent IDs for the ship + parts up front.
+/// 2. Remap the .nvc proto into the new persistent-ID space.
+/// 3. Register the vessel with the Rust simulator
+///    (<see cref="NovaWorldAddon.RegisterVessel"/>) — Rust is the
+///    source of truth, so the canonical bytes land there *before*
+///    KSP creates anything.
+/// 4. Instantiate KSP <see cref="Part"/> GameObjects (via
+///    <see cref="NovaPartInstantiator"/>) using the same IDs.
+/// 5. KSP's <c>ShipConstruction.AssembleForLaunch</c> downstream
+///    creates a <see cref="Vessel"/> whose <c>persistentId</c> equals
+///    <see cref="ShipConstruct.persistentId"/> (per stock
+///    <c>ShipConstruction.cs:470</c>); <see cref="Components.NovaVesselModule"/>'s
+///    <c>OnLoadVessel</c> looks up the existing handle by that id.
 ///
-/// Why the stash: KSP creates the live <see cref="Vessel"/> some
-/// frames after <see cref="Load"/> returns, and the
-/// <see cref="GameEvents.onVesselPartCountChanged"/> hook is the
-/// earliest reliable point to register with Rust. We can't pass
-/// the proto through KSP's spawn pipeline directly, so we hand
-/// it off via this static.
+/// No PendingVessel handoff: the Rust vessel is alive before any
+/// KSP-side <see cref="Part"/> exists, and the per-vessel id is the
+/// only piece of state that needs to cross the gap.
 /// </summary>
 public static class NovaCraftLoader {
 
-  /// <summary>
-  /// Set by <see cref="Load"/> after a craft is loaded via
-  /// <c>ShipConstruction.LoadShip</c>. Consumed by
-  /// <c>NovaVesselModule.OnPartCountChanged</c> when the spawned
-  /// vessel's part-id set matches; cleared after use.
-  /// </summary>
-  public static Proto.Vessel PendingVessel;
-
   public static ShipConstruct Load(Proto.CraftFile craft) {
+    var addon = NovaWorldAddon.Instance;
+    if (addon == null) {
+      NovaLog.LogError("NovaCraftLoader.Load: NovaWorldAddon not available");
+      return null;
+    }
+
     var protoVessel = craft.Vessel;
     var structure = protoVessel.Structure;
     var state = protoVessel.State;
@@ -52,18 +52,43 @@ public static class NovaCraftLoader {
     if (craft.Rotation != null)
       ship.rotation = new Quaternion(craft.Rotation.X, craft.Rotation.Y, craft.Rotation.Z, craft.Rotation.W);
 
-    // Capture craft-ID → persistent-ID mapping during instantiation
-    // so we can rewrite the proto into persistent-ID space afterwards.
-    // The Rust side keys per-component arena slots by the persistent
-    // ID that the C# side will report at lookup time, so the proto
-    // must use the same id space.
+    // Pre-generate part persistent IDs and remap the proto into that
+    // ID space. The Rust simulator and KSP both use these as the
+    // primary part identifier, and they need to match — Rust is keyed
+    // on these from the moment of `nova_vessel_new`.
     var craftIdToPid = new Dictionary<uint, uint>();
-    var parts = NovaPartInstantiator.Instantiate(structure, state, ps => {
-      var newId = FlightGlobals.GetUniquepersistentId();
-      craftIdToPid[ps.Id] = newId;
-      return newId;
-    });
-    if (parts == null) return null;
+    foreach (var ps in structure.Parts)
+      craftIdToPid[ps.Id] = FlightGlobals.GetUniquepersistentId();
+
+    var remappedStructure = RemapStructure(structure, craftIdToPid);
+    var remappedState = RemapState(state, craftIdToPid);
+    remappedStructure.PersistentId = ship.persistentId;
+    if (remappedState != null && string.IsNullOrEmpty(remappedState.Name))
+      remappedState.Name = ship.shipName;
+
+    // Register with Rust *first*. The .nvc has no orbit (launchpad
+    // is KSP's call); Rust gets the vessel as `Situation::Abstract`,
+    // and `NovaVesselModule.MaybePushOrbit` upgrades it to `Orbit`
+    // once `vessel.orbitDriver` is wired up.
+    var ut = HighLogic.LoadedSceneIsFlight ? Planetarium.GetUniversalTime() : 0.0;
+    var handle = addon.RegisterVessel(
+        ship.persistentId,
+        Serialize(remappedStructure),
+        Serialize(remappedState),
+        ut);
+    if (handle == null) {
+      NovaLog.LogError($"NovaCraftLoader.Load: Rust registration failed for ship {ship.shipName}");
+      return null;
+    }
+
+    // Now instantiate the KSP-side parts using the IDs we already
+    // committed to Rust. Each PartStructure.Id maps to its allocated
+    // persistent id via craftIdToPid.
+    var parts = NovaPartInstantiator.Instantiate(structure, state, ps => craftIdToPid[ps.Id]);
+    if (parts == null) {
+      addon.UnregisterVessel(ship.persistentId);
+      return null;
+    }
 
     // Restore editor position — PositionPartsFromRoot placed root at
     // origin, but the editor expects it at the saved VAB/SPH position.
@@ -77,14 +102,6 @@ public static class NovaCraftLoader {
       part.ship = ship;
 
     ship.parts = parts;
-
-    // Clone + remap the proto into persistent-ID space and stash
-    // for the upcoming OnPartCountChanged → RegisterFromProto handoff.
-    PendingVessel = new Proto.Vessel {
-      Structure = RemapStructure(structure, craftIdToPid),
-      State = RemapState(state, craftIdToPid),
-    };
-
     return ship;
   }
 
@@ -102,6 +119,7 @@ public static class NovaCraftLoader {
   }
 
   static Proto.VesselState RemapState(Proto.VesselState src, Dictionary<uint, uint> map) {
+    if (src == null) return new Proto.VesselState();
     var copy = Clone(src);
     foreach (var ps in copy.Parts) {
       if (map.TryGetValue(ps.Id, out var newId)) ps.Id = newId;
@@ -120,5 +138,11 @@ public static class NovaCraftLoader {
     ProtoBuf.Serializer.Serialize(ms, src);
     ms.Position = 0;
     return ProtoBuf.Serializer.Deserialize<T>(ms);
+  }
+
+  static byte[] Serialize<T>(T proto) {
+    using var ms = new MemoryStream();
+    ProtoBuf.Serializer.Serialize(ms, proto);
+    return ms.ToArray();
   }
 }

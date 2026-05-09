@@ -6,6 +6,7 @@ use crate::orbit::OrbitalElements;
 use crate::resource::Resource;
 use crate::resources::{Orbit, PanelGeometry, SolarEvent, SolarForecaster};
 use crate::sim_clock::SimClock;
+use crate::situation::Situation;
 use crate::systems::{DeviceHandle, NodeId, Priority, VesselSystems};
 use crate::world_context::WorldContext;
 
@@ -31,37 +32,56 @@ pub(crate) struct VesselSolar {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VesselId(pub u32);
 
-/// A simulated vessel. Carries orbital elements (for ephem queries),
-/// a part list (for component-laden tests), and an optional
+/// A simulated vessel. Carries a [`Situation`] (where it is — Keplerian
+/// orbit, abstract editor preview, …), a part list, and an optional
 /// `VesselSystems` populated by `initialize_solver`.
 #[derive(Clone, Debug)]
 pub struct Vessel {
     pub id: VesselId,
     pub name: String,
-    pub parent: BodyId,
-    pub orbit: OrbitalElements,
+    pub situation: Situation,
     pub parts: Vec<Part>,
     pub systems: Option<VesselSystems>,
     pub(crate) solar: Option<VesselSolar>,
 }
 
 impl Vessel {
-    pub fn new(id: VesselId, name: impl Into<String>, parent: BodyId, orbit: OrbitalElements) -> Self {
+    pub fn new(id: VesselId, name: impl Into<String>, situation: Situation) -> Self {
         Vessel {
             id,
             name: name.into(),
-            parent,
-            orbit,
+            situation,
             parts: Vec::new(),
             systems: None,
             solar: None,
         }
     }
 
+    /// Convenience constructor for `Situation::Orbit`. Most callers want
+    /// this — `Abstract` is reserved for editor / pre-launch states.
+    pub fn in_orbit(
+        id: VesselId,
+        name: impl Into<String>,
+        parent: BodyId,
+        orbit: OrbitalElements,
+    ) -> Self {
+        Vessel::new(id, name, Situation::orbit(parent, orbit))
+    }
+
+    /// Update the vessel's situation in-place. Used by FFI hosts that
+    /// register a vessel as `Abstract` and later transition it to
+    /// `Orbit` when the host's orbit data is ready.
+    pub fn set_situation(&mut self, situation: Situation) {
+        self.situation = situation;
+    }
+
     /// Vessel orbit descriptor for `SolarForecaster::forecast`.
-    /// Composes the existing `(parent, orbit)` fields — not stored.
-    pub fn orbit_descriptor(&self) -> Orbit {
-        Orbit::new(self.orbit, self.parent)
+    /// `None` when the vessel has no physical location (e.g. editor
+    /// preview); callers should skip orbit-dependent work.
+    pub fn orbit_descriptor(&self) -> Option<Orbit> {
+        self.situation
+            .as_orbit()
+            .map(|(parent, orbit)| Orbit::new(orbit, parent))
     }
 
     /// Append a part. Builder-style — returns `&mut Self`.
@@ -168,16 +188,23 @@ impl Vessel {
         //    `is_sunlit` / `shadow_transition_ut` reflect reality
         //    before the first tick lands. Cheap (one ephem walk).
         if self.solar.is_some() {
-            let event = ctx.solar.forecast(&self.orbit_descriptor(), ut);
-            let (sunlit, transition_ut) = match event {
-                SolarEvent::Sun(dt) => (true, abs_ut(ut, dt)),
-                SolarEvent::Shade(dt) => (false, abs_ut(ut, dt)),
-            };
-            for part in &mut self.parts {
-                for c in &mut part.components {
-                    if let Component::SolarPanel(p) = c {
-                        p.is_sunlit = sunlit;
-                        p.shadow_transition_ut = transition_ut;
+            // Abstract vessels (editor preview, pre-launch) have no
+            // orbit to forecast against — leave panel telemetry at the
+            // default (is_sunlit=false, transition_ut=0). The next
+            // `update_solar_pre_solve` will pick up real values once
+            // the host transitions the situation to `Orbit`.
+            if let Some(desc) = self.orbit_descriptor() {
+                let event = ctx.solar.forecast(&desc, ut);
+                let (sunlit, transition_ut) = match event {
+                    SolarEvent::Sun(dt) => (true, abs_ut(ut, dt)),
+                    SolarEvent::Shade(dt) => (false, abs_ut(ut, dt)),
+                };
+                for part in &mut self.parts {
+                    for c in &mut part.components {
+                        if let Component::SolarPanel(p) = c {
+                            p.is_sunlit = sunlit;
+                            p.shadow_transition_ut = transition_ut;
+                        }
                     }
                 }
             }
@@ -384,9 +411,13 @@ impl Vessel {
             Some(s) => s,
             None => return,
         };
+        let desc = match self.orbit_descriptor() {
+            Some(d) => d,
+            None => return, // abstract vessel — no orbit to forecast against
+        };
 
         let now = systems.clock.ut();
-        let event = ctx.solar.forecast(&self.orbit_descriptor(), now);
+        let event = ctx.solar.forecast(&desc, now);
         let (sunlit, transition_ut) = match event {
             SolarEvent::Sun(dt) => (true, abs_ut(now, dt)),
             SolarEvent::Shade(dt) => (false, abs_ut(now, dt)),
@@ -562,17 +593,21 @@ impl World {
     }
 
     /// Vessel position in the parent body's inertial frame at `ut`.
-    pub fn vessel_position_relative(&self, id: VesselId, ut: f64) -> Vec3d {
+    /// `None` for abstract vessels (no physical location).
+    pub fn vessel_position_relative(&self, id: VesselId, ut: f64) -> Option<Vec3d> {
         let v = self.vessel(id);
-        let mu = self.ephemeris.body(v.parent).mu;
-        v.orbit.position_at(mu, ut)
+        let (parent, orbit) = v.situation.as_orbit()?;
+        let mu = self.ephemeris.body(parent).mu;
+        Some(orbit.position_at(mu, ut))
     }
 
-    /// Vessel position in the root inertial frame at `ut`.
-    pub fn vessel_position_absolute(&self, id: VesselId, ut: f64) -> Vec3d {
+    /// Vessel position in the root inertial frame at `ut`. `None` for
+    /// abstract vessels.
+    pub fn vessel_position_absolute(&self, id: VesselId, ut: f64) -> Option<Vec3d> {
         let v = self.vessel(id);
-        let parent_pos = self.ephemeris.body_position_absolute(v.parent, ut);
-        parent_pos + self.vessel_position_relative(id, ut)
+        let parent = v.situation.parent_body()?;
+        let parent_pos = self.ephemeris.body_position_absolute(parent, ut);
+        Some(parent_pos + self.vessel_position_relative(id, ut)?)
     }
 
     /// Direction from the given absolute position toward the root

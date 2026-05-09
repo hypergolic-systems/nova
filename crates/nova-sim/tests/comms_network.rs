@@ -30,7 +30,7 @@ fn vessel_with_antenna(
     orbit: OrbitalElements,
     antenna: Antenna,
 ) -> Vessel {
-    let mut v = Vessel::new(VesselId(id), name, parent, orbit);
+    let mut v = Vessel::in_orbit(VesselId(id), name, parent, orbit);
     v.add_part(1, "core", 100.0, vec![Component::Comms(Comms::new(antenna))]);
     v
 }
@@ -134,7 +134,7 @@ fn build_graph_ksc_and_one_vessel_link_at_full_ceiling() {
 fn build_graph_vessels_without_antennas_are_skipped() {
     let world = World::builder()
         .bodies(kerbol_bodies())
-        .vessel(Vessel::new(
+        .vessel(Vessel::in_orbit(
             VesselId(1),
             "NoAntenna",
             ids::KERBIN,

@@ -52,47 +52,23 @@ public static class NovaSaveLoader {
   }
 
   static bool ApplyQuickload(Proto.SaveFile save) {
+    // Phase-1: always destroy + create. Stock-style structural-diff
+    // matching is gone with `ComputeCurrentStructureHash` and will be
+    // re-added once the Rust simulator can answer "structure hash for
+    // vessel X" itself (the source of truth has moved).
     var savedByPid = new Dictionary<uint, Proto.Vessel>();
     foreach (var sv in save.Vessels)
       savedByPid[sv.Structure.PersistentId] = sv;
 
-    var flightByPid = new Dictionary<uint, Vessel>();
+    var toDestroy = new List<Vessel>();
     foreach (var v in FlightGlobals.Vessels) {
       if (v.state == Vessel.State.DEAD) continue;
-      flightByPid[v.persistentId] = v;
-    }
-
-    var toMatch = new List<(Vessel flight, Proto.Vessel saved)>();
-    var toCreate = new List<Proto.Vessel>();
-    var toDestroy = new List<Vessel>();
-
-    foreach (var kvp in savedByPid) {
-      var pid = kvp.Key;
-      var saved = kvp.Value;
-
-      if (flightByPid.TryGetValue(pid, out var flight)) {
-        flightByPid.Remove(pid);
-        var mod = flight.FindVesselModuleImplementing<NovaVesselModule>();
-        var flightHash = mod?.ComputeCurrentStructureHash();
-
-        if (flightHash != null && saved.StructureHash != null
-            && HashesMatch(flightHash, saved.StructureHash)) {
-          toMatch.Add((flight, saved));
-        } else if (flightHash == null && saved.StructureHash != null) {
-          toMatch.Add((flight, saved));
-        } else {
-          toDestroy.Add(flight);
-          toCreate.Add(saved);
-        }
-      } else {
-        toCreate.Add(saved);
-      }
-    }
-
-    foreach (var v in flightByPid.Values)
       toDestroy.Add(v);
+    }
 
-    NovaLog.Log($"[Quickload] {toMatch.Count} matched, {toCreate.Count} to create, {toDestroy.Count} to destroy");
+    var toCreate = new List<Proto.Vessel>(savedByPid.Values);
+
+    NovaLog.Log($"[Quickload] {toCreate.Count} to create, {toDestroy.Count} to destroy");
 
     if (FlightCamera.fetch != null)
       FlightCamera.fetch.SetTarget((Transform)null);
@@ -119,11 +95,6 @@ public static class NovaSaveLoader {
 
     Planetarium.SetUniversalTime(save.UniversalTime);
 
-    foreach (var (flight, saved) in toMatch) {
-      NovaLog.Log($"[Quickload] Matched vessel: {flight.vesselName} (pid={flight.persistentId})");
-      ApplyVesselState(flight, saved);
-    }
-
     if (save.Crews != null)
       RestoreCrew(save.Crews);
 
@@ -146,59 +117,6 @@ public static class NovaSaveLoader {
 
     NovaLog.Log($"[Quickload] Complete — UT={save.UniversalTime:F1}");
     return true;
-  }
-
-  static void ApplyVesselState(Vessel vessel, Proto.Vessel saved) {
-    var structure = saved.Structure;
-    var state = saved.State;
-    var flight = state.Flight;
-    var orbit = structure?.Orbit;
-
-    vessel.vesselName = state.Name;
-    vessel.vesselType = (VesselType)state.VesselType;
-    vessel.situation = (Vessel.Situations)state.Situation;
-    vessel.missionTime = state.MissionTime;
-    vessel.launchTime = state.LaunchTime;
-
-    if (orbit != null)
-      ApplyOrbit(vessel, orbit);
-
-    if (flight != null) {
-      bool wasPacked = vessel.packed;
-      if (!wasPacked) vessel.GoOnRails();
-
-      if (orbit != null) {
-        vessel.orbitDriver.updateMode = OrbitDriver.UpdateMode.UPDATE;
-        vessel.orbitDriver.orbit.Init();
-        vessel.orbitDriver.updateFromParameters();
-      }
-
-      if (flight.Position != null) {
-        var pos = flight.Position;
-        vessel.latitude = pos.Latitude;
-        vessel.longitude = pos.Longitude;
-        vessel.altitude = pos.Altitude;
-        vessel.heightFromTerrain = (float)pos.HeightAboveTerrain;
-        if (pos.Rotation != null) {
-          vessel.srfRelRotation = new Quaternion(pos.Rotation.X, pos.Rotation.Y, pos.Rotation.Z, pos.Rotation.W);
-          var body = vessel.orbitDriver.orbit.referenceBody;
-          vessel.transform.rotation = body.bodyTransform.rotation * vessel.srfRelRotation;
-        }
-      }
-
-      if (!wasPacked) {
-        vessel.GoOffRails();
-        vessel.Autopilot.SetupModules();
-      }
-
-      ApplyActionGroups(vessel, flight.ActionGroups);
-    }
-
-    // Refresh the FFI handle from the saved proto. This rebuilds the
-    // arena with the saved per-component state so subsequent reads
-    // reflect quickload values.
-    var mod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
-    mod?.RegisterFromProto(saved);
   }
 
   static void RestoreCrew(List<Proto.Kerbal> crew) {
@@ -235,21 +153,6 @@ public static class NovaSaveLoader {
       NovaLog.Log($"[Quickload] Crew: seated {seated} kerbals");
   }
 
-  static void ApplyOrbit(Vessel vessel, Proto.OrbitalState orbState) {
-    var body = FlightGlobals.Bodies[orbState.BodyIndex];
-    var orbit = vessel.orbitDriver.orbit;
-    orbit.inclination = orbState.Inclination;
-    orbit.eccentricity = orbState.Eccentricity;
-    orbit.semiMajorAxis = orbState.SemiMajorAxis;
-    orbit.LAN = orbState.Lan;
-    orbit.argumentOfPeriapsis = orbState.ArgumentOfPeriapsis;
-    orbit.meanAnomalyAtEpoch = orbState.MeanAnomalyAtEpoch;
-    orbit.epoch = orbState.Epoch;
-    orbit.referenceBody = body;
-    orbit.Init();
-    vessel.orbitDriver.updateFromParameters();
-  }
-
   static void ApplyActionGroups(Vessel vessel, uint bits) {
     for (int i = 0; i < 32; i++) {
       var group = (KSPActionGroup)(1 << i);
@@ -273,9 +176,26 @@ public static class NovaSaveLoader {
 
     NovaLog.Log($"[Quickload] CreateVessel: pid={pid} name={state.Name} parts={structure.Parts.Count}");
 
+    // Rust-first: register the vessel with the simulator from the
+    // saved proto bytes BEFORE we materialise any KSP-side state.
+    // NovaVesselModule.OnLoadVessel will look this handle up by
+    // persistent id when KSP brings the vessel up.
+    var addon = NovaWorldAddon.Instance;
+    if (addon == null) {
+      NovaLog.LogError($"CreateVessel: NovaWorldAddon not available for pid={pid}");
+      return null;
+    }
+    var ut = HighLogic.LoadedSceneIsFlight ? Planetarium.GetUniversalTime() : 0.0;
+    var handle = addon.RegisterVessel(pid, Serialize(structure), Serialize(state), ut);
+    if (handle == null) {
+      NovaLog.LogError($"CreateVessel: Rust registration failed for pid={pid}");
+      return null;
+    }
+
     var parts = NovaPartInstantiator.Instantiate(structure, state, ps => ps.Id);
     if (parts == null) {
       NovaLog.Log($"[Quickload] CreateVessel: part instantiation failed for pid={pid}");
+      addon.UnregisterVessel(pid);
       return null;
     }
     NovaLog.Log($"[Quickload] CreateVessel: instantiated {parts.Count} parts");
@@ -378,11 +298,8 @@ public static class NovaSaveLoader {
 
     FlightGlobals.AddVessel(vessel);
 
-    // Fork into Rust: same proto pair, registered by the addon.
-    var novaMod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
-    if (novaMod != null) {
-      novaMod.RegisterFromProto(saved);
-    }
+    // Rust handle already exists (registered at the top of
+    // CreateVessel); NovaVesselModule.OnLoadVessel attaches to it.
 
     foreach (var part in vessel.parts) {
       bool isFull = part.PhysicsSignificance != 1;
@@ -436,13 +353,6 @@ public static class NovaSaveLoader {
     var body = FlightGlobals.Bodies[o.BodyIndex];
     return new Orbit(o.Inclination, o.Eccentricity, o.SemiMajorAxis,
         o.Lan, o.ArgumentOfPeriapsis, o.MeanAnomalyAtEpoch, o.Epoch, body);
-  }
-
-  static bool HashesMatch(byte[] a, byte[] b) {
-    if (a.Length != b.Length) return false;
-    for (int i = 0; i < a.Length; i++)
-      if (a[i] != b[i]) return false;
-    return true;
   }
 
   // ── Scene load (from scratch) ──────────────────────────────────────
@@ -530,5 +440,11 @@ public static class NovaSaveLoader {
         ignoreField.SetValue(v, 60);
 
     NovaLog.Log($"[SceneLoad] Complete — {FlightGlobals.Vessels.Count} vessels, UT={save.UniversalTime:F1}");
+  }
+
+  static byte[] Serialize<T>(T proto) {
+    using var ms = new MemoryStream();
+    ProtoBuf.Serializer.Serialize(ms, proto);
+    return ms.ToArray();
   }
 }

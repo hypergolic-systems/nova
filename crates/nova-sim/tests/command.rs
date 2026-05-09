@@ -12,7 +12,7 @@ use nova_sim::orbit::OrbitalElements;
 use nova_sim::{Vessel, VesselId};
 
 fn pod_with_components(components: Vec<Component>) -> Vessel {
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "TestVessel",
         ids::KERBIN,

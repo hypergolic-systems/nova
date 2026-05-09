@@ -39,7 +39,7 @@ fn make_tank(resource: Resource, capacity: f64) -> TankVolume {
 /// Kerbin orbit. Run `initialize_solver(0)` so the vessel is ready
 /// for `vessel.tick(&nova_sim::fixtures::kerbol_ctx(),...)`.
 fn build_vessel(components: Vec<Component>) -> Vessel {
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "test",
         ids::KERBIN,

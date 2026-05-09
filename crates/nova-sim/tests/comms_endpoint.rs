@@ -14,7 +14,7 @@ fn antenna() -> Antenna {
 }
 
 fn world_with_vessel() -> World {
-    let v = Vessel::new(
+    let v = Vessel::in_orbit(
         VesselId(1),
         "Sat",
         ids::KERBIN,
@@ -38,7 +38,7 @@ fn vessel_kind_endpoint_matches_world_position() {
     };
     let ut = 100.0;
     let p = ep.position_at(&world, ut);
-    let expected = world.vessel_position_absolute(VesselId(1), ut);
+    let expected = world.vessel_position_absolute(VesselId(1), ut).unwrap();
     assert_relative_eq!(p.x, expected.x, max_relative = 1e-12);
     assert_relative_eq!(p.y, expected.y, max_relative = 1e-12);
     assert_relative_eq!(p.z, expected.z, max_relative = 1e-12);

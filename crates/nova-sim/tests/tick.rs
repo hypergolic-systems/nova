@@ -15,7 +15,7 @@ use nova_sim::{Vessel, VesselId};
 const G0: f64 = 9.806_65;
 
 fn pod_with_parts(extras: Vec<(u32, &str, f64, Vec<Component>)>) -> Vessel {
-    let mut vessel = Vessel::new(
+    let mut vessel = Vessel::in_orbit(
         VesselId(1),
         "TestVessel",
         ids::KERBIN,

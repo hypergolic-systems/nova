@@ -19,7 +19,7 @@ use nova_sim::{Vessel, VesselId};
 /// relative to the sun, putting the vessel on the anti-sun side at
 /// UT=0 — i.e. starts in shadow.
 fn build_lko_vessel(components: Vec<Component>) -> Vessel {
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "Sat",
         ids::KERBIN,
@@ -130,7 +130,7 @@ fn sunlit_panel_charges_battery() {
     // Phase π → vessel on sun-side at UT=0. Run a brief tick; the
     // battery should gain charge.
     let panel = SolarPanel::new(50.0, Vec3d::new(0.0, 1.0, 0.0));
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "Sat",
         ids::KERBIN,
@@ -172,7 +172,7 @@ fn tick_through_orbit_re_solves_at_shadow_boundary() {
     // (a) the sunlit-state flips during the tick, and (b) more than
     // one solve fired.
     let panel = SolarPanel::new(50.0, Vec3d::new(0.0, 1.0, 0.0));
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "Sat",
         ids::KERBIN,

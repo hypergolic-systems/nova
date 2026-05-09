@@ -134,7 +134,7 @@ fn surface_endpoint_tracks_orbiting_body() {
         .bodies(kerbol_bodies())
         // World needs at least one vessel to satisfy builder; add a
         // stationary Kerbin orbiter that we don't read.
-        .vessel(Vessel::new(
+        .vessel(Vessel::in_orbit(
             VesselId(99),
             "Filler",
             ids::KERBIN,

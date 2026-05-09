@@ -81,7 +81,7 @@ fn vacuum_above_atmosphere_top() {
 fn vessel_in_low_kerbin_orbit_position_at_epoch() {
     let world = World::builder()
         .bodies(kerbol_bodies())
-        .vessel(Vessel::new(
+        .vessel(Vessel::in_orbit(
             VesselId(1),
             "TestSat",
             ids::KERBIN,
@@ -89,12 +89,12 @@ fn vessel_in_low_kerbin_orbit_position_at_epoch() {
         ))
         .build();
 
-    let pos = world.vessel_position_relative(VesselId(1), 0.0);
+    let pos = world.vessel_position_relative(VesselId(1), 0.0).unwrap();
     assert_relative_eq!(pos.norm(), 1_300_000.0, max_relative = 1e-9);
 
     // Kerbin's absolute position + vessel's relative position == vessel absolute.
     let kerbin_abs = world.ephemeris.body_position_absolute(ids::KERBIN, 0.0);
-    let vessel_abs = world.vessel_position_absolute(VesselId(1), 0.0);
+    let vessel_abs = world.vessel_position_absolute(VesselId(1), 0.0).unwrap();
     assert_relative_eq!((vessel_abs - kerbin_abs).norm(), 1_300_000.0, max_relative = 1e-9);
 }
 
@@ -103,7 +103,7 @@ fn vessel_returns_to_start_after_one_period() {
     let r = 1_400_000.0; // 800 km altitude
     let world = World::builder()
         .bodies(kerbol_bodies())
-        .vessel(Vessel::new(
+        .vessel(Vessel::in_orbit(
             VesselId(7),
             "LKO",
             ids::KERBIN,
@@ -114,8 +114,8 @@ fn vessel_returns_to_start_after_one_period() {
     let kerbin_mu = world.ephemeris.body(ids::KERBIN).mu;
     let period = OrbitalElements::circular(r).period(kerbin_mu);
 
-    let p0 = world.vessel_position_relative(VesselId(7), 0.0);
-    let p1 = world.vessel_position_relative(VesselId(7), period);
+    let p0 = world.vessel_position_relative(VesselId(7), 0.0).unwrap();
+    let p1 = world.vessel_position_relative(VesselId(7), period).unwrap();
     // Body's position drifts during a full vessel-period (Kerbin moves
     // around the Sun), so we compare *relative* positions only.
     assert_relative_eq!(p0.x, p1.x, max_relative = 1e-9);

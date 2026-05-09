@@ -19,7 +19,7 @@ use nova_sim::{Vessel, VesselId};
 /// in a low Kerbin orbit. Mirrors the staging-side `pod_with_parts`
 /// fixture pattern.
 fn pod_with_components(components: Vec<Component>) -> Vessel {
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "TestVessel",
         ids::KERBIN,
@@ -148,7 +148,7 @@ fn battery_and_engine_tick_run_both_solvers() {
     // and clock advances.
     use nova_sim::components::{Engine, TankVolume};
 
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(2),
         "MixedVessel",
         ids::KERBIN,

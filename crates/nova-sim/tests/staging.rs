@@ -13,7 +13,7 @@ use nova_sim::{Vessel, VesselId};
 /// extra parts dangling off it. Mirrors the C# RcsTests pattern of
 /// building a pod + tank + engine triple.
 fn pod_with_parts(extras: Vec<(u32, &str, f64, Vec<Component>)>) -> Vessel {
-    let mut vessel = Vessel::new(
+    let mut vessel = Vessel::in_orbit(
         VesselId(1),
         "TestVessel",
         ids::KERBIN,

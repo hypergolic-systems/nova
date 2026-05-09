@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use nova_sim::components::Command;
 use nova_sim::{
-    Battery, BodyId, Component, OrbitalElements, Vessel, VesselId, World, WorldContext,
+    Battery, BodyId, Component, OrbitalElements, Situation, Vessel, VesselId, World, WorldContext,
 };
 use prost::Message;
 
@@ -169,26 +169,33 @@ pub unsafe extern "C" fn nova_vessel_new(
         return VesselHandle::NULL;
     }
 
-    // Pull orbit out of the structure. Phase-1 hardcodes Kerbin as
-    // the parent body until `nova_world_set_body_database` lands; the
-    // body_index in the proto is captured but ignored.
-    let orbit = match structure.orbit.as_ref() {
-        Some(o) => OrbitalElements {
-            semi_major_axis: o.semi_major_axis,
-            eccentricity: o.eccentricity,
-            inclination: o.inclination,
-            lan: o.lan,
-            arg_periapsis: o.argument_of_periapsis,
-            mean_anomaly_at_epoch: o.mean_anomaly_at_epoch,
-            epoch: o.epoch,
-        },
-        None => return VesselHandle::NULL,
-    };
+    // Pull orbit out of the structure. If absent — VAB pre-launch,
+    // editor preview, anything host hasn't placed yet — register the
+    // vessel as `Abstract`. The host calls `nova_vessel_set_situation`
+    // later to transition it to `Orbit` when the data is ready.
+    //
+    // Phase-1 hardcodes Kerbin as the parent body until
+    // `nova_world_set_body_database` lands; the body_index in the
+    // proto is captured but ignored.
     const KERBIN_BODY_ID: u32 = 1;
-    let parent_body = BodyId(KERBIN_BODY_ID);
+    let situation = match structure.orbit.as_ref() {
+        Some(o) => Situation::orbit(
+            BodyId(KERBIN_BODY_ID),
+            OrbitalElements {
+                semi_major_axis: o.semi_major_axis,
+                eccentricity: o.eccentricity,
+                inclination: o.inclination,
+                lan: o.lan,
+                arg_periapsis: o.argument_of_periapsis,
+                mean_anomaly_at_epoch: o.mean_anomaly_at_epoch,
+                epoch: o.epoch,
+            },
+        ),
+        None => Situation::Abstract,
+    };
 
     let name = state.name.clone();
-    let mut vessel = Vessel::new(vessel_id, name, parent_body, orbit);
+    let mut vessel = Vessel::new(vessel_id, name, situation);
 
     // Walk parts, build components from PartStructure + PartState +
     // prefab database lookup.
@@ -289,6 +296,52 @@ pub unsafe extern "C" fn nova_vessel_new(
 
     w.ffi_vessels.insert(structure.persistent_id, fv);
     handle
+}
+
+/// Update a vessel's situation. The host registers a vessel as
+/// `Abstract` when it isn't placed yet (KSP fires `Vessel.Initialize`
+/// before `orbitDriver` is wired, the editor preview never has an
+/// orbit, etc.) and calls this to transition to `Orbit` once the
+/// host's orbit data is ready.
+///
+/// Returns `0` on success, `-1` if `vessel_id` is unknown.
+///
+/// # Safety
+/// `world` must be a valid `NovaWorld` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn nova_vessel_set_situation_orbit(
+    world: *mut NovaWorld,
+    vessel_id: u32,
+    semi_major_axis: f64,
+    eccentricity: f64,
+    inclination: f64,
+    lan: f64,
+    arg_periapsis: f64,
+    mean_anomaly_at_epoch: f64,
+    epoch: f64,
+    body_index: u32,
+) -> i32 {
+    let _ = body_index; // Phase-1: Kerbin only, see nova_vessel_new.
+    const KERBIN_BODY_ID: u32 = 1;
+    let w = &mut *world;
+    let vid = VesselId(vessel_id);
+    let v = match w.world.vessels.iter_mut().find(|v| v.id == vid) {
+        Some(v) => v,
+        None => return -1,
+    };
+    v.set_situation(Situation::orbit(
+        BodyId(KERBIN_BODY_ID),
+        OrbitalElements {
+            semi_major_axis,
+            eccentricity,
+            inclination,
+            lan,
+            arg_periapsis,
+            mean_anomaly_at_epoch,
+            epoch,
+        },
+    ));
+    0
 }
 
 /// Drop a vessel and its arena. Any `VesselHandle` previously

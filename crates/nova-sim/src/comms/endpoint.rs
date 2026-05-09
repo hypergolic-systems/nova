@@ -81,7 +81,11 @@ impl Endpoint {
     /// body's spin.
     pub fn position_at(&self, world: &World, ut: f64) -> Vec3d {
         match &self.kind {
-            EndpointKind::Vessel(vid) => world.vessel_position_absolute(*vid, ut),
+            // `synthesise_vessel_endpoints` skips abstract vessels, so
+            // every Vessel endpoint has a positionable counterpart.
+            EndpointKind::Vessel(vid) => world
+                .vessel_position_absolute(*vid, ut)
+                .expect("vessel endpoint synthesised for abstract vessel"),
             EndpointKind::Ground { primary, latitude_deg, longitude_deg, altitude_m } => {
                 let body = world.ephemeris.body(*primary);
                 let local = surface_offset(

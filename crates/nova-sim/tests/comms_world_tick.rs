@@ -24,7 +24,7 @@ fn vessel_with_antenna(
     orbit: OrbitalElements,
     antenna: Antenna,
 ) -> Vessel {
-    let mut v = Vessel::new(VesselId(id), name, parent, orbit);
+    let mut v = Vessel::in_orbit(VesselId(id), name, parent, orbit);
     v.add_part(1, "core", 100.0, vec![Component::Comms(Comms::new(antenna))]);
     v
 }
@@ -126,7 +126,7 @@ fn world_tick_with_no_comms_endpoints_still_advances_vessels() {
     // still run via the World::tick driver.
     use nova_sim::components::{Battery, Component as Comp};
 
-    let mut v = Vessel::new(
+    let mut v = Vessel::in_orbit(
         VesselId(1),
         "Sat",
         ids::KERBIN,
