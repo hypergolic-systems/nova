@@ -1,0 +1,12 @@
+# Workspace-wide cargo config.
+#
+# `highs-sys` (transitively pulled in by the `highs` crate that nova-sim
+# uses for LP solving) runs `bindgen` against HiGHS' C headers during
+# its build script. On Apple Silicon, bindgen 0.72.x asserts that the
+# clang target it computed (`arm64-apple-darwin`) matches the Rust
+# target triple (`aarch64-apple-darwin`) and panics on the mismatch.
+# Forcing the clang target via BINDGEN_EXTRA_CLANG_ARGS sidesteps it.
+#
+# Applies to all targets — Linux/Windows builds ignore it harmlessly.
+[env]
+BINDGEN_EXTRA_CLANG_ARGS = "-target aarch64-apple-darwin"
