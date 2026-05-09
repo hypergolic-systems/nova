@@ -6,12 +6,14 @@ pub mod accumulator;
 pub mod battery;
 pub mod comms;
 pub mod engine;
+pub mod fuel_cell;
 pub mod tank;
 
 pub use accumulator::Accumulator;
 pub use battery::Battery;
 pub use comms::Comms;
 pub use engine::{Engine, Propellant};
+pub use fuel_cell::FuelCell;
 pub use tank::{TankSpec, TankVolume};
 
 use crate::systems::{NodeId, VesselSystems};
@@ -25,6 +27,7 @@ pub enum Component {
     TankVolume(TankVolume),
     Battery(Battery),
     Comms(Comms),
+    FuelCell(FuelCell),
 }
 
 impl Component {
@@ -37,6 +40,7 @@ impl Component {
             Component::TankVolume(t) => t.on_build_systems(sys, node),
             Component::Battery(b) => b.on_build_systems(sys, node),
             Component::Comms(c) => c.on_build_systems(sys, node),
+            Component::FuelCell(f) => f.on_build_systems(sys, node),
         }
     }
 
@@ -47,7 +51,8 @@ impl Component {
             Component::Engine(_)
             | Component::TankVolume(_)
             | Component::Battery(_)
-            | Component::Comms(_) => {}
+            | Component::Comms(_)
+            | Component::FuelCell(_) => {}
         }
     }
 
@@ -56,14 +61,20 @@ impl Component {
     pub fn on_pre_solve(&mut self, sys: &mut VesselSystems) {
         match self {
             Component::Engine(e) => e.on_pre_solve(sys),
+            Component::FuelCell(f) => f.on_pre_solve(sys),
             Component::TankVolume(_) | Component::Battery(_) | Component::Comms(_) => {}
         }
     }
 
     /// Called after each solve. Components recompute internal
-    /// post-solve state (e.g. Accumulator hysteresis flips).
-    pub fn on_post_solve(&mut self, _sys: &VesselSystems) {
+    /// post-solve state (e.g. Accumulator hysteresis flips,
+    /// `valid_until` forecasts that need to be mirrored back to
+    /// per-device fields). Mutable access lets components write
+    /// `process.device_mut(id).valid_until = ...` so
+    /// `ProcessFlowSystem::max_tick_dt` sees the updated forecast.
+    pub fn on_post_solve(&mut self, sys: &mut VesselSystems) {
         match self {
+            Component::FuelCell(f) => f.on_post_solve(sys),
             Component::Engine(_)
             | Component::TankVolume(_)
             | Component::Battery(_)
@@ -78,6 +89,7 @@ impl Component {
     /// time can advance before the next solve.
     pub fn valid_until(&self) -> f64 {
         match self {
+            Component::FuelCell(f) => f.valid_until(),
             Component::Engine(_)
             | Component::TankVolume(_)
             | Component::Battery(_)

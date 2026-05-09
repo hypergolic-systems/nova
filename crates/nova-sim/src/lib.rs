@@ -30,7 +30,8 @@ pub use comms::{
     Job, JobId, JobStatus, Link, MotionModel, PathSummary, TopicKey,
 };
 pub use components::{
-    Accumulator, Battery, Comms, Component, Engine, Part, Propellant, TankSpec, TankVolume,
+    Accumulator, Battery, Comms, Component, Engine, FuelCell, Part, Propellant, TankSpec,
+    TankVolume,
 };
 pub use ephem::{Body, BodyId, BodyRotation, Ephemeris};
 pub use math::Vec3d;
