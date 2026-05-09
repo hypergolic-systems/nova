@@ -7,6 +7,7 @@ using Nova.Core.Components;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Thermal;
 using Nova.Core.Resources;
 using UnityEngine;
 // Disambiguate against UnityEngine.Light.
@@ -53,7 +54,10 @@ namespace Nova.Telemetry;
 //          manifoldFraction, refillActive]                             FuelCell
 //   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
 //   ["R", currentRate, currentPower, referencePower,
-//          declineWattsPerKerbinYear]                                  Rtg
+//          declineWattsPerKerbinYear,
+//          wasteHeatW, exportW, rejectionW,
+//          currentTempC, maxOperatingTempC, dTdtCps]                   Rtg
+//   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable]      Radiator
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -71,6 +75,10 @@ namespace Nova.Telemetry;
 //                                symmetry counterparts are NOT walked,
 //                                so the UI sends one op per panel it
 //                                wants to deploy.
+//   "setRadiatorDeployed" [bool] — toggle a deployable radiator's
+//                                IsDeployed flag. No-op on fixed
+//                                panels (IsDeployable=false). State
+//                                round-trips on save via RadiatorState.
 //   "setTankConfig" [string]   — replace the part's tank loadout with
 //                                the named TankPresets preset, built
 //                                fresh against the current Volume.
@@ -166,6 +174,17 @@ public sealed class NovaPartTopic : Topic {
         cmp.TestLoadActive = active;
         vesselModule.Virtual.Invalidate();
         MarkDirty();
+        return;
+      }
+      case "setRadiatorDeployed": {
+        if (args == null || args.Count < 1 || !(args[0] is bool deployed)) {
+          Debug.LogWarning(LogPrefix + Name + " setRadiatorDeployed: expected [bool]");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaRadiatorModule>();
+        if (module == null) return;
+        if (deployed) module.Extend();
+        else module.Retract();
         return;
       }
       case "setTankConfig": {
@@ -394,6 +413,24 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, currentPower, ref f);
         WriteNum(sb, rtg.ReferencePower, ref f);
         WriteNum(sb, declineWattsPerKy, ref f);
+        WriteNum(sb, rtg.CurrentWasteHeatW, ref f);
+        WriteNum(sb, rtg.CurrentExportW, ref f);
+        WriteNum(sb, rtg.CurrentRejectionW, ref f);
+        WriteNum(sb, rtg.CurrentTempC, ref f);
+        WriteNum(sb, rtg.MaxOperatingTempC, ref f);
+        WriteNum(sb, rtg.DTdtCps, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case Radiator radiator: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "X", ref f);
+        WriteNum(sb, radiator.CurrentCoolingW, ref f);
+        WriteNum(sb, radiator.CurrentMaxCoolingW, ref f);
+        WriteBit(sb, radiator.IsDeployed, ref f);
+        WriteBit(sb, radiator.IsDeployable, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

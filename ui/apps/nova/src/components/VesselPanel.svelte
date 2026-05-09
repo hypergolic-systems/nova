@@ -15,6 +15,7 @@
   import PowerView from './power/PowerView.svelte';
   import ResourceView from './resource/ResourceView.svelte';
   import ScienceView from './science/ScienceView.svelte';
+  import ThermalView from './thermal/ThermalView.svelte';
 
   const MIN_W = 300;
   const MIN_H = 260;
@@ -29,7 +30,7 @@
   const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'power' | 'resource' | 'propulsion' | 'rcs' | 'attitude' | 'science';
+  type TabId = 'power' | 'thermal' | 'resource' | 'propulsion' | 'rcs' | 'attitude' | 'science';
 
   interface Tab {
     id: TabId;
@@ -40,6 +41,7 @@
 
   const tabs: Tab[] = [
     { id: 'power',      short: 'PWR', label: 'Power',      enabled: true  },
+    { id: 'thermal',    short: 'THM', label: 'Thermal',    enabled: true  },
     { id: 'resource',   short: 'RES', label: 'Resources',  enabled: true  },
     { id: 'propulsion', short: 'PRP', label: 'Propulsion', enabled: false },
     { id: 'rcs',        short: 'RCS', label: 'RCS',        enabled: false },
@@ -93,6 +95,8 @@
   <div class="vp__scroll">
     {#if activeTab === 'power' && flight.vesselId}
       <PowerView vesselId={flight.vesselId} />
+    {:else if activeTab === 'thermal' && flight.vesselId}
+      <ThermalView vesselId={flight.vesselId} />
     {:else if activeTab === 'resource' && flight.vesselId}
       <ResourceView vesselId={flight.vesselId} />
     {:else if activeTab === 'science' && flight.vesselId}

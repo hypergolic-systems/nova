@@ -8,6 +8,7 @@ using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
 using Nova.Core.Components.Science;
 using Nova.Core.Components.Structural;
+using Nova.Core.Components.Thermal;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
 using Nova.Core.Utils;
@@ -37,6 +38,7 @@ public static class ComponentFactory {
     ["NovaDataStorageModule"] = "DataStorage",
     ["NovaAntennaModule"] = "Antenna",
     ["NovaRtgModule"] = "Rtg",
+    ["NovaRadiatorModule"] = "Radiator",
   };
 
   public static void RegisterModuleMapping(string moduleName, string typeName) {
@@ -76,6 +78,7 @@ public static class ComponentFactory {
       "DataStorage" => CreateDataStorage(moduleNode),
       "Antenna" => CreateAntenna(moduleNode),
       "Rtg" => CreateRtg(moduleNode),
+      "Radiator" => CreateRadiator(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
@@ -257,9 +260,26 @@ public static class ComponentFactory {
 
   public static Rtg CreateRtg(ConfigNode node) {
     return new Rtg {
-      ReferencePower = double.Parse(node.GetValue("referencePower")),
-      HalfLifeDays   = double.Parse(node.GetValue("halfLifeDays")),
-      ReferenceUT    = 0,
+      ReferencePower      = double.Parse(node.GetValue("referencePower")),
+      HalfLifeDays        = double.Parse(node.GetValue("halfLifeDays")),
+      ThermalOutput       = double.Parse(node.GetValue("thermalOutput")),
+      MaxOperatingTempC   = double.Parse(node.GetValue("maxOperatingTempC")),
+      ThermalMassJK       = double.Parse(node.GetValue("thermalMassJK")),
+      MaxHeatRateOut      = double.Parse(node.GetValue("maxHeatRateOut")),
+      VacuumRejectionW    = double.Parse(node.GetValue("vacuumRejectionW")),
+      AtmRejectionW       = double.Parse(node.GetValue("atmRejectionW")),
+      ReferenceUT         = 0,
+    };
+  }
+
+  public static Radiator CreateRadiator(ConfigNode node) {
+    return new Radiator {
+      VacuumCoolingW   = double.Parse(node.GetValue("vacuumCoolingW")),
+      AtmCoolingW      = double.Parse(node.GetValue("atmCoolingW")),
+      EcPerWattCooling = double.Parse(node.GetValue("ecPerWattCooling")),
+      // IsDeployable / IsDeployed are set by NovaRadiatorModule.OnStart
+      // — derived from whether `animationName` is configured (the
+      // single source of truth for deploy mechanics).
     };
   }
 }

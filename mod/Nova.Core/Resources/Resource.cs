@@ -61,6 +61,19 @@ public class Resource {
       Domain = ResourceDomain.Uniform,
     };
 
+    // Thermal energy. Storage in Joules, rate in Watts — same J/W
+    // convention as EC. Heat buffers are per-device (private; never
+    // added to ProcessFlowSystem) so heat from one producer can't
+    // re-route into another producer's buffer through the LP's
+    // proportional fill distribution.
+    registry["Heat"] = new Resource {
+      Name = "Heat",
+      Abbreviation = "Heat",
+      Unit = UnitDefinition.Watt,
+      Density = 0,
+      Domain = ResourceDomain.Uniform,
+    };
+
     registry["Liquid Hydrogen"] = new Resource {
       Name = "Liquid Hydrogen",
       Abbreviation = "LH2",
@@ -105,6 +118,7 @@ public class Resource {
   }
 
   public static Resource ElectricCharge => registry["Electric Charge"];
+  public static Resource Heat => registry["Heat"];
   public static Resource LiquidHydrogen => registry["Liquid Hydrogen"];
   public static Resource LiquidOxygen => registry["Liquid Oxygen"];
   public static Resource RP1 => registry["RP-1"];

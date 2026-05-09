@@ -17,7 +17,8 @@
     | 'command'
     | 'dataStorage'
     | 'thermometer'
-    | 'rtg';
+    | 'rtg'
+    | 'radiator';
 
   let { kind }: { kind: ComponentKind } = $props();
 </script>
@@ -128,6 +129,17 @@
       <line x1="6" y1="1.4" x2="6" y2="8" stroke-width="1.3" />
       <line x1="7.5" y1="4.2" x2="8.6" y2="4.2" />
       <line x1="7.5" y1="6.4" x2="8.6" y2="6.4" />
+    </g>
+  {:else if kind === 'radiator'}
+    <!-- Heat radiator: a vertical spine with three pairs of fins.
+         Reads as parallel cooling fins at 12 px and is unambiguously
+         distinct from the battery's plates and the fuel cell's stack. -->
+    <line x1="6" y1="1.4" x2="6" y2="10.6"
+          stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+    <g stroke="currentColor" stroke-width="0.95" stroke-linecap="round">
+      <line x1="2.2" y1="3"   x2="9.8" y2="3" />
+      <line x1="2.2" y1="6"   x2="9.8" y2="6" />
+      <line x1="2.2" y1="9"   x2="9.8" y2="9" />
     </g>
   {:else if kind === 'rtg'}
     <!-- Radiation trefoil: solid hub + three 60° blades at 120°

@@ -25,7 +25,8 @@ export type SystemTag =
   | 'attitude'
   | 'storage'
   | 'science-instrument'
-  | 'science-storage';
+  | 'science-storage'
+  | 'thermal';
 
 // ---------- Wire (frame) types ---------------------------------
 
@@ -65,6 +66,20 @@ export type NovaRtgFrame = [
   currentPower: number,
   referencePower: number,
   declineWattsPerKerbinYear: number,
+  wasteHeatW: number,
+  exportW: number,
+  rejectionW: number,
+  currentTempC: number,
+  maxOperatingTempC: number,
+  dTdtCps: number,
+];
+
+export type NovaRadiatorFrame = [
+  'X',
+  currentCoolingW: number,
+  maxCoolingW: number,
+  isDeployed: 0 | 1,
+  isDeployable: 0 | 1,
 ];
 
 // One progressive observation record on disk. The wire shape mirrors
@@ -164,6 +179,7 @@ export type NovaLtsExperimentFrame = [
 
 export type NovaComponentFrame =
   | NovaSolarFrame
+  | NovaRadiatorFrame
   | NovaBatteryFrame
   | NovaWheelFrame
   | NovaLightFrame
@@ -463,6 +479,47 @@ export interface RtgState {
   referencePower: number;
   /** Predicted output loss over the next Kerbin year, in W. */
   declineWattsPerKerbinYear: number;
+  /** Waste heat flowing into the buffer, W. Equals total Pu decay
+   *  power minus the electrical fraction the TEG diverts onto wires
+   *  (~94% of decay heat for an MMRTG). The thermal subsystem only
+   *  ever sees this fraction; the electrical fraction leaves the RTG
+   *  on the EC bus and thermalizes wherever a consumer lands it. */
+  wasteHeatW: number;
+  /** Heat exported to the cooling loop (radiator bus) this solve, W.
+   *  LP-throttled — equals min(production, available radiator capacity)
+   *  when buffer is empty; can exceed production (drains buffer) when
+   *  the loop has spare capacity and the buffer holds stored heat. */
+  exportW: number;
+  /** Passive heat rejection rate from the device body to environment,
+   *  W. Linear-in-temperature approximation; lerps between vacuum and
+   *  atm endpoints by static pressure. Cooling loop has priority —
+   *  when the loop covers production, buffer drains to empty and
+   *  rejection automatically falls to 0. */
+  rejectionW: number;
+  /** Current device temperature, °C. Implicit ambient = 0 °C; values
+   *  represent °C above ambient. */
+  currentTempC: number;
+  /** Max operating temperature, °C. The buffer caps at this temp; the
+   *  device damages above (future work). Gauge denominator. */
+  maxOperatingTempC: number;
+  /** Rate of change of device temperature, °C/s. Positive = warming;
+   *  negative = cooling. Equals (production − cooling − rejection) /
+   *  thermalMass. Becomes 0 at thermal equilibrium. */
+  dTdtCps: number;
+}
+
+export interface RadiatorState {
+  /** LP-throttled cooling consumed this solve, W. 0 when bus dry. */
+  currentCoolingW: number;
+  /** Cooling capacity at current atmospheric pressure, W. Lerps
+   *  between vacuum and atm endpoints. */
+  maxCoolingW: number;
+  /** Deploy state. Folding rads round-trip the player's toggle;
+   *  fixed panels are always deployed. */
+  isDeployed: boolean;
+  /** True iff the radiator can be retracted/extended. Folding rads
+   *  expose a toggle; fixed panels don't. */
+  isDeployable: boolean;
 }
 
 export interface NovaPart {
@@ -476,6 +533,7 @@ export interface NovaPart {
   command: CommandState[];
   fuelCell: FuelCellState[];
   rtg: RtgState[];
+  radiator: RadiatorState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -566,6 +624,14 @@ export interface NovaPartOps {
    * resets it to false.
    */
   setCommandTestLoad(active: boolean): void;
+
+  /**
+   * Extend (`true`) or retract (`false`) a deployable radiator. No-op
+   * on fixed panels (`isDeployable=false`). State round-trips on save
+   * via `RadiatorState.is_deployed`. No animation in the model — the
+   * effect is immediate.
+   */
+  setRadiatorDeployed(deployed: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -924,6 +990,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     command: [],
     fuelCell: [],
     rtg: [],
+    radiator: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -977,6 +1044,20 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           currentPower:              c[2],
           referencePower:            c[3],
           declineWattsPerKerbinYear: c[4],
+          wasteHeatW:                c[5],
+          exportW:                   c[6],
+          rejectionW:                c[7],
+          currentTempC:              c[8],
+          maxOperatingTempC:         c[9],
+          dTdtCps:                   c[10],
+        });
+        break;
+      case 'X':
+        out.radiator.push({
+          currentCoolingW: c[1],
+          maxCoolingW:     c[2],
+          isDeployed:      c[3] === 1,
+          isDeployable:    c[4] === 1,
         });
         break;
     }

@@ -169,6 +169,7 @@ message PartState {
   DataStorageState    data_storage   = 9;
   ThermometerState    thermometer    = 10;
   RtgState            rtg            = 11;
+  RadiatorState       radiator       = 12;
 }
 
 message TankVolumeState {
@@ -204,9 +205,18 @@ message ReactionWheelState {
 
 // Pu-238 RTG decay clock. Power output decays as
 // referencePower × (1 - stepDrop)^floor((UT - reference_ut) / stepDur),
-// where stepDrop and halfLife live on the component.
+// where stepDrop and halfLife live on the component. The thermal
+// buffer is intentionally not persisted — load-time empty + ramp to
+// equilibrium in ~100 s is fine, and persisting the buffer would
+// need lerp baseline/rate too.
 message RtgState {
   double reference_ut = 1;   // UT at which decay clock started
+}
+
+// Radiator deploy state. Fixed (non-deployable) panels ignore this;
+// deployable folding rads round-trip the player's toggle.
+message RadiatorState {
+  bool is_deployed = 1;
 }
 
 // --- Science state ---

@@ -3,6 +3,7 @@ using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
 using Nova.Core.Components.Science;
+using Nova.Core.Components.Thermal;
 
 namespace Nova.Core.Components;
 
@@ -27,6 +28,10 @@ public static class SystemTags {
   // (separate from the resource Storage tag — different subsystem).
   public const string ScienceInstrument = "science-instrument";
   public const string ScienceStorage    = "science-storage";
+  // Thermal subsystem — RTGs (heat producers) and radiators (consumers).
+  // Distinct from PowerGen so the THERMAL tab can filter independently;
+  // RTGs carry both tags.
+  public const string Thermal           = "thermal";
 
   /// <summary>
   /// Compute the deterministic, deduplicated tag list for the given
@@ -45,6 +50,10 @@ public static class SystemTags {
           break;
         case Rtg _:
           set.Add(PowerGen);
+          set.Add(Thermal);
+          break;
+        case Radiator _:
+          set.Add(Thermal);
           break;
         case Battery _:
           set.Add(PowerStore);
@@ -88,6 +97,6 @@ public static class SystemTags {
   // Canonical ordering used by `For` so list equality is meaningful.
   private static readonly string[] Order = new[] {
     PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude, Storage,
-    ScienceInstrument, ScienceStorage,
+    ScienceInstrument, ScienceStorage, Thermal,
   };
 }
