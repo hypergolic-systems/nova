@@ -1,5 +1,5 @@
 use crate::components::{Component, Part};
-use crate::comms::Antenna;
+use crate::comms::{Antenna, CommsSystem, EndpointId};
 use crate::ephem::{Body, BodyId, Ephemeris};
 use crate::math::Vec3d;
 use crate::orbit::OrbitalElements;
@@ -236,6 +236,7 @@ const MAX_TICK_ITERATIONS: usize = 256;
 pub struct World {
     pub ephemeris: Ephemeris,
     pub vessels: Vec<Vessel>,
+    pub comms: CommsSystem,
 }
 
 impl World {
@@ -246,6 +247,65 @@ impl World {
             .iter()
             .find(|v| v.id == id)
             .unwrap_or_else(|| panic!("unknown VesselId {}", id.0))
+    }
+
+    /// Advance every vessel and the world-level comms graph to
+    /// `target_ut`, interleaved at comms event boundaries. Per-vessel
+    /// `Vessel::tick` stays unaware of comms; the loop here clamps
+    /// each step to `comms.max_tick_dt()` so packet completions and
+    /// link bucket/occlusion crossings land on a re-solve boundary.
+    pub fn tick(&mut self, target_ut: f64) {
+        // Move comms out so we can pass `&self` to its methods without
+        // borrow-checker pain. Same `mem::take` pattern as
+        // `Vessel::tick` uses for its `VesselSystems`.
+        let mut comms = std::mem::take(&mut self.comms);
+
+        // First-call bootstrap: if comms has never solved, prime it
+        // at UT=0 so subsequent loop iterations have a graph + a
+        // simulation_time reference.
+        let mut now = match comms.simulation_time() {
+            Some(t) => t,
+            None => {
+                comms.solve(self, 0.0);
+                0.0
+            }
+        };
+
+        let mut iter = 0;
+        while now < target_ut {
+            iter += 1;
+            if iter > MAX_TICK_ITERATIONS {
+                break;
+            }
+
+            // Reactive bucket-watch for off-rails endpoints. M6
+            // doesn't surface "off-rails" yet — every vessel is
+            // motion-predictable — so this is a no-op for current
+            // fixtures. The wiring is in place for when on/off-rails
+            // transitions land via the FFI bridge.
+            for v in &self.vessels {
+                if comms.any_link_bucket_difference(self, EndpointId::Vessel(v.id), now) {
+                    comms.invalidate();
+                    break;
+                }
+            }
+
+            let dt = comms
+                .max_tick_dt()
+                .min(target_ut - now)
+                .max(MIN_TICK_STEP);
+            let next = now + dt;
+
+            for v in &mut self.vessels {
+                if v.systems.is_some() {
+                    v.tick(next);
+                }
+            }
+            comms.solve(self, next);
+            now = next;
+        }
+
+        self.comms = comms;
     }
 
     /// Vessel position in the parent body's inertial frame at `ut`.
@@ -300,6 +360,7 @@ impl WorldBuilder {
         World {
             ephemeris: Ephemeris::new(self.bodies),
             vessels: self.vessels,
+            comms: CommsSystem::default(),
         }
     }
 }
