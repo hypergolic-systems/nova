@@ -1,0 +1,17 @@
+[package]
+name = "nova-highs"
+description = "Safe Rust wrapper around the HiGHS LP solver — the FFI shim used by Nova's ProcessFlowSystem. Persistent model + warm-start basis across re-solves; full mutation surface (column bounds/costs, row bounds, single-coefficient overwrites) so callers don't pay rebuild cost on every solve."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "nova_highs"
+path = "src/lib.rs"
+
+[dependencies]
+highs-sys = "1"
+
+[dev-dependencies]
+approx = "0.5"

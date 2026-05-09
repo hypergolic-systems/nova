@@ -412,6 +412,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-highs"
+version = "0.0.0"
+dependencies = [
+ "approx",
+ "highs-sys",
+]
+
+[[package]]
 name = "nova-save-cli"
 version = "0.0.0"
 dependencies = [
@@ -426,7 +434,7 @@ name = "nova-sim"
 version = "0.0.0"
 dependencies = [
  "approx",
- "highs-sys",
+ "nova-highs",
 ]
 
 [[package]]

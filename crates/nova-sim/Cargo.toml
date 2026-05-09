@@ -1,6 +1,6 @@
 [package]
 name = "nova-sim"
-description = "Nova simulation engine — Keplerian ephemeris, resource flow, multi-vessel ticking. Pure Rust, no FFI."
+description = "Nova simulation engine — Keplerian ephemeris, resource flow, multi-vessel ticking. All-safe Rust; FFI to the HiGHS LP solver is quarantined behind the nova-highs wrapper."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,7 +11,7 @@ name = "nova_sim"
 path = "src/lib.rs"
 
 [dependencies]
-highs-sys = "1"
+nova-highs = { path = "../nova-highs" }
 
 [dev-dependencies]
 approx = "0.5"
