@@ -1,35 +1,34 @@
 using System.Collections.Generic;
-using System.Linq;
-using Nova.Components;
-using Nova;
 using UnityEngine;
 using Proto = Nova.Core.Persistence.Protos;
 
 namespace Nova.Persistence;
 
 /// <summary>
-/// Instantiates Part GameObjects from proto VesselStructure + VesselState.
-/// Shared by NovaCraftLoader (craft files) and NovaSaveLoader (save files).
+/// Instantiates KSP <see cref="Part"/> GameObjects from a
+/// <see cref="Proto.VesselStructure"/> + <see cref="Proto.VesselState"/>
+/// pair. Used by <see cref="NovaCraftLoader"/> (.nvc) and
+/// <see cref="NovaSaveLoader"/> (.nvs); the proto is the single source
+/// of truth, and BOTH this method and <c>nova_vessel_new</c> on the
+/// Rust side fork from the same bytes.
+///
+/// The previous version reached into <c>NovaPartModule.Components</c>
+/// to call <c>cmp.LoadStructure(ps)</c> + <c>cmp.Load(partState)</c>
+/// on every C# VirtualComponent. That entire block is gone — the
+/// dynamic state in <c>PartStructure</c> / <c>PartState</c> (battery
+/// capacity/contents, tank loadout/amounts, etc.) is consumed by the
+/// Rust simulator directly when the same proto bytes are forwarded
+/// via <c>nova_vessel_new</c>. C# never re-deserialises into a
+/// per-component object graph.
 /// </summary>
 public static class NovaPartInstantiator {
 
   public delegate uint AssignPersistentId(Proto.PartStructure ps);
 
-  /// <summary>
-  /// Instantiate parts from proto, wire hierarchy/attachments/symmetry,
-  /// load Nova component structure + state, set positions/rotations.
-  /// Returns null if any part prefab is missing.
-  /// </summary>
   public static List<Part> Instantiate(
       Proto.VesselStructure structure,
       Proto.VesselState state,
       AssignPersistentId assignId) {
-
-    // Build state and staging lookups
-    var stateById = new Dictionary<uint, Proto.PartState>();
-    if (state?.Parts != null)
-      foreach (var ps in state.Parts)
-        stateById[ps.Id] = ps;
 
     var partInverseStage = new Dictionary<uint, int>();
     if (state?.Stages != null) {
@@ -89,33 +88,10 @@ public static class NovaPartInstantiator {
       }
     }
 
-    // Apply Nova component structure + state. Components are normally
-    // initialized in NovaPartModule.OnStart, which hasn't run yet — so
-    // we eagerly populate from the prefab MODULE config here, then let
-    // LoadStructure overwrite with the proto's persisted shape (which
-    // may differ if the player reconfigured the part in the editor).
-    // Without this seeding, the LoadStructure loop is a no-op and any
-    // editor-time mutation silently reverts on launch.
-    for (int i = 0; i < structure.Parts.Count; i++) {
-      var ps = structure.Parts[i];
-      var part = parts[i];
-      stateById.TryGetValue(ps.Id, out var partState);
-
-      foreach (var module in part.Modules.OfType<NovaPartModule>()) {
-        if (module.Components == null) {
-          var moduleConfig = module.GetPrefabModuleConfig();
-          if (moduleConfig == null) continue;
-          module.Components = new List<Nova.Core.Components.VirtualComponent> {
-            ComponentFactory.Create(moduleConfig),
-          };
-        }
-        foreach (var cmp in module.Components) {
-          cmp.LoadStructure(ps);
-          if (partState != null)
-            cmp.Load(partState);
-        }
-      }
-    }
+    // No per-component C# loading here. The same `structure` + `state`
+    // bytes that drove this method are also forwarded to Rust via
+    // `nova_vessel_new`; that's where battery capacity / tank loadout
+    // / etc. land.
 
     // Wire attach node owners
     foreach (var part in parts) {
@@ -144,8 +120,6 @@ public static class NovaPartInstantiator {
     }
 
     // Set initial world transforms from root (root at origin)
-    // For saves, CreateVessel repositions after setting vessel world position.
-    // For craft files, these are editor-space positions which KSP uses directly.
     PositionPartsFromRoot(parts);
 
     return parts;

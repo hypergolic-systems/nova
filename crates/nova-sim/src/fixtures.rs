@@ -6,8 +6,11 @@
 //! belong on the C# side at FFI time, not in test scaffolding).
 
 use crate::atmosphere::{Atmosphere, FloatCurve, FloatCurveKey};
-use crate::ephem::{Body, BodyId, BodyRotation};
+use crate::ephem::{Body, BodyId, BodyRotation, Ephemeris};
 use crate::orbit::OrbitalElements;
+use crate::world_context::WorldContext;
+
+use std::sync::OnceLock;
 
 pub mod ids {
     use super::BodyId;
@@ -35,6 +38,29 @@ pub fn kerbin_atmosphere() -> Atmosphere {
         pressure_curve_atm: pressure,
         temperature_curve_k: temperature,
     }
+}
+
+/// Stock-Kerbol body database wrapped in an `Ephemeris`. Convenience
+/// helper for unit tests that build a `Vessel` directly (without going
+/// through `World::builder`) and need a `WorldContext` to call
+/// `Vessel::initialize_solver` / `Vessel::tick` / `Vessel::solve`.
+pub fn kerbol_ephemeris() -> Ephemeris {
+    Ephemeris::new(kerbol_bodies())
+}
+
+/// Shared `'static` Kerbol ephemeris — initialised on first call,
+/// reused across tests. Pair with `kerbol_ctx()` to get a one-liner
+/// `&WorldContext` in tests that build a `Vessel` directly.
+pub fn shared_kerbol_ephemeris() -> &'static Ephemeris {
+    static E: OnceLock<Ephemeris> = OnceLock::new();
+    E.get_or_init(kerbol_ephemeris)
+}
+
+/// One-liner test helper: a fresh `WorldContext` wrapping the shared
+/// stock-Kerbol ephemeris. Cheap (one borrow), so tests can call it
+/// at every `Vessel::tick`/`solve`/`initialize_solver` site.
+pub fn kerbol_ctx() -> WorldContext<'static> {
+    WorldContext::new(shared_kerbol_ephemeris())
 }
 
 /// The Kerbol system: Sun, Kerbin (with atmosphere + Mun + Minmus),

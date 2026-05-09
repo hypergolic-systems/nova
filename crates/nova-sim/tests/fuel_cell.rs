@@ -37,7 +37,7 @@ fn make_tank(resource: Resource, capacity: f64) -> TankVolume {
 
 /// Build a single-part vessel with the given components, in low
 /// Kerbin orbit. Run `initialize_solver(0)` so the vessel is ready
-/// for `vessel.tick(...)`.
+/// for `vessel.tick(&nova_sim::fixtures::kerbol_ctx(),...)`.
 fn build_vessel(components: Vec<Component>) -> Vessel {
     let mut v = Vessel::new(
         VesselId(1),
@@ -46,7 +46,7 @@ fn build_vessel(components: Vec<Component>) -> Vessel {
         OrbitalElements::circular(700_000.0 + 600_000.0),
     );
     v.add_part(1, "core", 1.0, components);
-    v.initialize_solver(0.0);
+    v.initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
     v
 }
 
@@ -86,7 +86,7 @@ fn hysteresis_turns_on_below_twenty_percent() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(fuel_cell_of(&vessel).is_active, "SoC=0.15 should flip the cell ON");
 }
@@ -102,7 +102,7 @@ fn hysteresis_turns_off_above_eighty_percent() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(!fuel_cell_of(&vessel).is_active, "SoC=0.85 should flip the cell OFF");
 }
@@ -119,7 +119,7 @@ fn hysteresis_holds_in_band_above_on_threshold() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(!fuel_cell_of(&vessel).is_active);
 }
@@ -136,7 +136,7 @@ fn hysteresis_holds_in_band_below_off_threshold() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(fuel_cell_of(&vessel).is_active);
 }
@@ -150,7 +150,7 @@ fn hysteresis_no_batteries_forces_active() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(
         fuel_cell_of(&vessel).is_active,
@@ -172,7 +172,7 @@ fn refill_turns_on_when_manifold_low() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(
         fuel_cell_of(&vessel).refill_active,
@@ -193,7 +193,7 @@ fn refill_turns_off_when_manifold_full() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(
         !fuel_cell_of(&vessel).refill_active,
@@ -214,7 +214,7 @@ fn refill_holds_in_band() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(!fuel_cell_of(&vessel).refill_active);
 }
@@ -234,9 +234,9 @@ fn manifold_drains_while_producing() {
 
     // First tick establishes activities; integration before that runs
     // with default zero rates and would no-op the manifold.
-    vessel.tick(0.001);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),0.001);
     let initial = fuel_cell_of(&vessel).manifold.contents();
-    vessel.tick(60.001);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),60.001);
     let later = fuel_cell_of(&vessel).manifold.contents();
 
     assert!(
@@ -262,8 +262,8 @@ fn manifold_refills_when_low() {
     ]);
 
     // Warmup so the first integration uses the post-solve refill rate.
-    vessel.tick(0.001);
-    vessel.tick(20.001); // 20 s — well past the ~9.5 s refill window
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),0.001);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),20.001); // 20 s — well past the ~9.5 s refill window
 
     let contents = fuel_cell_of(&vessel).manifold.contents();
     assert!(
@@ -284,7 +284,7 @@ fn manifold_starvation_stops_production() {
         Component::Battery(battery),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     let fc_after = fuel_cell_of(&vessel);
     assert!(fc_after.is_active, "cell wants to be ON (SoC=0.1)");
@@ -313,7 +313,7 @@ fn valid_until_charging_projects_to_off_threshold() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     let fc_after = fuel_cell_of(&vessel);
     assert!(fc_after.is_active);
@@ -338,7 +338,7 @@ fn valid_until_not_charging_returns_infinity() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     let fc_after = fuel_cell_of(&vessel);
     assert!(!fc_after.is_active);
@@ -354,7 +354,7 @@ fn valid_until_no_batteries_returns_infinity() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert!(fuel_cell_of(&vessel).valid_until_seconds.is_infinite());
 }
@@ -372,7 +372,7 @@ fn valid_until_production_projects_to_manifold_empty() {
         Component::Battery(battery),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     let fc_after = fuel_cell_of(&vessel);
     // manifold ≈ 1.466 mix-L, drain ≈ 7.27e-4 mix-L/s, dt ≈ 2017 s.
@@ -398,7 +398,7 @@ fn integration_battery_stays_above_on_threshold_while_cell_running() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0);
+    vessel.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     let fc_after = fuel_cell_of(&vessel);
     assert!(fc_after.is_active, "SoC=0.10 starts ON");

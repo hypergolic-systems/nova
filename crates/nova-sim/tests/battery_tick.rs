@@ -36,7 +36,7 @@ fn battery_drains_under_consumer_over_tick() {
     let mut v = pod_with_components(vec![Component::Battery(
         Battery::new(100.0).with_flow_limits(1000.0, 1000.0),
     )]);
-    v.initialize_solver(0.0);
+    v.initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     // Inject a consumer device into the Process system. Components
     // that consume EC will be ported in their own milestones; for
@@ -48,7 +48,7 @@ fn battery_drains_under_consumer_over_tick() {
         .add_input(Resource::ElectricCharge, 10.0);
     sys.process.device_mut(consumer).demand = 1.0;
 
-    v.tick(5.0);
+    v.tick(&nova_sim::fixtures::kerbol_ctx(),5.0);
 
     let bid = match &v.part(1).components[0] {
         Component::Battery(b) => b.buffer_id().unwrap(),
@@ -70,7 +70,7 @@ fn battery_drain_lands_on_empty_event_boundary() {
     let mut v = pod_with_components(vec![Component::Battery(
         Battery::new(100.0).with_flow_limits(1000.0, 1000.0),
     )]);
-    v.initialize_solver(0.0);
+    v.initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     let sys = v.systems.as_mut().unwrap();
     let consumer = sys.process.add_device(Priority::Low);
@@ -79,7 +79,7 @@ fn battery_drain_lands_on_empty_event_boundary() {
         .add_input(Resource::ElectricCharge, 10.0);
     sys.process.device_mut(consumer).demand = 1.0;
 
-    v.tick(20.0);
+    v.tick(&nova_sim::fixtures::kerbol_ctx(),20.0);
 
     let bid = match &v.part(1).components[0] {
         Component::Battery(b) => b.buffer_id().unwrap(),
@@ -110,7 +110,7 @@ fn battery_fills_from_excess_producer_over_tick() {
             .with_contents(50.0)
             .with_flow_limits(1000.0, 1000.0),
     )]);
-    v.initialize_solver(0.0);
+    v.initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     let sys = v.systems.as_mut().unwrap();
     let producer = sys.process.add_device(Priority::Low);
@@ -125,7 +125,7 @@ fn battery_fills_from_excess_producer_over_tick() {
         .add_input(Resource::ElectricCharge, 5.0);
     sys.process.device_mut(consumer).demand = 1.0;
 
-    v.tick(8.0);
+    v.tick(&nova_sim::fixtures::kerbol_ctx(),8.0);
 
     let bid = match &v.part(1).components[0] {
         Component::Battery(b) => b.buffer_id().unwrap(),
@@ -163,8 +163,8 @@ fn battery_and_engine_tick_run_both_solvers() {
     v.add_part(3, "engine", 0.0, vec![Component::Engine(engine)]);
     v.set_parent(3, 1);
 
-    v.initialize_solver(0.0);
-    v.tick(1.0);
+    v.initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
+    v.tick(&nova_sim::fixtures::kerbol_ctx(),1.0);
 
     assert_relative_eq!(v.systems().clock.ut(), 1.0, max_relative = 1e-9);
 }

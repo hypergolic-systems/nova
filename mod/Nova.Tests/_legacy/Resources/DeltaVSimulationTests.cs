@@ -1,0 +1,558 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Nova.Core;
+using Nova.Core.Components;
+using Nova.Core.Components.Electrical;
+using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Structural;
+using Nova.Core.Resources;
+using Nova.Core.Flight;
+using Nova.Core.Utils;
+using Nova.Tests.Helpers;
+using Buffer = Nova.Core.Resources.Buffer;
+
+namespace Nova.Tests.Resources;
+
+[TestClass]
+public class DeltaVSimulationTests {
+
+  private static Engine MakeEngine(double thrust, double isp, params (Resource resource, double ratio)[] propellants) {
+    var engine = new Engine();
+    engine.Initialize(thrust, isp, propellants.Select(p => (p.resource, p.ratio)).ToList());
+    return engine;
+  }
+
+  private static TankVolume MakeTank(Resource resource, double capacity) {
+    return new TankVolume {
+      Volume = capacity,
+      MaxRate = 10000,
+      Tanks = {
+        new Buffer {
+          Resource = resource,
+          Capacity = capacity,
+          Contents = capacity,
+        }
+      }
+    };
+  }
+
+  private static Decoupler MakeDecoupler(int priority, params (Resource resource, string direction)[] allowedResources) {
+    var dec = new Decoupler { Priority = priority };
+    foreach (var (res, dir) in allowedResources) {
+      dec.AllowedResources.Add(res);
+      if (dir == "up")
+        dec.UpOnlyResources.Add(res);
+    }
+    return dec;
+  }
+
+  /// <summary>
+  /// Build a VirtualVessel from part definitions and a parent map.
+  /// partDefs: (id, name, parentId or null for root, dryMass, components)
+  /// </summary>
+  private static VirtualVessel BuildVessel(
+      (uint id, string name, uint? parentId, double dryMass, List<VirtualComponent> components)[] parts) {
+    var vv = new VirtualVessel();
+    var parentMap = new Dictionary<uint, uint?>();
+    foreach (var (id, name, parentId, dryMass, components) in parts) {
+      vv.AddPart(id, name, dryMass, components);
+      parentMap[id] = parentId;
+    }
+    vv.UpdatePartTree(parentMap);
+    vv.InitializeSolver(0);
+    return vv;
+  }
+
+  // Kerolox tank: RP-1 + LOX at 2:3 volumetric proportions, matching
+  // engine stoichiometry. `contents` is total mix volume; split the
+  // same way as capacity.
+  private static TankVolume MakeKeroloxTank(double volume, double contents) {
+    return new TankVolume {
+      Volume = volume,
+      MaxRate = 10000,
+      Tanks = {
+        new Buffer {
+          Resource = Resource.RP1,
+          Capacity = volume * 0.4,
+          Contents = contents * 0.4,
+        },
+        new Buffer {
+          Resource = Resource.LiquidOxygen,
+          Capacity = volume * 0.6,
+          Contents = contents * 0.6,
+        },
+      },
+    };
+  }
+
+  private static Engine MakeKeroloxEngine(double thrust, double isp) {
+    var engine = new Engine();
+    engine.Initialize(thrust, isp, new List<(Resource, double)> {
+      (Resource.RP1, 2),
+      (Resource.LiquidOxygen, 3),
+    });
+    return engine;
+  }
+
+  private const double G0 = 9.80665;
+
+  [TestMethod]
+  public void UpOnlyEdge_BlocksReverseFlow() {
+    // Parent has tank, child has engine. Edge is up-only.
+    // Engine on child should NOT be able to pull fuel from parent.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "tank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (3u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> { MakeDecoupler(1, (Resource.RP1, "up")) }),
+      (4u, "engine", (uint?)3u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    var engine = vessel.AllComponents().OfType<Engine>().First();
+    engine.Throttle = 1.0;
+    vessel.Invalidate();
+    vessel.Tick(0);
+
+    Assert.AreEqual(0, engine.Satisfaction, 0.01,
+      "Engine below up-only decoupler should be starved — fuel can't flow down");
+  }
+
+  [TestMethod]
+  public void SingleStage_SingleEngine() {
+    // One tank (100L RP-1, density=0.8 → 80 kg fuel) + one engine.
+    // Dry mass = 10 kg (pod) + 5 kg (tank) + 5 kg (engine) = 20 kg.
+    // Wet mass = 20 + 80 = 100 kg.
+    // Expected Δv = Isp * g0 * ln(100 / 20)
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 10.0, new List<VirtualComponent>()),
+      (2u, "tank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (3u, "engine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 3 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.AreEqual(1, results.Count, "Should have one stage");
+
+    var expected = 300 * G0 * Math.Log(100.0 / 20.0);
+    Assert.AreEqual(expected, results[0].DeltaV, expected * 0.01,
+      $"Delta-v should be ~{expected:F0} m/s");
+    Assert.AreEqual(100, results[0].StartMass, 1, "Start mass should be ~100 kg");
+    Assert.AreEqual(20, results[0].EndMass, 1, "End mass should be ~20 kg");
+    Assert.AreEqual(300, results[0].Isp, 1, "Isp should be 300s");
+  }
+
+  [TestMethod]
+  public void TwoStages_Serial() {
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "upperTank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 50) }),
+      (3u, "upperEngine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      (4u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> { MakeDecoupler(1, (Resource.RP1, "up")) }),
+      (5u, "lowerTank", (uint?)4u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (6u, "lowerEngine", (uint?)5u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      // Stage 2 (fires first): both engines ignite
+      new() { InverseStageIndex = 2, EnginePartIds = new() { 3, 6 } },
+      // Stage 1: jettison lower stage after crossfeed drains it
+      new() { InverseStageIndex = 1, DecouplerPartIds = new() { 4 } },
+      // Stage 0: upper engine continues on upper tank
+      new() { InverseStageIndex = 0 },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.IsTrue(results.Count >= 2, $"Should have at least 2 stages, got {results.Count}");
+
+    // Stage 2: both engines drain lower tank via crossfeed (80 kg fuel).
+    // Wet=145, after lower fuel gone=65 (still have 40 kg upper fuel).
+    var boosterExpected = 300 * G0 * Math.Log(145.0 / 65.0);
+    var boosterResult = results.First(r => r.InverseStageIndex == 2);
+    Assert.AreEqual(boosterExpected, boosterResult.DeltaV, boosterExpected * 0.05,
+      $"Booster Δv should be ~{boosterExpected:F0} m/s");
+
+    // Stage 1: jettison lower (10 kg dry), upper engine burns upper tank (40 kg fuel).
+    // Wet=55, dry=15.
+    var upperExpected = 300 * G0 * Math.Log(55.0 / 15.0);
+    var upperResult = results.First(r => r.InverseStageIndex == 1);
+    Assert.AreEqual(upperExpected, upperResult.DeltaV, upperExpected * 0.05,
+      $"Upper Δv should be ~{upperExpected:F0} m/s");
+  }
+
+  [TestMethod]
+  public void Asparagus_CrossfeedThenJettison() {
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "centerTank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (3u, "centerEngine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      // Left booster
+      (4u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> { MakeDecoupler(1, (Resource.RP1, "up")) }),
+      (5u, "sideTank", (uint?)4u, 2.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 50) }),
+      (6u, "sideEngine", (uint?)5u, 3.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      // Right booster
+      (7u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> { MakeDecoupler(1, (Resource.RP1, "up")) }),
+      (8u, "sideTank", (uint?)7u, 2.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 50) }),
+      (9u, "sideEngine", (uint?)8u, 3.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      // Stage 2: all 3 engines ignite
+      new() { InverseStageIndex = 2, EnginePartIds = new() { 3, 6, 9 } },
+      // Stage 1: jettison side boosters
+      new() { InverseStageIndex = 1, DecouplerPartIds = new() { 4, 7 } },
+      // Stage 0: center engine continues
+      new() { InverseStageIndex = 0 },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.IsTrue(results.Count >= 2, $"Should have at least 2 stages, got {results.Count}");
+
+    var totalDv = results.Sum(r => r.DeltaV);
+    Assert.IsTrue(totalDv > 1000, $"Total Δv should be substantial, got {totalDv:F0} m/s");
+
+    // Booster stage (2) and core stage should both contribute delta-v.
+    var boosterDv = results.Where(r => r.InverseStageIndex == 2).Sum(r => r.DeltaV);
+    var coreDv = results.Where(r => r.InverseStageIndex >= 0 && r.InverseStageIndex < 2).Sum(r => r.DeltaV);
+    Assert.IsTrue(boosterDv > 0 && coreDv > 0,
+      $"Both phases should contribute delta-v. Booster={boosterDv:F0}, Core={coreDv:F0}");
+  }
+
+  [TestMethod]
+  public void Run_WithExplicitTime_MatchesDefaultOverload() {
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 10.0, new List<VirtualComponent>()),
+      (2u, "tank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (3u, "engine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 3 } },
+    };
+
+    var defaultResults = DeltaVSimulation.Run(vessel, stages);
+    var timedResults = DeltaVSimulation.Run(vessel, stages, 12345.0);
+
+    Assert.AreEqual(defaultResults.Count, timedResults.Count, "Stage count should match");
+    Assert.AreEqual(defaultResults[0].DeltaV, timedResults[0].DeltaV, 0.01,
+      "Delta-v should be identical regardless of simulation time parameter");
+    Assert.AreEqual(defaultResults[0].StartMass, timedResults[0].StartMass, 0.01);
+    Assert.AreEqual(defaultResults[0].EndMass, timedResults[0].EndMass, 0.01);
+  }
+
+  [TestMethod]
+  public void BatteryCrossfeed_DoesNotPreventJettison() {
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "centerTank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (10u, "centerEngine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      (3u, "light", (uint?)1u, 0.0, new List<VirtualComponent> { new Light { Rate = 5 } }),
+      // Side booster with battery
+      (4u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.ElectricCharge, null))
+      }),
+      (5u, "sideTank", (uint?)4u, 2.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 50) }),
+      (6u, "sideEngine", (uint?)5u, 3.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      (7u, "battery", (uint?)4u, 1.0, new List<VirtualComponent> {
+        new EcSourceFixture { Capacity = 1000, Contents = 1000, MaxFlow = 10 },
+      }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      // Stage 2: both engines ignite
+      new() { InverseStageIndex = 2, EnginePartIds = new() { 10, 6 } },
+      // Stage 1: jettison side booster (despite battery still crossfeeding EC)
+      new() { InverseStageIndex = 1, DecouplerPartIds = new() { 4 } },
+      // Stage 0: center engine continues
+      new() { InverseStageIndex = 0 },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.IsTrue(results.Count >= 2,
+      $"Should have at least 2 stages (side jettison despite battery crossfeed), got {results.Count}");
+  }
+
+  // Regression: a stage where the previous burn left propellant in
+  // a state where one resource on a coupled engine is exhausted but
+  // the other is not. Per-resource staging demands are independent,
+  // so the unstuck resource can keep draining for one tick after the
+  // engine's effective output (Throttle × min(Activity)) collapses
+  // to 0. Without a guard, ComputeThrustAndFlow returns thrust=0 +
+  // massFlow=0 while mass still changes, ispEff = 0/0 = NaN, and
+  // stageDeltaV poisons. The resulting Burn returns null and the
+  // staging UI shows that stage as empty.
+  //
+  // User-reported repro: a 3-engine asparagus where Stage 1 fires
+  // engines and Stage 0 jettisons the side boosters. Stage 0's burn
+  // (central engine on the central tank) was producing NaN dV → null
+  // → empty staging row.
+  [TestMethod]
+  public void AsparagusJettisonStage_ProducesFiniteDvNotNaN() {
+    // Layout matches Flow I: 3 engines on stage 1, 2 side decouplers
+    // on stage 0. After stage 1 burns out the side boosters, stage 0
+    // jettisons them and the central engine continues on the central
+    // tank.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "centralTank", (uint?)1u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 100, contents: 100),
+      }),
+      (3u, "centralEngine", (uint?)2u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 215, isp: 320),
+      }),
+      (4u, "decouplerL", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (5u, "sideTankL", (uint?)4u, 2.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 100, contents: 100),
+      }),
+      (6u, "sideEngineL", (uint?)5u, 3.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 240, isp: 310),
+      }),
+      (7u, "decouplerR", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (8u, "sideTankR", (uint?)7u, 2.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 100, contents: 100),
+      }),
+      (9u, "sideEngineR", (uint?)8u, 3.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 240, isp: 310),
+      }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 1, EnginePartIds = new() { 3, 6, 9 } },
+      new() { InverseStageIndex = 0, DecouplerPartIds = new() { 4, 7 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    // Stage 1 should produce a positive dV (3 engines burning sides).
+    var s1 = results.FirstOrDefault(r => r.InverseStageIndex == 1);
+    Assert.IsNotNull(s1, "Stage 1 should produce a result");
+    Assert.IsTrue(s1.DeltaV > 0 && !double.IsNaN(s1.DeltaV) && !double.IsInfinity(s1.DeltaV),
+        $"Stage 1 dV must be finite positive, got {s1.DeltaV}");
+
+    // Stage 0 — central engine continues on central tank after side
+    // jettison — must also produce finite dV. The bug had this come
+    // back as null (NaN poisoned stageDeltaV and `> Epsilon` failed).
+    var s0 = results.FirstOrDefault(r => r.InverseStageIndex == 0);
+    Assert.IsNotNull(s0, "Stage 0 should produce a result (central engine on central tank)");
+    Assert.IsTrue(s0.DeltaV > 0 && !double.IsNaN(s0.DeltaV) && !double.IsInfinity(s0.DeltaV),
+        $"Stage 0 dV must be finite positive, got {s0.DeltaV}");
+  }
+
+  // Regression: a starved engine on a mismatched tank used to over-
+  // drain its surviving propellant for one or more iters when another
+  // engine on the same stage was still firing — staging demands are
+  // independent per-resource, so the unstuck demand kept allocating
+  // until that pool also emptied.
+  //
+  // VirtualVessel.Solve runs an iterative starvation pass after each
+  // staging solve: any consumer (Engine / Rcs) whose coupled inputs
+  // weren't all satisfied gets its demands zeroed and the staging
+  // system re-solved. Repeats until stable.
+  [TestMethod]
+  public void StarvedEngineDoesntOverdrainSurvivingPropellant() {
+    // Two engines on isolated sub-trees (up-only decouplers prevent
+    // cross-feed):
+    //   • Engine A: kerolox tank with MISMATCHED ratio — tiny RP-1
+    //     allotment (5L) but huge LOX (95L). Engine wants 2:3, so
+    //     RP-1 runs out long before LOX. After RP-1 empties, the
+    //     engine should starve and stop drawing ANY fuel.
+    //   • Engine B: own normal-ratio kerolox tank, long burn.
+    //
+    // Without the iterative starvation pass, A's LOX demand keeps
+    // allocating after RP-1 runs out (per-resource staging demands
+    // are independent). Engine B is still firing, so dV calc doesn't
+    // break on thrust=0 — and A's LOX over-drains for one iter at
+    // dt = MaxTickDt, potentially draining the entire tank. The
+    // mass-change credit then inflates dV way above physical reality.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+
+      // Engine A branch under an up-only decoupler — stops fuel from
+      // crossfeeding from tank B. Decoupler stays attached for the
+      // burn (no jettison stage).
+      (2u, "decA", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (3u, "tankA", (uint?)2u, 5.0, new List<VirtualComponent> {
+        new TankVolume {
+          Volume = 100, MaxRate = 10000,
+          Tanks = {
+            new Buffer { Resource = Resource.RP1, Capacity = 5, Contents = 5 },
+            new Buffer { Resource = Resource.LiquidOxygen, Capacity = 95, Contents = 95 },
+          },
+        },
+      }),
+      (4u, "engineA", (uint?)3u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 100, isp: 300),
+      }),
+
+      // Engine B branch — symmetric tank under its own up-only decoupler.
+      (5u, "decB", (uint?)1u, 0.0, new List<VirtualComponent> {
+        MakeDecoupler(1, (Resource.RP1, "up"), (Resource.LiquidOxygen, "up")),
+      }),
+      (6u, "tankB", (uint?)5u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxTank(volume: 500, contents: 500),
+      }),
+      (7u, "engineB", (uint?)6u, 5.0, new List<VirtualComponent> {
+        MakeKeroloxEngine(thrust: 100, isp: 300),
+      }),
+    });
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 4, 7 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.AreEqual(1, results.Count, "Stage 0 should produce a result");
+    var s0 = results[0];
+
+    Assert.IsTrue(s0.DeltaV > 0 && !double.IsNaN(s0.DeltaV) && !double.IsInfinity(s0.DeltaV),
+        $"Stage dV must be finite positive, got {s0.DeltaV}");
+
+    // Mass accounting (kg):
+    //   pod 5, decA 0, tankA 5, engineA 5, decB 0, tankB 5, engineB 5
+    //   → dry = 25 kg
+    //   tankA fuel = 5×0.8 + 95×1.2 = 4 + 114 = 118 kg
+    //   tankB fuel = 200×0.8 + 300×1.2 = 160 + 360 = 520 kg
+    //   start = 25 + 118 + 520 = 663 kg
+    //
+    // After the burn, with proper starvation handling:
+    //   • A burns 5 L RP-1 + stoichiometric 7.5 L LOX = 4 + 9 = 13 kg
+    //     consumed. A's tank retains 87.5 L LOX = 105 kg (stranded).
+    //   • B burns out fully = 520 kg consumed. tankB empty.
+    //   • end mass = 25 + 105 + 0 = 130 kg.
+    //
+    // Without the fix, A's stranded LOX over-drains and end mass
+    // collapses toward dry (25 kg) plus whatever B couldn't burn
+    // before its own stranded propellant boundary fires the thrust=0
+    // break. End mass well below 130.
+    Assert.IsTrue(s0.EndMass >= 125,
+        $"A's stranded LOX (~105 kg) must remain in the tank — " +
+        $"over-drain would push end mass below this floor. " +
+        $"Got {s0.EndMass:F1} kg");
+  }
+
+  // Regression: in-flight stage activation triggers
+  // ExtractParts → RebuildTopology on the remaining VirtualVessel.
+  // After that rebuild, DeltaVSimulation must still produce a valid
+  // result for whatever stages remain — otherwise the dV display
+  // empties out the moment the player presses space.
+  [TestMethod]
+  public void DvSurvivesPostStageRebuild() {
+    // 2-stage rocket: pod + upper-tank + upper-engine on one branch,
+    // decoupler + lower-tank + lower-engine on the booster branch.
+    var vessel = BuildVessel(new[] {
+      (1u, "pod", (uint?)null, 5.0, new List<VirtualComponent>()),
+      (2u, "upperTank", (uint?)1u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 50) }),
+      (3u, "upperEngine", (uint?)2u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+      (4u, "decoupler", (uint?)1u, 0.0, new List<VirtualComponent> { MakeDecoupler(1, (Resource.RP1, "up")) }),
+      (5u, "lowerTank", (uint?)4u, 5.0, new List<VirtualComponent> { MakeTank(Resource.RP1, 100) }),
+      (6u, "lowerEngine", (uint?)5u, 5.0, new List<VirtualComponent> { MakeEngine(10, 300, (Resource.RP1, 1)) }),
+    });
+
+    // Simulate the in-flight stage-1 firing: KSP separates the booster
+    // (decoupler + lower tank + lower engine) into a new vessel. Nova's
+    // HandleVesselSplit calls ExtractParts then RebuildTopology.
+    var boosterIds = new HashSet<uint> { 4u, 5u, 6u };
+    vessel.ExtractParts(boosterIds);
+    var newParentMap = new Dictionary<uint, uint?> {
+      { 1u, null }, { 2u, 1u }, { 3u, 2u },
+    };
+    vessel.UpdatePartTree(newParentMap);
+    vessel.InitializeSolver(0);
+
+    // Remaining stages: only Stage 0 (the upper).
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 3 } },
+    };
+    var results = DeltaVSimulation.Run(vessel, stages);
+
+    Assert.AreEqual(1, results.Count,
+        "Stage 0 should still produce a dV result post-rebuild");
+    Assert.IsTrue(results[0].DeltaV > 0,
+        $"Stage 0 dV should be positive, got {results[0].DeltaV}");
+    Assert.AreEqual(0, results[0].InverseStageIndex);
+  }
+
+  // Regression: NovaStageTopic.Recompute fires every 1 s in flight,
+  // calling Run on the live vessel. On a partial-throttle burn the
+  // recompute occasionally hit 600+ ms with the Burn loop running to
+  // its 10000-iteration cap. Root cause: Buffer.ContentsAt at non-
+  // trivial sim-UT produced FP residuals (~ULP(UT) × rate) larger than
+  // the absolute Epsilon=1e-12 used as the "buffer alive" threshold,
+  // so a should-be-empty buffer kept reading +5e-12 and MaxTickDt
+  // returned `contents/-rate ≈ 1e-13 s` — the loop ground forward in
+  // ULP-sized steps until the cap. Fix: capacity-relative threshold
+  // via IsAlive(b) in StagingFlowSystem.
+  //
+  // Mirrors the user's actual Comms I .nvc layout, including the live-
+  // vs-clone time drift caused by Recompute running on a Unity-frame
+  // cadence rather than FixedUpdate.
+  [TestMethod]
+  public void Run_AfterLiveTicks_AtFlightUT_DoesNotBlowIters() {
+    var podHydrazineTank = new TankVolume {
+      Volume = 40, MaxRate = 100,
+      Tanks = { new Buffer { Resource = Resource.Hydrazine, Capacity = 40, Contents = 40 } }
+    };
+    var fuelTank = new TankVolume {
+      Volume = 4000, MaxRate = 1000,
+      Tanks = {
+        new Buffer { Resource = Resource.RP1, Capacity = 1600, Contents = 1600 },
+        new Buffer { Resource = Resource.LiquidOxygen, Capacity = 2400, Contents = 2400 },
+      }
+    };
+    var engine = new Engine();
+    engine.Initialize(thrust: 215, isp: 320, new List<(Resource, double)> {
+      (Resource.RP1, 2), (Resource.LiquidOxygen, 3),
+    });
+
+    var vv = new VirtualVessel();
+    var parentMap = new Dictionary<uint, uint?>();
+    var partsConfig = new[] {
+      (1u, "mk1pod", (uint?)null, 840.0, new List<VirtualComponent> { podHydrazineTank }),
+      (2u, "fuelTank", (uint?)1u, 500.0, new List<VirtualComponent> { fuelTank }),
+      (3u, "engine", (uint?)2u, 1500.0, new List<VirtualComponent> { engine }),
+    };
+    foreach (var (id, name, parentId, dryMass, components) in partsConfig) {
+      vv.AddPart(id, name, dryMass, components);
+      parentMap[id] = parentId;
+    }
+    vv.UpdatePartTree(parentMap);
+    // UT high enough that ULP(UT) × rate exceeds Epsilon=1e-12 — matches
+    // the user's actual flight UT when the bug was observed.
+    const double baseUT = 905.0;
+    vv.InitializeSolver(baseUT);
+
+    var stages = new List<DeltaVSimulation.StageDefinition> {
+      new() { InverseStageIndex = 0, EnginePartIds = new() { 3 } },
+    };
+    engine.Throttle = 0.52;
+    vv.Invalidate();
+
+    int worst = 0;
+    double worstAt = 0, worstOffset = 0;
+    var rng = new System.Random(42);
+    for (int step = 0; step < 1500; step++) {
+      double simT = baseUT + step * 0.02;
+      vv.Tick(simT);
+      // Recompute fires from a telemetry callback on a Unity-frame
+      // cadence, so `time` can lead the live clock by 0..16 ms.
+      double cloneOffset = rng.NextDouble() * 0.016;
+      DeltaVSimulation.Run(vv, stages, simT + cloneOffset);
+      if (DeltaVSimulation.LastBurnIterations > worst) {
+        worst = DeltaVSimulation.LastBurnIterations;
+        worstAt = step * 0.02;
+        worstOffset = cloneOffset;
+      }
+    }
+    Assert.IsTrue(worst < 100,
+        $"Burn should converge in <100 iters at every step. Worst was " +
+        $"{worst} iters at relSimT={worstAt:F2}s offset={worstOffset*1000:F2}ms");
+  }
+}

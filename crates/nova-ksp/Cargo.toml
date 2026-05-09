@@ -1,0 +1,23 @@
+[package]
+name = "nova-ksp"
+description = "FFI bridge between KSP (C# Nova.dll) and the Rust nova-sim. Exposes a stable `extern \"C\"` surface and a per-vessel mirror arena that C# reads/writes as `[StructLayout(LayoutKind.Sequential)]` structs (codegened by csbindgen). nova-sim stays FFI-free; nova-ksp is the only crate that knows about `#[repr(C)]` and the arena layout."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "nova_ksp"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nova-sim = { path = "../nova-sim" }
+prost = { workspace = true }
+
+[build-dependencies]
+csbindgen = "1.9"
+prost-build = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"

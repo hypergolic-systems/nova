@@ -1,15 +1,27 @@
 using System.Collections.Generic;
 using System.Linq;
 using Nova.Components;
-using Nova.Science;
-using Nova;
+using Nova.Ffi;
+using Nova.Ffi.Generated;
 using UnityEngine;
 using Proto = Nova.Core.Persistence.Protos;
 
 namespace Nova.Persistence;
 
 /// <summary>
-/// Builds a proto SaveFile from live game state.
+/// Build a proto <see cref="Proto.SaveFile"/> from live game state.
+///
+/// The previous version pulled per-component state from the C# C
+/// <c>VirtualVessel</c> (via <c>mod.Virtual.SavePartState</c>); that
+/// path is gone. The Rust simulator is now the source of truth for
+/// component state, so the Battery/Command/etc. fields on each
+/// <c>PartState</c> are populated by reading the per-vessel FFI
+/// arena via <c>NovaVesselModule.Handle</c>.
+///
+/// Phase-1 scope: loaded vessels only. Unloaded (on-rails) vessels
+/// land when background-sim ports — the Rust simulator will own
+/// their state by then and we can read directly from the world's
+/// vessel set.
 /// </summary>
 public static class NovaSaveBuilder {
 
@@ -18,7 +30,6 @@ public static class NovaSaveBuilder {
     var save = new Proto.SaveFile {
       UniversalTime = Planetarium.GetUniversalTime(),
       Game = BuildGameMetadata(game),
-      ScienceArchive = NovaScienceArchive.Instance.ToProto(),
     };
     save.Crews.AddRange(BuildCrewRoster(game.CrewRoster));
 
@@ -26,7 +37,6 @@ public static class NovaSaveBuilder {
     for (int i = 0; i < vessels.Count; i++) {
       var vessel = vessels[i];
       if (vessel.state == Vessel.State.DEAD) continue;
-
       var proto = BuildVessel(vessel);
       if (proto != null) {
         save.Vessels.Add(proto);
@@ -68,7 +78,6 @@ public static class NovaSaveBuilder {
       Veteran = pcm.veteran,
     };
 
-    // Track assignment: find which vessel/part this kerbal is in
     if (pcm.rosterStatus == ProtoCrewMember.RosterStatus.Assigned) {
       foreach (var vessel in FlightGlobals.Vessels) {
         if (!vessel.loaded) continue;
@@ -88,68 +97,67 @@ public static class NovaSaveBuilder {
   }
 
   static Proto.Vessel BuildVessel(Vessel vessel) {
-    Proto.VesselStructure structure;
-    Proto.VesselState state;
-
-    if (vessel.loaded) {
-      (structure, state) = NovaVesselBuilder.BuildFromParts(vessel.parts, p => p.persistentId);
-    } else {
-      // Unloaded: use cached structure from NovaVesselModule if available
-      var mod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
-      structure = mod?.CachedStructure;
-      if (structure != null) {
-        state = BuildUnloadedState(mod);
-      } else {
-        // No cached structure (e.g. asteroids, comets, non-Nova vessels).
-        // Build minimal structure from protoPartSnapshots so the vessel
-        // is included in the save (our save is authoritative).
-        structure = BuildStructureFromProto(vessel.protoVessel);
-        state = new Proto.VesselState();
-      }
+    if (!vessel.loaded) {
+      // Phase-1 punt: unloaded vessels need a different path (read
+      // from Rust world state by id, not from KSP parts). Until that
+      // lands, skip — saves only persist active/loaded vessels.
+      return null;
     }
 
-    // Vessel identity → structure
+    var (structure, state) = NovaVesselBuilder.BuildFromParts(vessel.parts, p => p.persistentId);
+
     structure.VesselId = vessel.id.ToString();
     structure.PersistentId = vessel.persistentId;
-
-    // Orbit lives on structure: it's element-event-frequency data, and the
-    // Rust simulator treats it as part of the structural input that drives
-    // forward-projection. Per-tick position flows through the live state
-    // channel, not here. Must be set before hashing.
     if (vessel.orbit != null)
       structure.Orbit = BuildOrbit(vessel.orbit);
 
-    // Structure hash (includes identity — vessel ID change = structural change)
-    var structureHash = NovaVesselBuilder.ComputeStructureHash(structure);
-
-    // Vessel state fields
     state.Name = vessel.vesselName;
     state.VesselType = (int)vessel.vesselType;
     state.Situation = (int)vessel.situation;
     state.MissionTime = vessel.missionTime;
     state.LaunchTime = vessel.launchTime;
-
-    // Flight state
     state.Flight = BuildFlightState(vessel);
 
-    return new Proto.Vessel { Structure = structure, State = state, StructureHash = structureHash };
+    // Overwrite per-component state fields with live values from the
+    // Rust FFI handle. Without this, mid-flight saves would record
+    // the prefab default contents (NovaVesselBuilder seeds from cfg)
+    // and lose any in-flight drain.
+    OverlayLiveStateFromHandle(vessel, state);
+
+    var structureHash = NovaVesselBuilder.ComputeStructureHash(structure);
+    return new Proto.Vessel {
+      Structure = structure,
+      State = state,
+      StructureHash = structureHash,
+    };
   }
 
-  static Proto.VesselState BuildUnloadedState(NovaVesselModule mod) {
-    var state = new Proto.VesselState();
+  /// <summary>
+  /// Walk the vessel's parts and, for components with FFI mirrors
+  /// (Battery today; more as ports land), pull the live state from
+  /// the arena and overwrite the corresponding field in
+  /// <see cref="Proto.PartState"/>.
+  /// </summary>
+  static unsafe void OverlayLiveStateFromHandle(Vessel vessel, Proto.VesselState state) {
+    var mod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
+    var handle = mod?.Handle;
+    if (handle == null) return;
 
-    // Nova component state from VirtualVessel
-    if (mod.Virtual != null && mod.CachedStructure != null) {
-      foreach (var ps in mod.CachedStructure.Parts) {
-        var partState = new Proto.PartState { Id = ps.Id };
-        mod.Virtual.SavePartState(ps.Id, partState);
-        state.Parts.Add(partState);
+    // Index the proto's parts for O(1) lookup by id.
+    var psById = new Dictionary<uint, Proto.PartState>();
+    foreach (var ps in state.Parts) psById[ps.Id] = ps;
+
+    foreach (var part in vessel.parts) {
+      if (!psById.TryGetValue(part.persistentId, out var ps)) continue;
+
+      if (part.FindModuleImplementing<NovaBatteryModule>() != null
+          && handle.HasState<BatteryState>(part.persistentId)) {
+        var bs = handle.GetState<BatteryState>(part.persistentId);
+        if (ps.Battery == null) ps.Battery = new Proto.BatteryState();
+        ps.Battery.Value = bs.Contents;
       }
+      // Future: TankVolume, FuelCell, etc. — same pattern.
     }
-
-    // TODO: stages for unloaded vessels
-
-    return state;
   }
 
   static Proto.FlightState BuildFlightState(Vessel vessel) {
@@ -188,32 +196,10 @@ public static class NovaSaveBuilder {
   static uint BuildActionGroups(Vessel vessel) {
     uint bits = 0;
     var groups = vessel.ActionGroups;
-    // KSPActionGroup is a flags enum: Stage=1, Gear=2, Light=4, RCS=8, SAS=16, Brakes=32, Abort=64, Custom01=128...
     for (int i = 0; i < 32; i++) {
       var group = (KSPActionGroup)(1 << i);
-      if (groups[group])
-        bits |= (uint)(1 << i);
+      if (groups[group]) bits |= (uint)(1 << i);
     }
     return bits;
-  }
-
-  /// <summary>
-  /// Build a minimal VesselStructure from ProtoVessel data for non-Nova
-  /// vessels (asteroids, comets, etc.) so they're included in the save.
-  /// </summary>
-  static Proto.VesselStructure BuildStructureFromProto(ProtoVessel pv) {
-    var structure = new Proto.VesselStructure();
-    if (pv?.protoPartSnapshots == null) return structure;
-
-    for (int i = 0; i < pv.protoPartSnapshots.Count; i++) {
-      var snap = pv.protoPartSnapshots[i];
-      var ps = new Proto.PartStructure {
-        Id = snap.persistentId,
-        PartName = snap.partName,
-        ParentIndex = i == pv.rootIndex ? -1 : snap.parentIdx,
-      };
-      structure.Parts.Add(ps);
-    }
-    return structure;
   }
 }

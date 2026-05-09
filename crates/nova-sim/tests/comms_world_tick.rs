@@ -42,7 +42,7 @@ fn world_tick_runs_initial_solve_and_advances_to_target_ut() {
         ))
         .build();
     let _ksc_id = world.comms.add_ground_station(ksc(ids::KERBIN));
-    world.vessels[0].initialize_solver(0.0);
+    world.vessels[0].initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     world.tick(100.0);
 
@@ -67,7 +67,7 @@ fn world_tick_packet_drains_over_time() {
             knee(1000.0, 1.0e10),
         ))
         .build();
-    world.vessels[0].initialize_solver(0.0);
+    world.vessels[0].initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     let ksc_id = world.comms.add_ground_station(ksc(ids::KERBIN));
     let sat_id = EndpointId::Vessel(VesselId(1));
@@ -100,7 +100,7 @@ fn world_tick_packet_completes_at_predicted_boundary() {
             knee(1000.0, 1.0e10),
         ))
         .build();
-    world.vessels[0].initialize_solver(0.0);
+    world.vessels[0].initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     let ksc_id = world.comms.add_ground_station(ksc(ids::KERBIN));
     let sat_id = EndpointId::Vessel(VesselId(1));
@@ -134,7 +134,7 @@ fn world_tick_with_no_comms_endpoints_still_advances_vessels() {
     );
     v.add_part(1, "pod", 100.0, vec![Comp::Battery(Battery::new(100.0))]);
     let mut world = World::builder().bodies(kerbol_bodies()).vessel(v).build();
-    world.vessels[0].initialize_solver(0.0);
+    world.vessels[0].initialize_solver(&nova_sim::fixtures::kerbol_ctx(), 0.0);
 
     world.tick(10.0);
 

@@ -19,9 +19,11 @@ pub mod fixtures;
 pub mod math;
 pub mod orbit;
 pub mod resource;
+pub mod resources;
 pub mod sim_clock;
 pub mod systems;
 pub mod world;
+pub mod world_context;
 
 pub use atmosphere::{Atmosphere, FloatCurve, FloatCurveKey};
 pub use buffer::Buffer;
@@ -30,16 +32,18 @@ pub use comms::{
     Job, JobId, JobStatus, Link, MotionModel, PathSummary, TopicKey,
 };
 pub use components::{
-    Accumulator, Battery, Comms, Component, Engine, FuelCell, Part, Propellant, TankSpec,
-    TankVolume,
+    Accumulator, Battery, Command, Comms, Component, Engine, FuelCell, Part, Propellant,
+    SolarPanel, TankSpec, TankVolume,
 };
 pub use ephem::{Body, BodyId, BodyRotation, Ephemeris};
 pub use math::Vec3d;
 pub use orbit::OrbitalElements;
 pub use resource::{Resource, ResourceDomain};
+pub use resources::{Orbit, PanelGeometry, SolarEvent, SolarForecaster};
 pub use sim_clock::SimClock;
 pub use systems::{
     BufferId, Consumer, ConsumerId, ConsumerInput, Device, DeviceHandle, DeviceId, Node, NodeId,
     Priority, ProcessFlowSystem, StagingFlowSystem, VesselSystems,
 };
 pub use world::{Vessel, VesselId, World, WorldBuilder};
+pub use world_context::WorldContext;

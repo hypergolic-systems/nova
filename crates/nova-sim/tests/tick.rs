@@ -59,8 +59,10 @@ fn engine_activity(v: &Vessel, part: u32) -> f64 {
 #[test]
 fn tick_to_current_time_solves_without_advancing() {
     let mut v = burn_vessel(1.0, 220.0, 100.0);
-    v.initialize_solver(0.0);
-    v.tick(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
+    v.tick(&ctx,0.0);
     // No time passed; engine should be at full output, tank still full.
     assert_relative_eq!(engine_activity(&v, 3), 1.0);
     let bid = buffer_id(&v, 2);
@@ -75,8 +77,10 @@ fn inert_vessel_tick_just_advances_clock() {
     if let Component::Engine(e) = &mut v.part_mut(3).components[0] {
         e.throttle = 0.0;
     }
-    v.initialize_solver(0.0);
-    v.tick(50.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
+    v.tick(&ctx,50.0);
     assert_relative_eq!(v.systems().clock.ut(), 50.0);
     let bid = buffer_id(&v, 2);
     assert_relative_eq!(v.systems().staging.buffer(bid).contents(), 100.0);
@@ -88,13 +92,15 @@ fn inert_vessel_tick_just_advances_clock() {
 fn engine_burn_drains_tank_to_empty_at_predicted_ut() {
     let capacity = 100.0;
     let mut v = burn_vessel(1.0, 220.0, capacity);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let burn_time = capacity / drain_rate;
 
     // Tick exactly to burn-out — at the boundary, contents == 0 and
     // the engine has just flamed out.
-    v.tick(burn_time);
+    v.tick(&ctx,burn_time);
     let bid = buffer_id(&v, 2);
     assert_relative_eq!(v.systems().staging.buffer(bid).contents(), 0.0, epsilon = 1e-9);
     assert_relative_eq!(engine_activity(&v, 3), 0.0);
@@ -103,13 +109,15 @@ fn engine_burn_drains_tank_to_empty_at_predicted_ut() {
 #[test]
 fn tick_past_empty_yields_zero_activity_for_remaining_time() {
     let mut v = burn_vessel(1.0, 220.0, 100.0);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let burn_time = 100.0 / drain_rate;
 
     // Tick well past flameout. Tank stays empty, engine stays off,
     // clock lands at the requested target_ut.
-    v.tick(burn_time + 100.0);
+    v.tick(&ctx,burn_time + 100.0);
     assert_relative_eq!(v.systems().clock.ut(), burn_time + 100.0);
     let bid = buffer_id(&v, 2);
     assert_relative_eq!(v.systems().staging.buffer(bid).contents(), 0.0, epsilon = 1e-9);
@@ -120,12 +128,14 @@ fn tick_past_empty_yields_zero_activity_for_remaining_time() {
 fn partial_burn_drains_tank_proportionally() {
     let capacity = 100.0;
     let mut v = burn_vessel(1.0, 220.0, capacity);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let burn_time = capacity / drain_rate;
 
     // Burn for half the empty time → contents at half capacity.
-    v.tick(burn_time * 0.5);
+    v.tick(&ctx,burn_time * 0.5);
     let bid = buffer_id(&v, 2);
     assert_relative_eq!(
         v.systems().staging.buffer(bid).contents(),
@@ -140,19 +150,21 @@ fn partial_burn_drains_tank_proportionally() {
 fn consecutive_ticks_continue_burn_continuously() {
     let capacity = 100.0;
     let mut v = burn_vessel(1.0, 220.0, capacity);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let bid = buffer_id(&v, 2);
 
-    v.tick(10.0);
+    v.tick(&ctx,10.0);
     let after_10 = v.systems().staging.buffer(bid).contents();
     assert_relative_eq!(after_10, capacity - 10.0 * drain_rate, max_relative = 1e-9);
 
-    v.tick(20.0);
+    v.tick(&ctx,20.0);
     let after_20 = v.systems().staging.buffer(bid).contents();
     assert_relative_eq!(after_20, capacity - 20.0 * drain_rate, max_relative = 1e-9);
 
-    v.tick(30.0);
+    v.tick(&ctx,30.0);
     let after_30 = v.systems().staging.buffer(bid).contents();
     assert_relative_eq!(after_30, capacity - 30.0 * drain_rate, max_relative = 1e-9);
 }
@@ -161,12 +173,14 @@ fn consecutive_ticks_continue_burn_continuously() {
 fn throttle_change_between_ticks_is_picked_up_at_next_solve() {
     let capacity = 100.0;
     let mut v = burn_vessel(1.0, 220.0, capacity);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let bid = buffer_id(&v, 2);
 
     // Burn at full throttle for 10 s.
-    v.tick(10.0);
+    v.tick(&ctx,10.0);
     let after_full = v.systems().staging.buffer(bid).contents();
     assert_relative_eq!(after_full, capacity - 10.0 * drain_rate, max_relative = 1e-9);
 
@@ -178,7 +192,7 @@ fn throttle_change_between_ticks_is_picked_up_at_next_solve() {
         e.throttle = 0.5;
     }
     v.invalidate();
-    v.tick(20.0);
+    v.tick(&ctx,20.0);
     // Drain over the second 10s should be half-rate.
     let expected = after_full - 10.0 * drain_rate * 0.5;
     let after_half = v.systems().staging.buffer(bid).contents();
@@ -196,15 +210,17 @@ fn quiet_ticks_skip_solve_after_initial() {
     if let Component::Engine(e) = &mut v.part_mut(3).components[0] {
         e.throttle = 0.0;
     }
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     assert_eq!(v.systems().solve_count(), 0);
 
-    v.tick(10.0);
+    v.tick(&ctx,10.0);
     assert_eq!(v.systems().solve_count(), 1, "first tick should solve once");
 
     // Five more quiet ticks — clock advances but nothing's changing.
     for t in [20.0, 30.0, 40.0, 50.0, 100.0] {
-        v.tick(t);
+        v.tick(&ctx,t);
     }
     assert_eq!(
         v.systems().solve_count(),
@@ -221,11 +237,13 @@ fn forecasted_event_invalidates_at_crossing() {
     // 0 (engine flamed out) rather than 1 (last in-burn rate).
     let capacity = 100.0;
     let mut v = burn_vessel(1.0, 220.0, capacity);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
     let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let burn_time = capacity / drain_rate;
 
-    v.tick(burn_time);
+    v.tick(&ctx,burn_time);
 
     // Two solves: the initial pre-burn solve, and a closing solve
     // because the tank-empty event was reached exactly at target_ut.
@@ -243,17 +261,19 @@ fn external_invalidate_forces_resolve_on_next_tick() {
     if let Component::Engine(e) = &mut v.part_mut(3).components[0] {
         e.throttle = 0.0;
     }
-    v.initialize_solver(0.0);
-    v.tick(10.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
+    v.tick(&ctx,10.0);
     assert_eq!(v.systems().solve_count(), 1);
 
     // Mutation alone doesn't trigger a re-solve.
-    v.tick(20.0);
+    v.tick(&ctx,20.0);
     assert_eq!(v.systems().solve_count(), 1);
 
     // Explicit invalidate → next tick re-solves.
     v.invalidate();
-    v.tick(30.0);
+    v.tick(&ctx,30.0);
     assert_eq!(v.systems().solve_count(), 2);
 }
 
@@ -277,7 +297,9 @@ fn kerolox_burn_flameouts_when_lox_runs_out_first() {
         (2, "tank", 500.0, vec![Component::TankVolume(tank)]),
         (3, "engine", 1500.0, vec![Component::Engine(engine)]),
     ]);
-    v.initialize_solver(0.0);
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    v.initialize_solver(&ctx, 0.0);
 
     // mdot = 240_000 / (310 × 9.80665) ≈ 78.96 kg/s.
     // batch_mass = 2 × 0.8 + 3 × 1.2 = 5.2 kg per batch.
@@ -288,7 +310,7 @@ fn kerolox_burn_flameouts_when_lox_runs_out_first() {
     let batch_rate = mdot / (2.0 * 0.8 + 3.0 * 1.2);
     let lox_burn_time = 90.0 / (batch_rate * 3.0);
 
-    v.tick(lox_burn_time + 5.0);
+    v.tick(&ctx,lox_burn_time + 5.0);
 
     let tank_ref = match &v.part(2).components[0] {
         Component::TankVolume(t) => t,

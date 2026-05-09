@@ -41,8 +41,10 @@ fn engine_consumes_hydrazine_at_full_throttle() {
         (2, "tank", 50.0, vec![Component::TankVolume(tank)]),
         (3, "rcs", 20.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let engine_ref = match &vessel.part(3).components[0] {
         Component::Engine(e) => e,
@@ -61,8 +63,10 @@ fn engine_starves_without_fuel() {
     let mut vessel = pod_with_parts(vec![
         (2, "rcs", 20.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let engine_ref = match &vessel.part(2).components[0] {
         Component::Engine(e) => e,
@@ -82,8 +86,10 @@ fn engine_at_throttle_zero_makes_no_demand() {
         (2, "tank", 50.0, vec![Component::TankVolume(tank)]),
         (3, "rcs", 20.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let engine_ref = match &vessel.part(3).components[0] {
         Component::Engine(e) => e,
@@ -115,8 +121,10 @@ fn engine_drain_rate_matches_mdot_over_density_for_single_propellant() {
         (2, "tank", 50.0, vec![Component::TankVolume(tank)]),
         (3, "rcs", 20.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let tank_ref = match &vessel.part(2).components[0] {
         Component::TankVolume(t) => t,
@@ -148,8 +156,10 @@ fn kerolox_engine_drains_propellants_in_2_to_3_volumetric_ratio() {
         (2, "tank", 500.0, vec![Component::TankVolume(tank)]),
         (3, "engine", 1500.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let tank_ref = match &vessel.part(2).components[0] {
         Component::TankVolume(t) => t,
@@ -180,8 +190,10 @@ fn kerolox_engine_starves_when_lox_tank_is_empty() {
         (2, "tank", 500.0, vec![Component::TankVolume(tank)]),
         (3, "engine", 1500.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let engine_ref = match &vessel.part(3).components[0] {
         Component::Engine(e) => e,
@@ -210,8 +222,10 @@ fn tank_contents_drain_over_time_via_lerp() {
         (2, "tank", 50.0, vec![Component::TankVolume(tank)]),
         (3, "rcs", 20.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let drain = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
     let bid = match &vessel.part(2).components[0] {
@@ -240,8 +254,10 @@ fn engine_at_half_throttle_drains_at_half_rate() {
         (2, "tank", 50.0, vec![Component::TankVolume(tank)]),
         (3, "rcs", 20.0, vec![Component::Engine(engine)]),
     ]);
-    vessel.initialize_solver(0.0);
-    vessel.solve();
+    let ephem = nova_sim::fixtures::kerbol_ephemeris();
+    let ctx = nova_sim::WorldContext::new(&ephem);
+    vessel.initialize_solver(&ctx, 0.0);
+    vessel.solve(&ctx);
 
     let engine_ref = match &vessel.part(3).components[0] {
         Component::Engine(e) => e,

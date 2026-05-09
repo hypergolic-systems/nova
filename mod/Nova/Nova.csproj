@@ -162,6 +162,25 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
+    <ProjectReference Include="..\Nova.Ffi.Generated\Nova.Ffi.Generated.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- NovaVesselHandle uses pointer types + ref-from-ptr conversion. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!--
+    `_legacy/` holds the Nova KSP integration that depends on the
+    deleted C# simulator (telemetry topics, comms addon, science chain,
+    most NovaXxxModule subclasses). Kept in-tree as porting reference
+    but excluded from compilation. As Rust components port and the
+    Rust-hosted UI websocket lands, files come back from here in slim
+    rewritten form.
+  -->
+  <ItemGroup>
+    <Compile Remove="_legacy/**/*.cs" />
+    <None Include="_legacy/**/*.cs" />
   </ItemGroup>
 
 </Project>

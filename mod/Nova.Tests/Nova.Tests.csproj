@@ -1,5 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Nova.Tests — MSTest suite for Nova.Core.
+    With most C# simulator code moved to `_legacy/` (porting reference
+    only), this assembly is now thin: persistence proto round-trip +
+    a few utility tests. The original ProcessFlowSystem / Engine /
+    Wheel / Tank / DeltaVSimulation tests live under Nova.Tests/_legacy/
+    awaiting nova-sim ports.
+  -->
+
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <IsPackable>false</IsPackable>
@@ -16,18 +25,6 @@
     <DebugSymbols>true</DebugSymbols>
     <Optimize>false</Optimize>
     <MonoSymbolFile>true</MonoSymbolFile>
-
-    <!-- Pick the OR-Tools native runtime that matches the host running
-         the tests. Tests are local/CI-only — production deploy uses the
-         osx-x64 runtime declared in Nova.Core.csproj. -->
-    <OrToolsVersion>9.8.3296</OrToolsVersion>
-    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">osx-arm64</OrToolsRid>
-    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'X64'">osx-x64</OrToolsRid>
-    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('LINUX'))">linux-x64</OrToolsRid>
-    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">win-x64</OrToolsRid>
-    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('OSX'))">dylib</OrToolsNativeExt>
-    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('LINUX'))">so</OrToolsNativeExt>
-    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">dll</OrToolsNativeExt>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,62 +32,16 @@
     <PackageReference Include="MSTest.TestAdapter" Version="3.1.1" />
     <PackageReference Include="MSTest.TestFramework" Version="3.1.1" />
     <PackageReference Include="Moq" Version="4.20.70" />
-
-    <PackageReference Include="Google.OrTools" Version="$(OrToolsVersion)" />
-
-    <!-- One runtime package per host. NuGet only restores the matching one. -->
-    <PackageReference Include="Google.OrTools.runtime.osx-arm64" Version="$(OrToolsVersion)"
-                      Condition="'$(OrToolsRid)' == 'osx-arm64'" />
-    <PackageReference Include="Google.OrTools.runtime.osx-x64" Version="$(OrToolsVersion)"
-                      Condition="'$(OrToolsRid)' == 'osx-x64'" />
-    <PackageReference Include="Google.OrTools.runtime.linux-x64" Version="$(OrToolsVersion)"
-                      Condition="'$(OrToolsRid)' == 'linux-x64'" />
-    <PackageReference Include="Google.OrTools.runtime.win-x64" Version="$(OrToolsVersion)"
-                      Condition="'$(OrToolsRid)' == 'win-x64'" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
   </ItemGroup>
 
-  <!--
-    Copy the host's OR-Tools native lib(s) to the test output directory.
-    The runtime package layout is the same across RIDs but the file
-    extensions differ:
-      osx-arm64/osx-x64 — google-ortools-native.dylib + libortools.<n>.dylib
-      linux-x64        — google-ortools-native.so    + libortools.so.<n>
-      win-x64          — google-ortools-native.dll   + ortools.dll
-    The shim is shipped without the `lib` prefix on every Unix-y RID,
-    so we also alias it as libgoogle-ortools-native.<ext> for Mono
-    PInvoke. Forward slashes in the source path — backslashes do not
-    survive MSBuild's glob expansion on Linux.
-  -->
+  <!-- Legacy tests, excluded from compilation. See _legacy/ in Nova.Core. -->
   <ItemGroup>
-    <_OrToolsNativeFile Include="$(NuGetPackageRoot)google.ortools.runtime.$(OrToolsRid)/$(OrToolsVersion)/runtimes/$(OrToolsRid)/native/*"
-                        Condition="'$(OrToolsRid)' != ''" />
+    <Compile Remove="_legacy/**/*.cs" />
+    <None Include="_legacy/**/*.cs" />
   </ItemGroup>
-
-  <Target Name="CopyOrToolsNative" AfterTargets="Build"
-          Condition="'$(OrToolsRid)' != ''"
-          Inputs="@(_OrToolsNativeFile)"
-          Outputs="@(_OrToolsNativeFile -> '$(OutputPath)%(Filename)%(Extension)')">
-    <Copy SourceFiles="@(_OrToolsNativeFile)"
-          DestinationFolder="$(OutputPath)"
-          SkipUnchangedFiles="true" />
-  </Target>
-
-  <!-- PInvoke alias: package ships google-ortools-native.{dylib,so,dll}
-       (no `lib` prefix); Mono on Unix wants the `lib` prefix. macOS and
-       Linux both need the alias; Windows uses the .dll name as-is. -->
-  <Target Name="AliasOrToolsShim" AfterTargets="CopyOrToolsNative"
-          Condition="$([MSBuild]::IsOSPlatform('OSX')) OR $([MSBuild]::IsOSPlatform('LINUX'))">
-    <PropertyGroup>
-      <_ShimSrc>$(OutputPath)google-ortools-native.$(OrToolsNativeExt)</_ShimSrc>
-      <_ShimDst>$(OutputPath)libgoogle-ortools-native.$(OrToolsNativeExt)</_ShimDst>
-    </PropertyGroup>
-    <Copy SourceFiles="$(_ShimSrc)" DestinationFiles="$(_ShimDst)"
-          SkipUnchangedFiles="true"
-          Condition="Exists('$(_ShimSrc)')" />
-  </Target>
 
 </Project>

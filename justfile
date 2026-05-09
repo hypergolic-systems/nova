@@ -72,7 +72,7 @@ proto:
 
 # --- C# (mod/) ---
 
-mod-build config="Release": proto
+mod-build config="Release": proto nova-ksp-build
     cd mod && dotnet build Nova.sln -c {{config}}
 
 mod-clean:
@@ -80,7 +80,7 @@ mod-clean:
     rm -rf mod/Nova.Core/build mod/Nova/build mod/Nova.Tests/bin mod/Nova.Tests/obj
 
 # Run all test suites — C# (mod/) + Rust (crates/).
-test config="Release": (mod-build config) save-cli-test sim-test
+test config="Release": (mod-build config) save-cli-test sim-test nova-ksp-test
     cd mod && dotnet test Nova.sln -c {{config}} --no-build
 
 # C#-only tests.
@@ -114,15 +114,32 @@ sim-build:
 sim-test:
     cargo test --release -p nova-sim
 
+# Build the nova-ksp FFI cdylib + regenerate C# bindings into
+# mod/Nova.Ffi.Generated/. The C# build (mod-build) pulls those
+# bindings in via Nova.Ffi.Generated.csproj.
+#
+# Cross-compile to x86_64-apple-darwin: KSP 1.12.5 ships an x86_64-only
+# binary that runs under Rosetta 2 on Apple Silicon, so any cdylib it
+# loads via DllImport must match. Bare `cargo build` defaults to the
+# host arch (arm64 on Apple Silicon) and silently fails to load.
+nova-ksp-build:
+    cargo build --release -p nova-ksp --target x86_64-apple-darwin
+
+# Run nova-ksp's FFI smoke tests. Tests build native — the cross-compiled
+# cdylib in target/x86_64-apple-darwin/ is for KSP only.
+nova-ksp-test:
+    cargo test --release -p nova-ksp
+
 # --- Release packaging ---
 
 # Stage GameData/Nova/ into a zip for distribution. Includes:
 #   Nova.Core.dll + Nova.dll
 #   0Harmony.dll (KSP doesn't bundle Harmony)
-#   Google.OrTools managed + osx-x64 native dylib
+#   protobuf-net.dll (proto serialization on the C# side)
+#   libnova_ksp.dylib (Rust simulator FFI bridge)
 #   ModuleManager Patches/
 #   UI/ — Vite-built Dragonglass UI bundle (hud.js + chunks)
-dist: (mod-build "Release") ui-build
+dist: (mod-build "Release") ui-build nova-ksp-build
     #!/usr/bin/env bash
     set -euo pipefail
     stage=$(mktemp -d)
@@ -130,25 +147,20 @@ dist: (mod-build "Release") ui-build
     mkdir -p "$root/Patches" "$root/UI"
 
     # Managed assemblies
-    cp mod/Nova.Core/build/Nova.Core.dll  "$root/"
-    cp mod/Nova/build/Nova.dll            "$root/"
-    cp mod/Nova/build/0Harmony.dll        "$root/"
-    cp mod/Nova.Core/build/Google.OrTools.dll "$root/"
-    cp mod/Nova.Core/build/Google.Protobuf.dll "$root/" 2>/dev/null || true
-    cp mod/Nova.Core/build/protobuf-net.dll "$root/" 2>/dev/null || true
+    cp mod/Nova.Core/build/Nova.Core.dll        "$root/"
+    cp mod/Nova/build/Nova.dll                  "$root/"
+    cp mod/Nova/build/Nova.Ffi.Generated.dll    "$root/"
+    cp mod/Nova/build/0Harmony.dll              "$root/"
+    cp mod/Nova.Core/build/protobuf-net.dll     "$root/" 2>/dev/null || true
 
-    # OR-Tools native (osx-x64)
-    ortools_native="${HOME}/.nuget/packages/google.ortools.runtime.osx-x64/9.8.3296/runtimes/osx-x64/native"
-    if [ -d "$ortools_native" ]; then
-        cp "$ortools_native"/*.dylib "$root/"
-        # P/Invoke expects libgoogle-ortools-native.dylib (lib prefix);
-        # the package ships google-ortools-native.dylib, so duplicate it.
-        if [ -f "$root/google-ortools-native.dylib" ] && [ ! -f "$root/libgoogle-ortools-native.dylib" ]; then
-            cp "$root/google-ortools-native.dylib" "$root/libgoogle-ortools-native.dylib"
-        fi
-    else
-        echo "warning: OR-Tools native runtime not found at $ortools_native" >&2
-    fi
+    # Native nova-ksp cdylib (Rust simulator FFI bridge). Lives next
+    # to Nova.dll so Mono's DllImport name resolution finds it without
+    # any DYLD/LD_LIBRARY_PATH gymnastics. Sourced from the cross-
+    # compiled target dir to match KSP's x86_64 arch (see nova-ksp-build).
+    cp target/x86_64-apple-darwin/release/libnova_ksp.dylib "$root/" 2>/dev/null \
+      || cp target/release/libnova_ksp.so "$root/" 2>/dev/null \
+      || cp target/release/nova_ksp.dll "$root/" 2>/dev/null \
+      || echo "warning: nova-ksp cdylib not found" >&2
 
     # ModuleManager config overrides
     cp -R configs/overrides/. "$root/Patches/"
@@ -181,6 +193,6 @@ install ksp_path: dist
 
 # --- All ---
 
-build: mod-build save-cli-build sim-build
+build: mod-build save-cli-build sim-build nova-ksp-build
 
 check: build test

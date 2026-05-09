@@ -1,0 +1,311 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Dragonglass.Telemetry.Topics;
+using Nova.Components;
+using Nova.Core.Components;
+using Nova.Core.Components.Electrical;
+using Nova.Core.Components.Propulsion;
+using Nova.Core.Resources;
+using UnityEngine;
+// Disambiguate against UnityEngine.Light.
+using NovaLight = Nova.Core.Components.Electrical.Light;
+
+namespace Nova.Telemetry;
+
+// Per-part state topic: current rates and saturation for whatever
+// Nova virtual components live on the part. Marked dirty after each
+// solver tick by NovaVesselModule; the broadcaster's 10 Hz cadence
+// gates the actual emission rate.
+//
+// MonoBehaviour attached to the Part's GameObject by
+// NovaSubscriptionManager. Lifetime tied to the Part — destroy on
+// stage-off, decouple, or unload happens automatically.
+//
+// This topic carries the resource + virtual-component view ONLY.
+// Science instruments and data storage publish on dedicated
+// per-part topics (`NovaScienceTopic`, `NovaStorageTopic`) so a
+// `science-instrument`-tagged part can subscribe to its science
+// payload without pulling resource/component noise.
+//
+// Wire format (positional array, single-char component kind prefix
+// matching the convention used by stock Dragonglass PartTopic):
+//   [partId,
+//    [ [resourceId, rate, satisfaction], ... ],
+//    [ [kind, ...], ... ]
+//   ]
+//
+// Resource frames (one per Buffer on a part — TankVolume tanks and
+// Battery cells both contribute):
+//   [resourceName, amount, capacity, currentRate]
+//
+// Component frames. Every numeric is a physical observable —
+// rates in W, fractions in 0..1 (for fills/SoC), absolutes in their
+// natural unit. No solver-internal "activity" leaks into the wire;
+// callers that want "current draw" get it directly.
+//   ["S", currentEcRate, maxEcRate, deployed, sunlit, retractable]  SolarPanel
+//   ["B", soc(0..1), capacity, currentRate]                         Battery
+//   ["W", motorRate, busRate, bufferFraction, refillActive]          ReactionWheel
+//   ["L", currentRate]                                              Light
+//   ["T", volume]                                                   TankVolume
+//   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
+//          manifoldFraction, refillActive]                             FuelCell
+//   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
+//
+// `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
+// rather than literal JSON booleans (consistent with the rest of
+// the positional payload).
+//
+// Inbound ops (UI → mod, dispatched via Topic.HandleOp):
+//   "setSolarDeployed" [bool]  — extend or retract the part's
+//                                deployable solar panel. No-op if
+//                                the part has no NovaDeployableSolar
+//                                module, or if the requested state
+//                                isn't reachable (already animating,
+//                                already in the requested state, or
+//                                trying to retract a non-retractable
+//                                panel in flight). Per-panel only —
+//                                symmetry counterparts are NOT walked,
+//                                so the UI sends one op per panel it
+//                                wants to deploy.
+//   "setTankConfig" [string]   — replace the part's tank loadout with
+//                                the named TankPresets preset, built
+//                                fresh against the current Volume.
+//                                Editor-only — rejected outside
+//                                GameScenes.EDITOR. No-op if the part
+//                                has no NovaTankModule or the preset
+//                                id is unknown.
+public sealed class NovaPartTopic : Topic {
+  private const string LogPrefix = "[Nova/Telemetry] ";
+
+  private Part _part;
+  private string _name;
+
+  // Index keyed by part id. NovaVesselModule pushes dirty marks into
+  // the index post-tick instead of holding component references.
+  private static readonly Dictionary<uint, NovaPartTopic> _byPart
+      = new Dictionary<uint, NovaPartTopic>();
+
+  public override string Name => _name;
+
+  protected override void OnEnable() {
+    _part = GetComponent<Part>();
+    if (_part == null) {
+      Debug.LogWarning(LogPrefix + "NovaPartTopic attached to non-Part GameObject; disabling");
+      enabled = false;
+      return;
+    }
+    _name = "NovaPart/" + _part.persistentId;
+    _byPart[_part.persistentId] = this;
+    base.OnEnable();
+    MarkDirty();
+  }
+
+  protected override void OnDisable() {
+    base.OnDisable();
+    if (_part != null) _byPart.Remove(_part.persistentId);
+  }
+
+  /// <summary>
+  /// Mark dirty for a specific part. Called by NovaVesselModule after
+  /// each solver tick for every part it owns.
+  /// </summary>
+  public static void MarkPartDirty(uint partPersistentId) {
+    if (_byPart.TryGetValue(partPersistentId, out var topic) && topic != null) {
+      topic.MarkDirty();
+    }
+  }
+
+  /// <summary>
+  /// Mark every attached part topic dirty. Cheaper than touching the
+  /// whole vessel's part list when the vessel module knows it just
+  /// solved everything.
+  /// </summary>
+  public static void MarkAllDirty() {
+    foreach (var t in _byPart.Values) {
+      if (t != null) t.MarkDirty();
+    }
+  }
+
+  // Inbound op router — see file header for the supported envelope.
+  // Runs on Unity's main thread via OpDispatcher, so direct calls
+  // into KSP PartModule state are safe.
+  public override void HandleOp(string op, List<object> args) {
+    switch (op) {
+      // setSolarDeployed + setCommandTestLoad removed — solar +
+      // command test-load are FFI-handled now (or pending re-port);
+      // their inbound op surface returns when the Rust-side websocket
+      // takes over UI.
+      case "setTankConfig": {
+        if (args == null || args.Count < 1 || !(args[0] is string presetId)) {
+          Debug.LogWarning(LogPrefix + Name + " setTankConfig: expected [string]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          Debug.Log(LogPrefix + Name + " setTankConfig rejected outside editor");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaTankModule>();
+        if (module?.TankVolume == null) return;
+        var preset = TankPresets.GetById(presetId);
+        if (preset == null) {
+          Debug.LogWarning(LogPrefix + Name + " setTankConfig: unknown preset '" + presetId + "'");
+          return;
+        }
+        module.TankVolume.Reconfigure(preset.Build(module.TankVolume.Volume));
+        MarkDirty();
+        return;
+      }
+      default:
+        base.HandleOp(op, args);
+        return;
+    }
+  }
+
+  public override void WriteData(StringBuilder sb) {
+    JsonWriter.Begin(sb, '[');
+    bool first = true;
+
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteUintAsString(sb, _part.persistentId);
+
+    var components = ResolveComponents();
+
+    JsonWriter.Sep(sb, ref first);
+    WriteResources(sb, components);
+
+    JsonWriter.Sep(sb, ref first);
+    WriteComponents(sb, components);
+
+    JsonWriter.End(sb, ']');
+  }
+
+  // In flight, components live on NovaVesselModule.Virtual (the solver
+  // graph). In editor there's no vessel and no Virtual — read directly
+  // from the live NovaPartModule.Components list, populated by
+  // OnStartEditor from the prefab MODULE config (and mutated by
+  // setTankConfig). Returns an empty enumerable for parts with no
+  // Nova modules.
+  private IEnumerable<VirtualComponent> ResolveComponents() {
+    if (_part == null) return Enumerable.Empty<VirtualComponent>();
+    if (_part.vessel != null) {
+      var vm = _part.vessel.GetComponent<NovaVesselModule>();
+      if (vm?.Virtual != null) return vm.Virtual.GetComponents(_part.persistentId);
+    }
+    var modules = _part.Modules?.OfType<NovaPartModule>();
+    if (modules == null) return Enumerable.Empty<VirtualComponent>();
+    return modules
+      .Where(m => m.Components != null)
+      .SelectMany(m => m.Components);
+  }
+
+  private void WriteResources(StringBuilder sb, IEnumerable<VirtualComponent> components) {
+    JsonWriter.Begin(sb, '[');
+    bool first = true;
+    foreach (var c in components) {
+      foreach (var buf in EnumerateBuffers(c)) {
+        if (buf == null || buf.Capacity <= 0) continue;
+        JsonWriter.Sep(sb, ref first);
+        WriteResource(sb, buf);
+      }
+    }
+    JsonWriter.End(sb, ']');
+  }
+
+  // Buffer-bearing components contribute their buffers to the part's
+  // resource list. Battery moved to Rust — its buffer publishes from
+  // there once the Rust-side websocket lands.
+  private static IEnumerable<Buffer> EnumerateBuffers(VirtualComponent c) {
+    switch (c) {
+      case TankVolume t:
+        foreach (var tank in t.Tanks) yield return tank;
+        break;
+    }
+  }
+
+  private static void WriteResource(StringBuilder sb, Buffer buf) {
+    JsonWriter.Begin(sb, '[');
+    bool first = true;
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteString(sb, buf.Resource?.Name ?? "");
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, buf.Contents);
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, buf.Capacity);
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, buf.Rate);
+    JsonWriter.End(sb, ']');
+  }
+
+  private void WriteComponents(StringBuilder sb, IEnumerable<VirtualComponent> components) {
+    JsonWriter.Begin(sb, '[');
+    bool first = true;
+    var kspVessel = _part?.vessel;
+    foreach (var c in components) {
+      if (!TryWriteComponent(sb, c, kspVessel, ref first)) {
+        // Unhandled kind — silently skip rather than emit an
+        // un-decodable frame. New kinds get a case here + a TS
+        // tuple in nova-topics.ts.
+      }
+    }
+    JsonWriter.End(sb, ']');
+  }
+
+  private static bool TryWriteComponent(StringBuilder sb, VirtualComponent c, Vessel kspVessel, ref bool first) {
+    // Battery, Command, FuelCell, SolarPanel — Rust-owned now;
+    // their topic frames return when the Rust-side websocket lands.
+    switch (c) {
+      case ReactionWheel wheel: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "W", ref f);
+        // motorRate / busRate frame the wheel's energy balance
+        // honestly: motor draw can be supplied from the buffer, the
+        // bus, or both, and the UI needs both halves to show the
+        // signed buffer flow (= busRate − motorRate) without solver
+        // internals.
+        WriteNum(sb, wheel.CurrentDrain, ref f);
+        WriteNum(sb, wheel.CurrentRefill, ref f);
+        WriteNum(sb, wheel.Buffer?.FillFraction ?? 1.0, ref f);
+        WriteBit(sb, wheel.RefillActive, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case NovaLight light: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "L", ref f);
+        WriteNum(sb, light.Rate * light.Activity, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case TankVolume tank: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "T", ref f);
+        WriteNum(sb, tank.Volume, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static void WriteKind(StringBuilder sb, string kind, ref bool first) {
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteString(sb, kind);
+  }
+
+  private static void WriteNum(StringBuilder sb, double value, ref bool first) {
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteDouble(sb, value);
+  }
+
+  private static void WriteBit(StringBuilder sb, bool value, ref bool first) {
+    JsonWriter.Sep(sb, ref first);
+    JsonWriter.WriteBoolAsBit(sb, value);
+  }
+}

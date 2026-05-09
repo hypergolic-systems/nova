@@ -137,6 +137,45 @@ message BodyRotation {
   bool   tidally_locked          = 4;  // rotation_period == orbital_period
 }
 
+// --- Part prefab database ---
+//
+// Prefab data sent C# → Rust once at startup (and on cfg reloads).
+// Never persisted: NovaPart entries describe the static, prefab-
+// derived properties of a KSP part — values that come from cfg
+// MODULE nodes and don't vary per vessel instance.
+//
+// Per-instance dynamic state lives in `PartStructure` / `PartState`
+// inside the save; the rule of thumb is "if a player can change it
+// in the editor, it's Structure; if it changes during flight, it's
+// State; if it's identical for every instance of this part, it's
+// NovaPart."
+
+message PartDatabase {
+  repeated NovaPart parts = 1;
+}
+
+message NovaPart {
+  string  name           = 1;  // prefab name; matches PartStructure.part_name
+  double  dry_mass_kg    = 2;  // prefab dry mass
+
+  // Component prefab specs. Present iff the prefab has the matching
+  // NovaXxxModule. Absence = part doesn't have that component kind;
+  // nova-ksp uses these to decide which arena slots to allocate per
+  // (part, kind) pair when building a vessel.
+  CommandPrefab command  = 3;
+  BatteryPrefab battery  = 4;
+  // Future: EnginePrefab, RcsPrefab, ReactionWheelPrefab,
+  // SolarPanelPrefab, FuelCellPrefab, ...
+}
+
+message CommandPrefab {
+  double idle_draw = 1;  // baseline avionics EC draw, W
+}
+
+message BatteryPrefab {
+  double max_rate = 1;   // shared in/out flow cap, W
+}
+
 // --- Vessel ---
 
 message Vessel {

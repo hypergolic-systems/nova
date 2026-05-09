@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Generated csbindgen bindings for the nova-ksp FFI surface.
+    The actual .cs files (e.g. NovaNative.g.cs) are emitted by
+    crates/nova-ksp/build.rs and gitignored — they regenerate
+    every time `cargo build -p nova-ksp` runs.
+
+    We intentionally net48-target this assembly to match the rest
+    of the Nova mod (KSP 1.12.5 / bundled Mono).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Nova.Ffi.Generated</RootNamespace>
+    <AssemblyName>Nova.Ffi.Generated</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>build/</OutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <!--
+    The SDK auto-globs *.cs in the project directory, which picks up
+    NovaNative.g.cs once nova-ksp's build.rs has emitted it. If the
+    file isn't present yet (fresh checkout, before `cargo build`), the
+    project still compiles into an empty assembly — same shape as the
+    proto-generated bindings setup.
+  -->
+
+</Project>

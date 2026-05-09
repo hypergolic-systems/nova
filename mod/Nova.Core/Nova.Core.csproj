@@ -30,8 +30,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Google.OrTools" Version="9.8.3296" />
-    <PackageReference Include="Google.OrTools.runtime.osx-x64" Version="9.8.3296" />
     <PackageReference Include="protobuf-net" Version="2.4.8" />
   </ItemGroup>
 
@@ -40,5 +38,19 @@
     `just proto` writes them to Persistence/Protos/Generated/. The default
     .cs glob already picks them up.
   -->
+
+  <!--
+    `_legacy/` holds the C# simulator code that's been superseded by
+    nova-sim (Rust). Kept in-tree as a porting reference, but excluded
+    from compilation. Things to look for there: VirtualVessel +
+    VesselSystems + ProcessFlowSystem + StagingFlowSystem, every
+    VirtualComponent subclass, RcsSolver, the science chain, etc.
+    OR-Tools + DeltaVSimulation also live here — both moved with
+    their dependents.
+  -->
+  <ItemGroup>
+    <Compile Remove="_legacy/**/*.cs" />
+    <None Include="_legacy/**/*.cs" />
+  </ItemGroup>
 
 </Project>

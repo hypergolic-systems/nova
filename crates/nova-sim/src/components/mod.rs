@@ -4,16 +4,20 @@
 
 pub mod accumulator;
 pub mod battery;
+pub mod command;
 pub mod comms;
 pub mod engine;
 pub mod fuel_cell;
+pub mod solar_panel;
 pub mod tank;
 
 pub use accumulator::Accumulator;
 pub use battery::Battery;
+pub use command::Command;
 pub use comms::Comms;
 pub use engine::{Engine, Propellant};
 pub use fuel_cell::FuelCell;
+pub use solar_panel::SolarPanel;
 pub use tank::{TankSpec, TankVolume};
 
 use crate::systems::{NodeId, VesselSystems};
@@ -26,8 +30,10 @@ pub enum Component {
     Engine(Engine),
     TankVolume(TankVolume),
     Battery(Battery),
+    Command(Command),
     Comms(Comms),
     FuelCell(FuelCell),
+    SolarPanel(SolarPanel),
 }
 
 impl Component {
@@ -39,8 +45,10 @@ impl Component {
             Component::Engine(e) => e.on_build_systems(sys, node),
             Component::TankVolume(t) => t.on_build_systems(sys, node),
             Component::Battery(b) => b.on_build_systems(sys, node),
+            Component::Command(c) => c.on_build_systems(sys, node),
             Component::Comms(c) => c.on_build_systems(sys, node),
             Component::FuelCell(f) => f.on_build_systems(sys, node),
+            Component::SolarPanel(p) => p.on_build_systems(sys, node),
         }
     }
 
@@ -51,8 +59,10 @@ impl Component {
             Component::Engine(_)
             | Component::TankVolume(_)
             | Component::Battery(_)
+            | Component::Command(_)
             | Component::Comms(_)
-            | Component::FuelCell(_) => {}
+            | Component::FuelCell(_)
+            | Component::SolarPanel(_) => {}
         }
     }
 
@@ -62,7 +72,11 @@ impl Component {
         match self {
             Component::Engine(e) => e.on_pre_solve(sys),
             Component::FuelCell(f) => f.on_pre_solve(sys),
-            Component::TankVolume(_) | Component::Battery(_) | Component::Comms(_) => {}
+            Component::TankVolume(_)
+            | Component::Battery(_)
+            | Component::Command(_)
+            | Component::Comms(_)
+            | Component::SolarPanel(_) => {}
         }
     }
 
@@ -78,7 +92,9 @@ impl Component {
             Component::Engine(_)
             | Component::TankVolume(_)
             | Component::Battery(_)
-            | Component::Comms(_) => {}
+            | Component::Command(_)
+            | Component::Comms(_)
+            | Component::SolarPanel(_) => {}
         }
     }
 
@@ -93,7 +109,9 @@ impl Component {
             Component::Engine(_)
             | Component::TankVolume(_)
             | Component::Battery(_)
-            | Component::Comms(_) => f64::INFINITY,
+            | Component::Command(_)
+            | Component::Comms(_)
+            | Component::SolarPanel(_) => f64::INFINITY,
         }
     }
 }

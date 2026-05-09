@@ -3,10 +3,29 @@ use crate::comms::{Antenna, CommsSystem, EndpointId};
 use crate::ephem::{Body, BodyId, Ephemeris};
 use crate::math::Vec3d;
 use crate::orbit::OrbitalElements;
+use crate::resource::Resource;
+use crate::resources::{Orbit, PanelGeometry, SolarEvent, SolarForecaster};
 use crate::sim_clock::SimClock;
-use crate::systems::{NodeId, VesselSystems};
+use crate::systems::{DeviceHandle, NodeId, Priority, VesselSystems};
+use crate::world_context::WorldContext;
 
 use std::collections::HashMap;
+
+/// Per-vessel solar wiring. `None` for vessels with no SolarPanel
+/// components. Owned by `Vessel` and rebuilt on `initialize_solver`.
+#[derive(Clone, Debug)]
+pub(crate) struct VesselSolar {
+    /// Aggregate Process producer (output: ElectricCharge,
+    /// total_charge_rate). One device per vessel, regardless of panel
+    /// count — matches C# `VirtualVessel.solarDevice`.
+    pub device: DeviceHandle,
+    /// Σ over all panels' rated charge_rate.
+    pub total_charge_rate: f64,
+    /// Best-orientation total power, from
+    /// `SolarForecaster::optimal_rate`. Recomputed on deploy-state
+    /// change (deferred — not exposed in this milestone).
+    pub cached_optimal_rate: f64,
+}
 
 /// Stable identifier for a vessel within a World.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -23,6 +42,7 @@ pub struct Vessel {
     pub orbit: OrbitalElements,
     pub parts: Vec<Part>,
     pub systems: Option<VesselSystems>,
+    pub(crate) solar: Option<VesselSolar>,
 }
 
 impl Vessel {
@@ -34,7 +54,14 @@ impl Vessel {
             orbit,
             parts: Vec::new(),
             systems: None,
+            solar: None,
         }
+    }
+
+    /// Vessel orbit descriptor for `SolarForecaster::forecast`.
+    /// Composes the existing `(parent, orbit)` fields — not stored.
+    pub fn orbit_descriptor(&self) -> Orbit {
+        Orbit::new(self.orbit, self.parent)
     }
 
     /// Append a part. Builder-style — returns `&mut Self`.
@@ -87,7 +114,11 @@ impl Vessel {
     /// Build the staging-system topology from `parts` and run each
     /// component's `on_build_systems` registration. Idempotent —
     /// subsequent calls reset the solver and rebuild from scratch.
-    pub fn initialize_solver(&mut self, ut: f64) {
+    ///
+    /// Takes `&WorldContext` so the aggregate solar Device's optimal
+    /// rate can be cached at build time. Vessels with no SolarPanel
+    /// components don't touch the context.
+    pub fn initialize_solver(&mut self, ctx: &WorldContext, ut: f64) {
         let clock = SimClock::new(ut);
         let mut systems = VesselSystems::new(clock);
 
@@ -124,7 +155,103 @@ impl Vessel {
             self.parts[part_idx].components = components;
         }
 
+        // 4. Build the aggregate solar device. Mirrors C#
+        //    `VirtualVessel.BuildSolarDevice` (line 107-120) +
+        //    `ComputeSolarRates` (line 182-212). Sums charge_rate
+        //    across panels, registers one Process producer at the
+        //    root node, runs the Fibonacci-sphere optimiser to cache
+        //    the best-orientation total, and pro-rates per-panel
+        //    `effective_rate`.
+        self.solar = self.build_solar(&mut systems);
+
+        // 5. Seed per-panel telemetry from a single forecast call so
+        //    `is_sunlit` / `shadow_transition_ut` reflect reality
+        //    before the first tick lands. Cheap (one ephem walk).
+        if self.solar.is_some() {
+            let event = ctx.solar.forecast(&self.orbit_descriptor(), ut);
+            let (sunlit, transition_ut) = match event {
+                SolarEvent::Sun(dt) => (true, abs_ut(ut, dt)),
+                SolarEvent::Shade(dt) => (false, abs_ut(ut, dt)),
+            };
+            for part in &mut self.parts {
+                for c in &mut part.components {
+                    if let Component::SolarPanel(p) = c {
+                        p.is_sunlit = sunlit;
+                        p.shadow_transition_ut = transition_ut;
+                    }
+                }
+            }
+        }
+
         self.systems = Some(systems);
+    }
+
+    fn build_solar(&mut self, systems: &mut VesselSystems) -> Option<VesselSolar> {
+        // Determine which staging node hosts the aggregate device.
+        // Use the root part — same convention the C# port follows
+        // (RootStagingNode in BuildSolarDevice).
+        let root_node = self
+            .parts
+            .iter()
+            .find(|p| p.parent.is_none())
+            .and_then(|p| p.node_id)?;
+
+        // Sum rated charge across panels, and gather deployed-panel
+        // geometry for the optimiser.
+        let mut total_charge_rate = 0.0;
+        let mut deployed: Vec<PanelGeometry> = Vec::new();
+        let mut deployed_charge = 0.0;
+        for part in &self.parts {
+            for c in &part.components {
+                if let Component::SolarPanel(p) = c {
+                    total_charge_rate += p.charge_rate;
+                    if p.is_deployed {
+                        deployed.push(PanelGeometry {
+                            direction: p.panel_direction,
+                            charge_rate: p.charge_rate,
+                            is_tracking: p.is_tracking,
+                        });
+                        deployed_charge += p.charge_rate;
+                    }
+                }
+            }
+        }
+
+        if total_charge_rate <= 0.0 {
+            return None;
+        }
+
+        let device = systems.add_device(
+            root_node,
+            &[],
+            &[(Resource::ElectricCharge, total_charge_rate)],
+            Priority::Low,
+        );
+        systems.set_device_demand(device, 0.0);
+
+        let cached_optimal_rate = SolarForecaster::optimal_rate(&deployed);
+
+        // Pro-rate effective_rate per panel (deployed only). Mirrors
+        // `VirtualVessel.ComputeSolarRates` line 208-211.
+        if deployed_charge > 0.0 && cached_optimal_rate > 0.0 {
+            for part in &mut self.parts {
+                for c in &mut part.components {
+                    if let Component::SolarPanel(p) = c {
+                        p.effective_rate = if p.is_deployed {
+                            (p.charge_rate / deployed_charge) * cached_optimal_rate
+                        } else {
+                            0.0
+                        };
+                    }
+                }
+            }
+        }
+
+        Some(VesselSolar {
+            device,
+            total_charge_rate,
+            cached_optimal_rate,
+        })
     }
 
     /// Mark the systems dirty so the next `tick(...)` runs
@@ -143,10 +270,10 @@ impl Vessel {
     /// the instantaneous rate without advancing time. Production
     /// code should generally use `tick(target_ut)` instead. Always
     /// runs unconditionally — bypasses `needs_solve`.
-    pub fn solve(&mut self) {
+    pub fn solve(&mut self, ctx: &WorldContext) {
         let mut systems = self.systems.take()
             .expect("solve() called before initialize_solver()");
-        self.do_solve_with(&mut systems);
+        self.do_solve_with(ctx, &mut systems);
         self.systems = Some(systems);
     }
 
@@ -161,7 +288,7 @@ impl Vessel {
     /// Within one tick, advance steps are bounded by the soonest
     /// expiry — guarantees we don't over-step a state transition
     /// (a tank emptying mid-burn, a panel slipping into shadow).
-    pub fn tick(&mut self, target_ut: f64) {
+    pub fn tick(&mut self, ctx: &WorldContext, target_ut: f64) {
         let mut systems = self.systems.take()
             .expect("tick() called before initialize_solver()");
 
@@ -178,7 +305,7 @@ impl Vessel {
             // those rates; only state changes (events firing,
             // external mutations) need a re-solve.
             if systems.needs_solve() {
-                self.do_solve_with(&mut systems);
+                self.do_solve_with(ctx, &mut systems);
             }
 
             let now = systems.clock.ut();
@@ -212,7 +339,7 @@ impl Vessel {
         // current_output, etc.) reflect the state at target_ut, not
         // the rates from the previous-window solve.
         if systems.needs_solve() {
-            self.do_solve_with(&mut systems);
+            self.do_solve_with(ctx, &mut systems);
         }
 
         self.systems = Some(systems);
@@ -222,7 +349,15 @@ impl Vessel {
         self.systems.as_ref().expect("systems not initialized — call initialize_solver()")
     }
 
-    fn do_solve_with(&mut self, systems: &mut VesselSystems) {
+    fn do_solve_with(&mut self, ctx: &WorldContext, systems: &mut VesselSystems) {
+        // Solar pre-solve: forecast next shadow boundary and gate the
+        // aggregate solar device's demand. Mirrors C#
+        // `VirtualVessel.UpdateShadowState` + `UpdateSolarDeviceDemand`
+        // (line 218-226). The Process system folds the device's
+        // valid_until into its `max_tick_dt`, so the inner tick loop
+        // re-solves at every shadow transition for free.
+        self.update_solar_pre_solve(ctx, systems);
+
         for part in &mut self.parts {
             for c in &mut part.components {
                 c.on_pre_solve(systems);
@@ -235,7 +370,78 @@ impl Vessel {
                 c.on_post_solve(systems);
             }
         }
+
+        // Solar post-solve: distribute LP-solved aggregate output to
+        // per-panel `current_rate`. Mirrors
+        // `VirtualVessel.DistributeSolarPanelCurrentRates` (line 266-276).
+        self.distribute_solar_current_rates(systems);
+
         systems.note_solved();
+    }
+
+    fn update_solar_pre_solve(&mut self, ctx: &WorldContext, systems: &mut VesselSystems) {
+        let solar = match self.solar.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let now = systems.clock.ut();
+        let event = ctx.solar.forecast(&self.orbit_descriptor(), now);
+        let (sunlit, transition_ut) = match event {
+            SolarEvent::Sun(dt) => (true, abs_ut(now, dt)),
+            SolarEvent::Shade(dt) => (false, abs_ut(now, dt)),
+        };
+
+        // Demand 0..1 — Process LP variable's effective cap is
+        // `total_charge_rate × demand`, so we want `optimal/total`
+        // when sunlit (saturates at the optimiser-found best rate),
+        // 0 otherwise.
+        let demand = if sunlit && solar.total_charge_rate > 0.0 {
+            (solar.cached_optimal_rate / solar.total_charge_rate).min(1.0)
+        } else {
+            0.0
+        };
+        systems.set_device_demand(solar.device, demand);
+        systems.set_device_valid_until(solar.device, transition_ut);
+
+        // Mirror state to per-panel telemetry.
+        for part in &mut self.parts {
+            for c in &mut part.components {
+                if let Component::SolarPanel(p) = c {
+                    p.is_sunlit = sunlit;
+                    p.shadow_transition_ut = transition_ut;
+                }
+            }
+        }
+    }
+
+    fn distribute_solar_current_rates(&mut self, systems: &VesselSystems) {
+        let solar = match self.solar.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        if solar.cached_optimal_rate <= 0.0 || solar.total_charge_rate <= 0.0 {
+            for part in &mut self.parts {
+                for c in &mut part.components {
+                    if let Component::SolarPanel(p) = c {
+                        p.current_rate = 0.0;
+                    }
+                }
+            }
+            return;
+        }
+
+        let activity = systems.device_activity(solar.device);
+        let actual_output = activity * solar.total_charge_rate;
+        let scale = actual_output / solar.cached_optimal_rate;
+        for part in &mut self.parts {
+            for c in &mut part.components {
+                if let Component::SolarPanel(p) = c {
+                    p.current_rate = p.effective_rate * scale;
+                }
+            }
+        }
     }
 
     /// Smallest time delta to a component-side scheduled expiry,
@@ -259,6 +465,16 @@ impl Vessel {
 /// Floor on per-iter advance — prevents fp residuals near a
 /// transition from stalling the tick loop.
 const MIN_TICK_STEP: f64 = 1.0e-6;
+
+/// Convert a relative dt (from `SolarEvent`) to an absolute UT,
+/// preserving `+∞` rather than producing NaN at `now + ∞`.
+fn abs_ut(now: f64, dt: f64) -> f64 {
+    if dt.is_infinite() {
+        f64::INFINITY
+    } else {
+        now + dt
+    }
+}
 
 /// Safety cap on tick iterations. At worst, one iter per scheduled
 /// event in the tick window; 256 covers reasonable burn scenarios
@@ -329,9 +545,13 @@ impl World {
                 .max(MIN_TICK_STEP);
             let next = now + dt;
 
+            // Build the per-tick context once. Borrows `&self.ephemeris`
+            // — disjoint field from `&mut self.vessels`, so the inner
+            // loop compiles cleanly.
+            let ctx = WorldContext::new(&self.ephemeris);
             for v in &mut self.vessels {
                 if v.systems.is_some() {
-                    v.tick(next);
+                    v.tick(&ctx, next);
                 }
             }
             comms.solve(self, next);
