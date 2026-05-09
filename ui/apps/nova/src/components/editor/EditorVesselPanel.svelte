@@ -26,14 +26,22 @@
   const MIN_H = 320;
   const EDGE_MARGIN = 16;
 
-  // Default position — same right-edge dock as the flight panel so the
-  // muscle memory of "vessel readout lives on the right" carries over.
+  // Default position — left edge in the editor (StagingStack owns the
+  // right side, mirroring KSP's stock VAB convention). Differs from
+  // the flight VesselPanel's right-edge dock; the editor scene's
+  // visual rhythm is "stages on the right, vessel readout on the
+  // left", so muscle memory follows the scene's geometry, not the
+  // flight panel.
   const initialW = MIN_W;
   const initialH = Math.max(MIN_H, Math.round(window.innerHeight * 0.75));
-  const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
+  const initialX = EDGE_MARGIN;
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'tanks' | 'mass' | 'dv' | 'staging' | 'crew';
+  // STAGING is intentionally not a tab here — it lives outside the
+  // panel as a free-floating instrument (mirroring flight, where
+  // StagingStack is its own surface separate from VesselPanel). See
+  // EditorHud.svelte's bottom-left mount.
+  type TabId = 'tanks' | 'mass' | 'dv' | 'crew';
 
   interface Tab {
     id: TabId;
@@ -46,7 +54,6 @@
     { id: 'tanks',   short: 'TANKS',   label: 'Tank Volumes',  enabled: true  },
     { id: 'mass',    short: 'MASS',    label: 'Mass Breakdown', enabled: false },
     { id: 'dv',      short: 'ΔV',      label: 'Delta-V',        enabled: false },
-    { id: 'staging', short: 'STAGING', label: 'Staging',        enabled: false },
     { id: 'crew',    short: 'CREW',    label: 'Crew',           enabled: false },
   ];
 
