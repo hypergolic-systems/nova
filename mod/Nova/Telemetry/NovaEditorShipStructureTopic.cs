@@ -37,9 +37,15 @@ public sealed class NovaEditorShipStructureTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
   private const string ShipId = "editor";
 
+  // Static handle so NovaPartModule (whose OnStart populates the
+  // Components list this topic emits tags from) can mark the topic
+  // dirty without taking a back-reference.
+  private static NovaEditorShipStructureTopic _instance;
+
   public override string Name => "NovaEditorShipStructure/" + ShipId;
 
   protected override void OnEnable() {
+    _instance = this;
     base.OnEnable();
     GameEvents.onEditorShipModified.Add(OnEditorShipModified);
     GameEvents.onEditorLoad.Add(OnEditorLoad);
@@ -54,10 +60,23 @@ public sealed class NovaEditorShipStructureTopic : Topic {
     GameEvents.onEditorLoad.Remove(OnEditorLoad);
     GameEvents.onEditorRestart.Remove(MarkDirty);
     GameEvents.onEditorStarted.Remove(MarkDirty);
+    if (_instance == this) _instance = null;
   }
 
   private void OnEditorShipModified(ShipConstruct _) => MarkDirty();
   private void OnEditorLoad(ShipConstruct _, CraftBrowserDialog.LoadType __) => MarkDirty();
+
+  /// <summary>
+  /// Mark the (single) editor structure topic dirty. Called from
+  /// NovaPartModule.OnStartEditor right after `Components` is populated
+  /// — `onEditorShipModified` fires too early on first attach
+  /// (modules haven't OnStarted yet), so a part placed alone would
+  /// otherwise read out with empty Components and miss its tank tag.
+  /// Idempotent — the broadcaster dedupes via the IsDirty flag.
+  /// </summary>
+  public static void MarkInstanceDirty() {
+    if (_instance != null) _instance.MarkDirty();
+  }
 
   public override void WriteData(StringBuilder sb) {
     JsonWriter.Begin(sb, '[');

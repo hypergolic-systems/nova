@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nova.Core.Components;
+using Nova.Telemetry;
 
 namespace Nova.Components;
 
@@ -41,6 +42,13 @@ public class NovaPartModule : PartModule {
       ?? throw new Exception($"No prefab MODULE config for {GetType().Name}");
     var cmp = ComponentFactory.Create(moduleConfig);
     Components = new List<VirtualComponent> { cmp };
+    // Re-broadcast the editor structure topic now that this part has
+    // its Components populated. `onEditorShipModified` fires before
+    // module OnStart for the first part the player attaches, so a
+    // pod placed alone (e.g. just a Mk1) would otherwise emit with
+    // empty Components and miss its `tank` tag — never showing up in
+    // the editor's Tanks view until something else dirtied the topic.
+    NovaEditorShipStructureTopic.MarkInstanceDirty();
   }
 
   private void OnStartFlight() {
