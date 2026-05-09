@@ -2,11 +2,13 @@
 //! (vs C#'s `VirtualComponent` abstract class) since Rust has no
 //! Unity/KSP `Component` namespace conflict to dodge.
 
+pub mod accumulator;
 pub mod battery;
 pub mod comms;
 pub mod engine;
 pub mod tank;
 
+pub use accumulator::Accumulator;
 pub use battery::Battery;
 pub use comms::Comms;
 pub use engine::{Engine, Propellant};

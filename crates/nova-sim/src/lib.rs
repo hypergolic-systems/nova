@@ -29,14 +29,16 @@ pub use comms::{
     Antenna, CommsSystem, Endpoint, EndpointId, EndpointKind, GraphSnapshot, GroundStationSpec,
     Job, JobId, JobStatus, Link, MotionModel, PathSummary, TopicKey,
 };
-pub use components::{Battery, Comms, Component, Engine, Part, Propellant, TankSpec, TankVolume};
+pub use components::{
+    Accumulator, Battery, Comms, Component, Engine, Part, Propellant, TankSpec, TankVolume,
+};
 pub use ephem::{Body, BodyId, BodyRotation, Ephemeris};
 pub use math::Vec3d;
 pub use orbit::OrbitalElements;
 pub use resource::{Resource, ResourceDomain};
 pub use sim_clock::SimClock;
 pub use systems::{
-    BufferId, Consumer, ConsumerId, ConsumerInput, Device, DeviceId, Node, NodeId,
+    BufferId, Consumer, ConsumerId, ConsumerInput, Device, DeviceHandle, DeviceId, Node, NodeId,
     Priority, ProcessFlowSystem, StagingFlowSystem, VesselSystems,
 };
 pub use world::{Vessel, VesselId, World, WorldBuilder};

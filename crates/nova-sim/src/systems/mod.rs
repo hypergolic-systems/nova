@@ -12,8 +12,28 @@ pub use staging::{
     BufferId, Consumer, ConsumerId, ConsumerInput, Node, NodeId, StagingFlowSystem,
 };
 
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceDomain};
 use crate::sim_clock::SimClock;
+
+/// Unified handle to either a Topological-domain (staging) consumer
+/// or a Uniform-domain (process) device. Picked at
+/// `VesselSystems::add_device` time based on the inputs/outputs'
+/// resource domain. Mirrors the C# `Device` wrapper class — one API
+/// surface for components regardless of which solver owns the device.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeviceHandle {
+    Staging(ConsumerId),
+    Process(DeviceId),
+}
+
+impl DeviceHandle {
+    pub fn domain(self) -> ResourceDomain {
+        match self {
+            DeviceHandle::Staging(_) => ResourceDomain::Topological,
+            DeviceHandle::Process(_) => ResourceDomain::Uniform,
+        }
+    }
+}
 
 /// Per-vessel container of solvers + clock. Components hand into
 /// either `staging` or `process` directly during `on_build_systems`,
@@ -36,14 +56,236 @@ impl VesselSystems {
         }
     }
 
-    /// Register a coupled-input device on the staging system. Kept
-    /// for the M3 RcsTests-equivalent fixtures; new code should
-    /// prefer calling `staging.add_consumer` directly.
+    /// Register a unified device with declared inputs and outputs.
+    /// Validates that all endpoints share a single resource domain
+    /// (a Device's Activity is managed by exactly one solver) and
+    /// dispatches to staging or process accordingly. Mirrors C#
+    /// `VesselSystems.AddDevice` (see `mod/Nova.Core/Systems/VesselSystems.cs:80-121`).
+    ///
+    /// Topological devices may not declare outputs — only tanks store
+    /// topological resources.
+    ///
+    /// `priority` only matters on the Process side; staging-bound
+    /// devices ignore it.
     pub fn add_device(
         &mut self,
         node: NodeId,
-        inputs: Vec<(Resource, f64)>,
-    ) -> ConsumerId {
-        self.staging.add_consumer(node, inputs)
+        inputs: &[(Resource, f64)],
+        outputs: &[(Resource, f64)],
+        priority: Priority,
+    ) -> DeviceHandle {
+        if inputs.is_empty() && outputs.is_empty() {
+            panic!("Device must declare at least one input or output");
+        }
+
+        let mut domain: Option<ResourceDomain> = None;
+        for (r, _) in inputs.iter().chain(outputs.iter()) {
+            domain = Some(merge_domain(domain, *r));
+        }
+        let domain = domain.unwrap();
+
+        match domain {
+            ResourceDomain::Topological => {
+                if !outputs.is_empty() {
+                    panic!(
+                        "Topological devices cannot declare outputs — only \
+                         tanks store topological resources"
+                    );
+                }
+                let cid = self.staging.add_consumer(node, inputs.to_vec());
+                DeviceHandle::Staging(cid)
+            }
+            ResourceDomain::Uniform => {
+                let did = self.process.add_device(priority);
+                let dev = self.process.device_mut(did);
+                for &(r, rate) in inputs {
+                    dev.add_input(r, rate);
+                }
+                for &(r, rate) in outputs {
+                    dev.add_output(r, rate);
+                }
+                DeviceHandle::Process(did)
+            }
+        }
+    }
+
+    /// 0..1, what fraction of the declared full rate this device wants
+    /// this tick. Set pre-solve.
+    pub fn device_demand(&self, h: DeviceHandle) -> f64 {
+        match h {
+            DeviceHandle::Staging(cid) => self.staging.consumer(cid).demand,
+            DeviceHandle::Process(did) => self.process.device(did).demand,
+        }
+    }
+
+    pub fn set_device_demand(&mut self, h: DeviceHandle, demand: f64) {
+        match h {
+            DeviceHandle::Staging(cid) => self.staging.consumer_mut(cid).demand = demand,
+            DeviceHandle::Process(did) => self.process.device_mut(did).demand = demand,
+        }
+    }
+
+    /// 0..1, achieved fraction post-solve.
+    pub fn device_activity(&self, h: DeviceHandle) -> f64 {
+        match h {
+            DeviceHandle::Staging(cid) => self.staging.consumer(cid).activity,
+            DeviceHandle::Process(did) => self.process.device(did).activity,
+        }
+    }
+
+    /// Set the next forecasted state-change UT on a Process device.
+    /// Staging-bound devices don't carry per-device forecasts so the
+    /// setter is a no-op there (matches the C# `Device.ValidUntil`
+    /// semantics).
+    pub fn set_device_valid_until(&mut self, h: DeviceHandle, valid_until: f64) {
+        if let DeviceHandle::Process(did) = h {
+            self.process.device_mut(did).valid_until = valid_until;
+        }
+    }
+}
+
+fn merge_domain(acc: Option<ResourceDomain>, r: Resource) -> ResourceDomain {
+    let d = r.domain();
+    match acc {
+        None => d,
+        Some(prev) if prev == d => d,
+        Some(prev) => panic!(
+            "Device cannot mix resource domains: {:?} is {:?}, prior endpoints were {:?}",
+            r, d, prev
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh() -> VesselSystems {
+        VesselSystems::new(SimClock::new(0.0))
+    }
+
+    #[test]
+    fn add_device_topological_routes_to_staging() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        let h = sys.add_device(
+            n,
+            &[(Resource::Hydrazine, 1.0)],
+            &[],
+            Priority::Low,
+        );
+        assert!(matches!(h, DeviceHandle::Staging(_)));
+        assert_eq!(h.domain(), ResourceDomain::Topological);
+    }
+
+    #[test]
+    fn add_device_uniform_routes_to_process() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        let h = sys.add_device(
+            n,
+            &[(Resource::ElectricCharge, 100.0)],
+            &[],
+            Priority::Low,
+        );
+        assert!(matches!(h, DeviceHandle::Process(_)));
+        assert_eq!(h.domain(), ResourceDomain::Uniform);
+    }
+
+    #[test]
+    fn add_device_uniform_with_outputs_routes_to_process() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        let h = sys.add_device(
+            n,
+            &[],
+            &[(Resource::ElectricCharge, 1000.0)],
+            Priority::Low,
+        );
+        assert!(matches!(h, DeviceHandle::Process(_)));
+    }
+
+    #[test]
+    fn set_and_read_device_demand_dispatches_on_handle() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        let staging_h = sys.add_device(
+            n,
+            &[(Resource::Hydrazine, 1.0)],
+            &[],
+            Priority::Low,
+        );
+        let process_h = sys.add_device(
+            n,
+            &[(Resource::ElectricCharge, 50.0)],
+            &[],
+            Priority::Low,
+        );
+
+        sys.set_device_demand(staging_h, 0.7);
+        sys.set_device_demand(process_h, 0.3);
+        assert_eq!(sys.device_demand(staging_h), 0.7);
+        assert_eq!(sys.device_demand(process_h), 0.3);
+    }
+
+    #[test]
+    #[should_panic(expected = "mix resource domains")]
+    fn add_device_rejects_mixed_domains() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        sys.add_device(
+            n,
+            &[(Resource::Hydrazine, 1.0), (Resource::ElectricCharge, 1.0)],
+            &[],
+            Priority::Low,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Topological devices cannot declare outputs")]
+    fn add_device_rejects_topological_outputs() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        sys.add_device(
+            n,
+            &[(Resource::Hydrazine, 1.0)],
+            &[(Resource::Hydrazine, 1.0)],
+            Priority::Low,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one input or output")]
+    fn add_device_rejects_empty_endpoints() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        sys.add_device(n, &[], &[], Priority::Low);
+    }
+
+    #[test]
+    fn set_device_valid_until_only_affects_process() {
+        let mut sys = fresh();
+        let n = sys.staging.add_node(0.0);
+        let staging_h = sys.add_device(
+            n,
+            &[(Resource::Hydrazine, 1.0)],
+            &[],
+            Priority::Low,
+        );
+        let process_h = sys.add_device(
+            n,
+            &[(Resource::ElectricCharge, 50.0)],
+            &[],
+            Priority::Low,
+        );
+
+        // No-op on staging; visible on process.
+        sys.set_device_valid_until(staging_h, 42.0);
+        sys.set_device_valid_until(process_h, 99.0);
+        if let DeviceHandle::Process(did) = process_h {
+            assert_eq!(sys.process.device(did).valid_until, 99.0);
+        } else {
+            unreachable!();
+        }
     }
 }

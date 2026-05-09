@@ -145,7 +145,7 @@ impl Engine {
             .iter()
             .map(|p| (p.resource, p.max_flow))
             .collect();
-        self.consumer_id = Some(sys.add_device(node, inputs));
+        self.consumer_id = Some(sys.staging.add_consumer(node, inputs));
     }
 
     pub(crate) fn on_pre_solve(&mut self, sys: &mut VesselSystems) {
