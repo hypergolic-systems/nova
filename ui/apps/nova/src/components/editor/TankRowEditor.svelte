@@ -22,6 +22,7 @@
   // by the part prefab and therefore read-only; the only knobs are
   // capacity slices and starting amounts.
 
+  import { onDestroy } from 'svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import { resourceMeta } from '../resource/resource-codes';
   import { ContextMenu, type MenuItem } from '@dragonglass/instruments';
@@ -213,21 +214,31 @@
   // narrower. Cannot grow past free-pool size; cannot shrink below 0.
   // Contents follow capacity downward so contents never exceeds
   // capacity post-resize.
+  //
+  // Listener strategy mirrors `FloatingWindow`: register pointermove/
+  // pointerup on `document` only while a drag is live. KSP's CEF
+  // delivers events reliably via document-level listeners — the older
+  // `<svelte:window>`-bound + setPointerCapture approach silently
+  // dropped pointermove there, breaking the drag in the live game even
+  // though the dev-server Chromium accepted it.
 
   let barEl: HTMLDivElement | null = $state(null);
   type CapDrag = { sliceIdx: number; startX: number; cap0: number; freeAtStart: number };
-  let capDrag = $state<CapDrag | null>(null);
+  let capDrag: CapDrag | null = null;
 
   function onCapHandlePointerDown(e: PointerEvent, sliceIdx: number): void {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     capDrag = {
       sliceIdx,
       startX: e.clientX,
       cap0: slices[sliceIdx].capacity,
       freeAtStart: unused,
     };
+    document.addEventListener('pointermove', onCapHandlePointerMove);
+    document.addEventListener('pointerup', onCapHandlePointerUp);
+    document.addEventListener('pointercancel', onCapHandlePointerUp);
   }
   function onCapHandlePointerMove(e: PointerEvent): void {
     if (!capDrag || !barEl) return;
@@ -241,10 +252,12 @@
     slices[li].capacity = next;
     if (slices[li].contents > next) slices[li].contents = next;
   }
-  function onCapHandlePointerUp(e: PointerEvent): void {
+  function onCapHandlePointerUp(): void {
     if (!capDrag) return;
-    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
     capDrag = null;
+    document.removeEventListener('pointermove', onCapHandlePointerMove);
+    document.removeEventListener('pointerup', onCapHandlePointerUp);
+    document.removeEventListener('pointercancel', onCapHandlePointerUp);
   }
 
   // ---------- Capacity-bar context menu ---------------------------
@@ -332,8 +345,12 @@
   // Drag-anywhere on the contents-gauge sub-row sets the fraction of
   // capacity for that slice. PointerDown also seeds an immediate value
   // so a click without movement registers as "set to here".
+  //
+  // Same document-listener pattern as the capacity-handle drag — see
+  // the comment above `onCapHandlePointerDown` for why <svelte:window>
+  // / setPointerCapture didn't survive KSP's CEF.
   type FillDrag = { sliceIdx: number; el: HTMLDivElement };
-  let fillDrag = $state<FillDrag | null>(null);
+  let fillDrag: FillDrag | null = null;
 
   function fractionFromX(el: HTMLDivElement, clientX: number): number {
     const rect = el.getBoundingClientRect();
@@ -341,20 +358,25 @@
     return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
   }
   function onFillPointerDown(e: PointerEvent, sliceIdx: number): void {
+    if (e.button !== 0) return;
     e.preventDefault();
     const el = e.currentTarget as HTMLDivElement;
-    el.setPointerCapture?.(e.pointerId);
     fillDrag = { sliceIdx, el };
     setContents(sliceIdx, slices[sliceIdx].capacity * fractionFromX(el, e.clientX));
+    document.addEventListener('pointermove', onFillPointerMove);
+    document.addEventListener('pointerup', onFillPointerUp);
+    document.addEventListener('pointercancel', onFillPointerUp);
   }
   function onFillPointerMove(e: PointerEvent): void {
     if (!fillDrag) return;
     setContents(fillDrag.sliceIdx, slices[fillDrag.sliceIdx].capacity * fractionFromX(fillDrag.el, e.clientX));
   }
-  function onFillPointerUp(e: PointerEvent): void {
+  function onFillPointerUp(): void {
     if (!fillDrag) return;
-    fillDrag.el.releasePointerCapture?.(e.pointerId);
     fillDrag = null;
+    document.removeEventListener('pointermove', onFillPointerMove);
+    document.removeEventListener('pointerup', onFillPointerUp);
+    document.removeEventListener('pointercancel', onFillPointerUp);
   }
 
   // ---------- LIVE APPLY (debounced) -----------------------------
@@ -412,12 +434,15 @@
     if (l >= 100) return l.toFixed(0);
     return l.toFixed(1);
   };
-</script>
 
-<svelte:window
-  onpointermove={(e) => { onCapHandlePointerMove(e); onFillPointerMove(e); }}
-  onpointerup={(e) => { onCapHandlePointerUp(e); onFillPointerUp(e); }}
-/>
+  // If the component unmounts mid-drag (row collapsed, panel torn
+  // down) the document listeners would otherwise keep firing against
+  // stale closures. Mirrors FloatingWindow's defensive teardown.
+  onDestroy(() => {
+    onCapHandlePointerUp();
+    onFillPointerUp();
+  });
+</script>
 
 <div class="tre" data-part-id={partId} aria-label={`Tank editor for ${partTitle}`}>
   <!-- CAPACITY stacked bar ---------------------------------------- -->
@@ -614,7 +639,14 @@
     align-items: flex-start;
     padding: 0 6px;
     color: var(--fg);
-    overflow: hidden;
+    /* No `overflow: hidden` here. The drag handle is positioned at
+       `right: -3px; width: 6px` so half of it extends past the slice
+       boundary — and `overflow: hidden` on a parent makes the
+       overflowing half non-hit-testable in older Chromium (e.g. the
+       CEF version KSP ships). The bar's own overflow: hidden still
+       clips at the bar's outer edge, so handles can't escape into the
+       panel chrome. Slice-internal text overflow is mitigated by
+       `tre__slice--narrow` hiding the L value at small widths. */
     cursor: context-menu;
     background:
       linear-gradient(180deg,
@@ -667,31 +699,53 @@
   .tre__slice:hover .tre__slice-x { opacity: 0.85; }
   .tre__slice-x:hover { color: var(--alert); border-color: var(--alert); opacity: 1; }
 
-  /* Drag handle: 6 px-wide hit zone on the slice's right edge. The
-     centred 1 px line stays line-bright, brightens to accent on hover.
-     col-resize cursor advertises the gesture without copy. */
+  /* Drag handle: 12 px-wide hit zone straddling the slice's right edge
+     (-6 left, +6 right of the boundary). Generous because the boundary
+     line itself is only 2 px and KSP's CEF hit-test needs forgiveness.
+     Two pieces visualize the affordance ALWAYS so the user can see
+     where to grab without hovering first:
+       • a 2 px-wide vertical line (accent-dim) sitting on the boundary
+       • a small grip pip — 4 px-wide notch in the middle — visible
+         against the dim line, snaps to bright accent on hover.
+     Hover/active state lifts both pieces to bright accent + glow. */
   .tre__handle {
     position: absolute;
     top: 0;
     bottom: 0;
-    right: -3px;
-    width: 6px;
+    right: -6px;
+    width: 12px;
     cursor: col-resize;
     z-index: 2;
+  }
+  .tre__handle::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 50%;
+    margin-left: -1px;
+    width: 2px;
+    background: var(--accent-dim);
+    opacity: 0.55;
+    transition: background 160ms ease, opacity 160ms ease, box-shadow 160ms ease;
   }
   .tre__handle::after {
     content: '';
     position: absolute;
-    top: 4px;
-    bottom: 4px;
+    top: 50%;
     left: 50%;
-    width: 1px;
-    background: var(--line-bright);
-    transition: background 160ms ease, box-shadow 160ms ease;
+    margin-left: -2px;
+    margin-top: -3px;
+    width: 4px;
+    height: 6px;
+    border-left: 1px solid var(--bg-panel-strong);
+    border-right: 1px solid var(--bg-panel-strong);
+    pointer-events: none;
   }
-  .tre__handle:hover::after,
-  .tre__handle:active::after {
+  .tre__handle:hover::before,
+  .tre__handle:active::before {
     background: var(--accent);
+    opacity: 1;
     box-shadow: 0 0 6px var(--accent-glow);
   }
 
