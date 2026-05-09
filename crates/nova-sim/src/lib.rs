@@ -24,14 +24,14 @@ pub mod world;
 
 pub use atmosphere::{Atmosphere, FloatCurve, FloatCurveKey};
 pub use buffer::Buffer;
-pub use components::{Component, Engine, Part, Propellant, TankSpec, TankVolume};
+pub use components::{Battery, Component, Engine, Part, Propellant, TankSpec, TankVolume};
 pub use ephem::{Body, BodyId, BodyRotation, Ephemeris};
 pub use math::Vec3d;
 pub use orbit::OrbitalElements;
 pub use resource::{Resource, ResourceDomain};
 pub use sim_clock::SimClock;
 pub use systems::{
-    BufferId, Consumer, ConsumerId, ConsumerInput, Node, NodeId,
-    StagingFlowSystem, VesselSystems,
+    BufferId, Consumer, ConsumerId, ConsumerInput, Device, DeviceId, Node, NodeId,
+    Priority, ProcessFlowSystem, StagingFlowSystem, VesselSystems,
 };
 pub use world::{Vessel, VesselId, World, WorldBuilder};

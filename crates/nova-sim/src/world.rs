@@ -150,14 +150,16 @@ impl Vessel {
             let now = systems.clock.ut();
             if now >= target_ut { break; }
 
-            // Soonest event is the min of the system's buffer-event
+            // Soonest event is the min of each system's buffer-event
             // forecast and any component-scheduled expiry, clamped to
             // the remaining tick window. The MIN_TICK_STEP floor
             // prevents fp residuals near a transition from stalling
             // the loop.
-            let dt_systems = systems.staging.max_tick_dt();
+            let dt_staging = systems.staging.max_tick_dt();
+            let dt_process = systems.process.max_tick_dt();
             let dt_components = self.min_component_dt(now);
-            let dt = dt_systems
+            let dt = dt_staging
+                .min(dt_process)
                 .min(dt_components)
                 .min(target_ut - now)
                 .max(MIN_TICK_STEP);
@@ -179,6 +181,7 @@ impl Vessel {
             }
         }
         systems.staging.solve();
+        systems.process.solve();
         for part in &mut self.parts {
             for c in &mut part.components {
                 c.on_post_solve(systems);
