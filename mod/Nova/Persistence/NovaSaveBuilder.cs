@@ -112,6 +112,13 @@ public static class NovaSaveBuilder {
     structure.VesselId = vessel.id.ToString();
     structure.PersistentId = vessel.persistentId;
 
+    // Orbit lives on structure: it's element-event-frequency data, and the
+    // Rust simulator treats it as part of the structural input that drives
+    // forward-projection. Per-tick position flows through the live state
+    // channel, not here. Must be set before hashing.
+    if (vessel.orbit != null)
+      structure.Orbit = BuildOrbit(vessel.orbit);
+
     // Structure hash (includes identity — vessel ID change = structural change)
     var structureHash = NovaVesselBuilder.ComputeStructureHash(structure);
 
@@ -146,12 +153,10 @@ public static class NovaSaveBuilder {
   }
 
   static Proto.FlightState BuildFlightState(Vessel vessel) {
-    var flight = new Proto.FlightState {
-      Orbit = BuildOrbit(vessel.orbit),
+    return new Proto.FlightState {
       Position = BuildPosition(vessel),
       ActionGroups = BuildActionGroups(vessel),
     };
-    return flight;
   }
 
   static Proto.OrbitalState BuildOrbit(Orbit orbit) {

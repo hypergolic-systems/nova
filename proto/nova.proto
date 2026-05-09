@@ -53,6 +53,7 @@ message SaveFile {
   GameMetadata game = 4;
   repeated Kerbal crew = 5;
   ScienceArchive science_archive = 6;
+  BodyDatabase bodies = 7;
 }
 
 message GameMetadata {
@@ -77,6 +78,65 @@ message Kerbal {
   int32  seat_index = 10;     // seat index within part
 }
 
+// --- World definition ---
+//
+// The body database describes the celestial-body hierarchy for the
+// current save (parent links, gravitational parameters, atmospheres,
+// rotation). It's effectively static per save: pushed once across the
+// FFI at world init, persisted into SaveFile so the simulator is
+// self-contained — save-cli can inspect a save without a live KSP
+// install, and the Rust simulator never needs to call back into KSP
+// for ephemeris.
+//
+// Keplerian propagation is closed-form (KSP uses pure 2-body), so
+// given (mu, parent body, orbital elements) Rust computes
+// position(ut) for any future time without an integrator.
+
+message BodyDatabase {
+  repeated Body bodies = 1;
+}
+
+message Body {
+  int32        id          = 1;  // stable index, matches FlightGlobals.Bodies
+  string       name        = 2;
+  int32        parent_id   = 3;  // -1 for the root star
+  double       mu          = 4;  // gravitational parameter, m³/s²
+  double       radius      = 5;  // equatorial radius, m
+  double       soi_radius  = 6;  // sphere-of-influence radius, m;
+                                 // ignored when parent_id == -1
+  Atmosphere   atmosphere  = 7;  // null if the body has no atmosphere
+  BodyRotation rotation    = 8;
+  OrbitalState orbit       = 9;  // orbit around parent_id;
+                                 // null when parent_id == -1
+}
+
+message Atmosphere {
+  double     atmosphere_depth_m  = 1;  // top-of-atmosphere altitude, m
+  FloatCurve pressure_curve_atm  = 2;  // altitude_m → pressure (atm)
+  FloatCurve temperature_curve_k = 3;  // altitude_m → temperature (K)
+}
+
+// Cubic Hermite spline matching KSP's FloatCurve evaluation. Tangents
+// are baked in at serialization time (extracted from the live curve)
+// rather than re-derived on load.
+message FloatCurve {
+  repeated FloatCurveKey keys = 1;
+}
+
+message FloatCurveKey {
+  double time        = 1;  // input axis (e.g. altitude in m)
+  double value       = 2;  // output axis (e.g. pressure in atm)
+  double in_tangent  = 3;  // d(value)/d(time) approaching from the left
+  double out_tangent = 4;  // d(value)/d(time) leaving to the right
+}
+
+message BodyRotation {
+  bool   rotates                 = 1;
+  double rotation_period_seconds = 2;  // sidereal day length
+  double initial_rotation_deg    = 3;  // rotation angle at UT = 0
+  bool   tidally_locked          = 4;  // rotation_period == orbital_period
+}
+
 // --- Vessel ---
 
 message Vessel {
@@ -91,6 +151,13 @@ message VesselStructure {
   repeated PartStructure parts = 1;
   string vessel_id = 2;       // GUID — identity, set at construction
   uint32 persistent_id = 3;   // numeric identity
+  // Current Keplerian elements relative to OrbitalState.body_index.
+  // Updated on element-events (maneuver execute, dock, scene change),
+  // NOT every FixedUpdate. The per-tick blittable state channel is
+  // the source of truth for current position during physics; orbit
+  // is here for projecting forward in time (lookahead, future-shadow
+  // queries, on-rails background propagation).
+  OrbitalState orbit = 4;
 }
 
 message PartStructure {
@@ -294,9 +361,8 @@ message ThermometerState {
 // --- Flight state (only on in-flight vessels) ---
 
 message FlightState {
-  OrbitalState  orbit = 1;
-  PositionState position = 2;
-  uint32 action_groups = 3;   // bitfield: SAS, RCS, Lights, Gear, Brakes, customs
+  PositionState position      = 1;
+  uint32        action_groups = 2;   // bitfield: SAS, RCS, Lights, Gear, Brakes, customs
 }
 
 message OrbitalState {

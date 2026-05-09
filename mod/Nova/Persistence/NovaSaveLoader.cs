@@ -186,8 +186,10 @@ public static class NovaSaveLoader {
   }
 
   static void ApplyVesselState(Vessel vessel, Proto.Vessel saved) {
+    var structure = saved.Structure;
     var state = saved.State;
     var flight = state.Flight;
+    var orbit = structure?.Orbit;
 
     // Vessel metadata
     vessel.vesselName = state.Name;
@@ -197,8 +199,8 @@ public static class NovaSaveLoader {
     vessel.launchTime = state.LaunchTime;
 
     // Orbit
-    if (flight?.Orbit != null)
-      ApplyOrbit(vessel, flight.Orbit);
+    if (orbit != null)
+      ApplyOrbit(vessel, orbit);
 
     // Position and rotation — pack the vessel, reposition from orbit, unpack.
     if (flight != null) {
@@ -206,7 +208,7 @@ public static class NovaSaveLoader {
       if (!wasPacked) vessel.GoOnRails();
 
       // Position from orbit
-      if (flight.Orbit != null) {
+      if (orbit != null) {
         vessel.orbitDriver.updateMode = OrbitDriver.UpdateMode.UPDATE;
         vessel.orbitDriver.orbit.Init();
         vessel.orbitDriver.updateFromParameters();
@@ -366,9 +368,9 @@ public static class NovaSaveLoader {
 
     // 4. Orbit
     var orbitDriver = rootGO.AddComponent<OrbitDriver>();
-    if (flight?.Orbit != null) {
-      NovaLog.Log($"[Quickload] CreateVessel: orbit bodyIndex={flight.Orbit.BodyIndex} sma={flight.Orbit.SemiMajorAxis:F0}");
-      orbitDriver.orbit = LoadOrbit(flight.Orbit);
+    if (structure?.Orbit != null) {
+      NovaLog.Log($"[Quickload] CreateVessel: orbit bodyIndex={structure.Orbit.BodyIndex} sma={structure.Orbit.SemiMajorAxis:F0}");
+      orbitDriver.orbit = LoadOrbit(structure.Orbit);
     }
 
     // 5. World position/rotation from save

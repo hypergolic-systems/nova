@@ -161,14 +161,16 @@ public class CraftFileTests {
     vessel.State.Situation = 1;
     vessel.State.VesselType = 0;
 
-    // Add flight state
+    // Orbit lives on structure now (element-event-frequency data).
+    vessel.Structure.Orbit = new OrbitalState {
+      SemiMajorAxis = 700000,
+      Eccentricity = 0.01,
+      Inclination = 0,
+      BodyIndex = 1,
+    };
+
+    // Per-tick / save-snapshot flight state
     vessel.State.Flight = new FlightState {
-      Orbit = new OrbitalState {
-        SemiMajorAxis = 700000,
-        Eccentricity = 0.01,
-        Inclination = 0,
-        BodyIndex = 1,
-      },
       Position = new PositionState {
         Latitude = -0.09,
         Longitude = -74.5,
@@ -200,7 +202,7 @@ public class CraftFileTests {
     Assert.AreEqual("My Rocket", v.State.Name);
     Assert.AreEqual("abc-123", v.Structure.VesselId);
     Assert.AreEqual(5000u, v.Structure.PersistentId);
-    Assert.AreEqual(700000, v.State.Flight.Orbit.SemiMajorAxis);
+    Assert.AreEqual(700000, v.Structure.Orbit.SemiMajorAxis);
     Assert.AreEqual(1003u, v.Structure.Parts[2].Id);
 
     // Drained tanks

@@ -171,6 +171,12 @@ fn dump_vessel(vessel: &Vessel, indent: usize) {
         if !vessel.structure_hash.is_empty() {
             println!("{p}StructureHash: {}", hex(&vessel.structure_hash));
         }
+        if let Some(o) = &structure.orbit {
+            println!(
+                "{p}Orbit: body={} sma={:.0} ecc={:.4} inc={:.2}",
+                o.body_index, o.semi_major_axis, o.eccentricity, o.inclination
+            );
+        }
 
         if let Some(state) = &vessel.state {
             if !state.name.is_empty() {
@@ -214,12 +220,6 @@ fn dump_vessel(vessel: &Vessel, indent: usize) {
 
 fn dump_flight(flight: &FlightState, indent: usize) {
     let p = pad(indent);
-    if let Some(o) = &flight.orbit {
-        println!(
-            "{p}Orbit: body={} sma={:.0} ecc={:.4} inc={:.2}",
-            o.body_index, o.semi_major_axis, o.eccentricity, o.inclination
-        );
-    }
     if let Some(pos) = &flight.position {
         println!(
             "{p}Position: ({:.4}, {:.4}) alt={:.0}m hat={:.0}m",
