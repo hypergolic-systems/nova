@@ -170,15 +170,91 @@ fn throttle_change_between_ticks_is_picked_up_at_next_solve() {
     let after_full = v.systems().staging.buffer(bid).contents();
     assert_relative_eq!(after_full, capacity - 10.0 * drain_rate, max_relative = 1e-9);
 
-    // Halve the throttle, burn another 10 s.
+    // Halve the throttle, burn another 10 s. External mutations
+    // require an explicit `invalidate()` — solves don't auto-fire
+    // every tick under the event-driven scheduler; the throttle
+    // change wouldn't propagate to the staging consumer otherwise.
     if let Component::Engine(e) = &mut v.part_mut(3).components[0] {
         e.throttle = 0.5;
     }
+    v.invalidate();
     v.tick(20.0);
     // Drain over the second 10s should be half-rate.
     let expected = after_full - 10.0 * drain_rate * 0.5;
     let after_half = v.systems().staging.buffer(bid).contents();
     assert_relative_eq!(after_half, expected, max_relative = 1e-9);
+}
+
+// ── Event-driven re-solve scheduling ──────────────────────────────────
+
+#[test]
+fn quiet_ticks_skip_solve_after_initial() {
+    // Inert vessel: throttle 0 → no rates, no forecasted events.
+    // The first tick solves once (initial state); subsequent ticks
+    // advance the clock without re-solving since nothing changed.
+    let mut v = burn_vessel(1.0, 220.0, 100.0);
+    if let Component::Engine(e) = &mut v.part_mut(3).components[0] {
+        e.throttle = 0.0;
+    }
+    v.initialize_solver(0.0);
+    assert_eq!(v.systems().solve_count(), 0);
+
+    v.tick(10.0);
+    assert_eq!(v.systems().solve_count(), 1, "first tick should solve once");
+
+    // Five more quiet ticks — clock advances but nothing's changing.
+    for t in [20.0, 30.0, 40.0, 50.0, 100.0] {
+        v.tick(t);
+    }
+    assert_eq!(
+        v.systems().solve_count(),
+        1,
+        "rates stable across long horizons → no re-solves",
+    );
+}
+
+#[test]
+fn forecasted_event_invalidates_at_crossing() {
+    // Engine burning at known rate empties the tank at burn_time.
+    // The first tick solves once; the closing solve at the burn-out
+    // boundary makes a second one fire so post-tick activity reads
+    // 0 (engine flamed out) rather than 1 (last in-burn rate).
+    let capacity = 100.0;
+    let mut v = burn_vessel(1.0, 220.0, capacity);
+    v.initialize_solver(0.0);
+    let drain_rate = 1000.0 / (220.0 * G0) / Resource::Hydrazine.density();
+    let burn_time = capacity / drain_rate;
+
+    v.tick(burn_time);
+
+    // Two solves: the initial pre-burn solve, and a closing solve
+    // because the tank-empty event was reached exactly at target_ut.
+    assert_eq!(v.systems().solve_count(), 2);
+    assert_relative_eq!(engine_activity(&v, 3), 0.0);
+}
+
+#[test]
+fn external_invalidate_forces_resolve_on_next_tick() {
+    // After a quiet tick, an external mutation isn't auto-detected
+    // (rates living on staging consumers don't observe writes to
+    // engine.throttle directly). `invalidate()` is the explicit
+    // signal that "rates are stale, re-solve next time".
+    let mut v = burn_vessel(1.0, 220.0, 100.0);
+    if let Component::Engine(e) = &mut v.part_mut(3).components[0] {
+        e.throttle = 0.0;
+    }
+    v.initialize_solver(0.0);
+    v.tick(10.0);
+    assert_eq!(v.systems().solve_count(), 1);
+
+    // Mutation alone doesn't trigger a re-solve.
+    v.tick(20.0);
+    assert_eq!(v.systems().solve_count(), 1);
+
+    // Explicit invalidate → next tick re-solves.
+    v.invalidate();
+    v.tick(30.0);
+    assert_eq!(v.systems().solve_count(), 2);
 }
 
 // ── Multi-resource / coupled-input timing ─────────────────────────────

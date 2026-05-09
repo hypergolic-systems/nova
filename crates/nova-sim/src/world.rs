@@ -127,10 +127,22 @@ impl Vessel {
         self.systems = Some(systems);
     }
 
+    /// Mark the systems dirty so the next `tick(...)` runs
+    /// pre/solve/post. Required after any external mutation that
+    /// changes rates (`engine.throttle = ...`, `consumer.demand = ...`,
+    /// `buffer.set_contents(...)`). No-op if `initialize_solver` hasn't
+    /// been called yet.
+    pub fn invalidate(&mut self) {
+        if let Some(sys) = self.systems.as_mut() {
+            sys.invalidate();
+        }
+    }
+
     /// Run one solve at the current clock time: pre-solve hooks,
     /// staging solve, post-solve hooks. Useful for tests that want
     /// the instantaneous rate without advancing time. Production
-    /// code should generally use `tick(target_ut)` instead.
+    /// code should generally use `tick(target_ut)` instead. Always
+    /// runs unconditionally — bypasses `needs_solve`.
     pub fn solve(&mut self) {
         let mut systems = self.systems.take()
             .expect("solve() called before initialize_solver()");
@@ -140,13 +152,15 @@ impl Vessel {
 
     /// Advance the simulation clock to `target_ut`, re-solving at
     /// every event boundary (buffer empty/fill, component-scheduled
-    /// expiry). Mirrors `VirtualVessel.Tick` in C#.
+    /// expiry). Mirrors `VirtualVessel.Tick` in C# — including the
+    /// `needsSolve` invalidation pattern: solves only fire when the
+    /// LP/water-fill state is actually dirty (initial build,
+    /// forecasted event firing, external mutation flagged via
+    /// `invalidate()`).
     ///
     /// Within one tick, advance steps are bounded by the soonest
     /// expiry — guarantees we don't over-step a state transition
-    /// (a tank emptying mid-burn, a panel slipping into shadow). The
-    /// loop solves first, then advances; final iter solves again so
-    /// post-tick rates reflect the state at `target_ut`.
+    /// (a tank emptying mid-burn, a panel slipping into shadow).
     pub fn tick(&mut self, target_ut: f64) {
         let mut systems = self.systems.take()
             .expect("tick() called before initialize_solver()");
@@ -158,29 +172,47 @@ impl Vessel {
         }
 
         for _ in 0..MAX_TICK_ITERATIONS {
-            // Solve at the start of every iter: captures the effect
-            // of the previous clock advance and any external state
-            // changes (throttle, etc).
-            self.do_solve_with(&mut systems);
+            // Skip redundant solves: rates from the prior solve are
+            // still valid as long as nothing has changed. Lerp keeps
+            // integrating buffer contents during clock advance with
+            // those rates; only state changes (events firing,
+            // external mutations) need a re-solve.
+            if systems.needs_solve() {
+                self.do_solve_with(&mut systems);
+            }
 
             let now = systems.clock.ut();
             if now >= target_ut { break; }
 
             // Soonest event is the min of each system's buffer-event
-            // forecast and any component-scheduled expiry, clamped to
-            // the remaining tick window. The MIN_TICK_STEP floor
-            // prevents fp residuals near a transition from stalling
-            // the loop.
+            // forecast and any component-scheduled expiry. MIN_TICK_STEP
+            // floor prevents fp residuals near a transition from
+            // stalling the loop.
             let dt_staging = systems.staging.max_tick_dt();
             let dt_process = systems.process.max_tick_dt();
             let dt_components = self.min_component_dt(now);
-            let dt = dt_staging
-                .min(dt_process)
-                .min(dt_components)
+            let dt_event = dt_staging.min(dt_process).min(dt_components);
+
+            let dt = dt_event
                 .min(target_ut - now)
                 .max(MIN_TICK_STEP);
-
             systems.clock.advance(dt);
+
+            // Crossing a forecasted event invalidates the solve —
+            // the new state (tank empty, accumulator at threshold,
+            // etc.) needs fresh rates. The 1e-12 tolerance covers fp
+            // residuals from `MIN_TICK_STEP` flooring.
+            if dt_event.is_finite() && systems.clock.ut() + 1e-12 >= now + dt_event {
+                systems.invalidate();
+            }
+        }
+
+        // If the final advance crossed an event, run one closing
+        // solve so post-tick reads (engine activity, fuel-cell
+        // current_output, etc.) reflect the state at target_ut, not
+        // the rates from the previous-window solve.
+        if systems.needs_solve() {
+            self.do_solve_with(&mut systems);
         }
 
         self.systems = Some(systems);
@@ -203,6 +235,7 @@ impl Vessel {
                 c.on_post_solve(systems);
             }
         }
+        systems.note_solved();
     }
 
     /// Smallest time delta to a component-side scheduled expiry,

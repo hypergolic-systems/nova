@@ -302,12 +302,6 @@ fn valid_until_charging_projects_to_off_threshold() {
     // Cell is ON, battery below 80%. Pure cell + battery vessel — the
     // LP converges with battery rate ≈ EcOutput, and
     // valid_until_seconds = (0.8·capacity − contents) / rate.
-    //
-    // Rust's `Vessel::tick` always re-solves at every iter (vs C#'s
-    // skip-when-not-invalidated), so a `tick(1.0)` would compute the
-    // forecast against the post-integration SoC. Use a tiny warmup to
-    // pin the forecast against the initial contents so the
-    // pre-integration arithmetic in the comment below holds.
     let ec = 1000.0;
     let mut fc = make_fuel_cell().with_active(true);
     fc.ec_output = ec;
@@ -319,7 +313,7 @@ fn valid_until_charging_projects_to_off_threshold() {
         Component::TankVolume(make_tank(Resource::LiquidOxygen, 10.0)),
     ]);
 
-    vessel.tick(1.0e-6);
+    vessel.tick(1.0);
 
     let fc_after = fuel_cell_of(&vessel);
     assert!(fc_after.is_active);

@@ -40,11 +40,21 @@ impl DeviceHandle {
 /// based on the resource domain they operate on (Topological vs
 /// Uniform). The solvers never share buffers — domains are disjoint
 /// at the resource level.
+///
+/// `needs_solve` drives event-driven re-solve scheduling. Set true on
+/// initial-build and on any state change that invalidates per-buffer
+/// rates (forecasted event firing, external mutation of throttle /
+/// demand / contents). Cleared after each `Vessel::do_solve_with`. The
+/// tick driver skips redundant solves when this flag is false — the
+/// whole point of the design is that rates stay valid over long time
+/// horizons and only get recomputed on change.
 #[derive(Clone, Debug)]
 pub struct VesselSystems {
     pub clock: SimClock,
     pub staging: StagingFlowSystem,
     pub process: ProcessFlowSystem,
+    needs_solve: bool,
+    solve_count: u64,
 }
 
 impl VesselSystems {
@@ -53,7 +63,40 @@ impl VesselSystems {
             staging: StagingFlowSystem::new(clock.clone()),
             process: ProcessFlowSystem::new(clock.clone()),
             clock,
+            // Initial-state vessels haven't been solved yet; the first
+            // tick must run pre/solve/post once to populate rates.
+            needs_solve: true,
+            solve_count: 0,
         }
+    }
+
+    /// Mark the per-vessel solvers dirty. The next `Vessel::tick`
+    /// iter will run pre/solve/post; subsequent iters skip solve
+    /// until something else invalidates again. Callers must invoke
+    /// this after any external mutation that changes rates —
+    /// `engine.throttle = ...`, `consumer_mut(id).demand = ...`, etc.
+    /// Forecasted events (buffer empty / fill, component
+    /// `valid_until` flips) auto-invalidate at clock-cross time.
+    pub fn invalidate(&mut self) {
+        self.needs_solve = true;
+    }
+
+    pub fn needs_solve(&self) -> bool {
+        self.needs_solve
+    }
+
+    /// Diagnostic counter — number of times the per-vessel pre/solve/
+    /// post pipeline has run since `new()`. Reset on
+    /// `Vessel::initialize_solver`. Tests use this to verify the
+    /// "skip redundant solves" path actually skips.
+    pub fn solve_count(&self) -> u64 {
+        self.solve_count
+    }
+
+    /// Called by `Vessel::do_solve_with` after a successful solve.
+    pub(crate) fn note_solved(&mut self) {
+        self.needs_solve = false;
+        self.solve_count += 1;
     }
 
     /// Register a unified device with declared inputs and outputs.
