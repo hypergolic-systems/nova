@@ -5,6 +5,7 @@ import {
   CAP_FLIGHT_UI,
   CAP_EDITOR_PAW,
   CAP_EDITOR_STAGING,
+  CAP_EDITOR_TOOLBAR,
 } from '@dragonglass/telemetry/core';
 import Hud from './Hud.svelte';
 
@@ -20,11 +21,16 @@ mount(Hud, { target: document.getElementById('app') ?? document.body });
 //                    StageManager.mainListAnchor and short-circuits
 //                    ShowHideStageStack so the stock stager doesn't
 //                    paint on top of ours.
+//   editor/toolbar — Nova draws its own Δv / mass / staging analysis;
+//                    asks DG to hide ApplicationLauncher (Engineer's
+//                    Report, Stock Δv, Alarm Clock, etc.) while in
+//                    the editor so the affordances don't double up.
 const ksp = getKsp();
 ksp.connect().then(() => {
   ksp.send(GameTopic, 'setCapabilities', [
     CAP_FLIGHT_UI,
     CAP_EDITOR_PAW,
     CAP_EDITOR_STAGING,
+    CAP_EDITOR_TOOLBAR,
   ]);
 });
