@@ -651,7 +651,9 @@ export class NovaSimulatedKsp implements Ksp {
       const resources: NovaResourceFrame[] = tank.tanks.map((t) => [
         t.resource, t.contents, t.capacity, 0,
       ]);
-      const components: NovaComponentFrame[] = [['T', tank.volume]];
+      const components: NovaComponentFrame[] = [
+        ['T', tank.volume, tank.tanks.map((t) => [t.resource, t.capacity, t.contents])],
+      ];
       return [partId, resources, components];
     }
     const p = FIXTURE_PARTS.find((q) => q.id === partId);

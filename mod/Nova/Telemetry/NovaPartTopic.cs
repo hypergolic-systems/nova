@@ -49,7 +49,8 @@ namespace Nova.Telemetry;
 //   ["B", soc(0..1), capacity, currentRate]                         Battery
 //   ["W", motorRate, busRate, bufferFraction, refillActive]          ReactionWheel
 //   ["L", currentRate]                                              Light
-//   ["T", volume]                                                   TankVolume
+//   ["T", volume,
+//          [[resource, capacity, contents], ...]]                     TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
 //          manifoldFraction, refillActive]                             FuelCell
 //   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
@@ -396,6 +397,27 @@ public sealed class NovaPartTopic : Topic {
         bool f = true;
         WriteKind(sb, "T", ref f);
         WriteNum(sb, tank.Volume, ref f);
+        // Per-tank buffers: [[resource, capacity, contents], ...]. Lets
+        // the editor's Tanks view read its slices directly off the
+        // TankVolume component frame instead of guessing which entries
+        // in the part's resource list belong to this tank vs other
+        // unrelated buffers (e.g. a Battery's Electric Charge).
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.Begin(sb, '[');
+        bool fb = true;
+        foreach (var buf in tank.Tanks) {
+          JsonWriter.Sep(sb, ref fb);
+          JsonWriter.Begin(sb, '[');
+          bool fbi = true;
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteString(sb, buf.Resource?.Name ?? "");
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, buf.Capacity);
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, buf.Contents);
+          JsonWriter.End(sb, ']');
+        }
+        JsonWriter.End(sb, ']');
         JsonWriter.End(sb, ']');
         return true;
       }

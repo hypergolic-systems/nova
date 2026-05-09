@@ -26,13 +26,7 @@
   import SegmentGauge from '../SegmentGauge.svelte';
   import { resourceMeta } from '../resource/resource-codes';
   import { ContextMenu, type MenuItem } from '@dragonglass/instruments';
-  import type { TankCustomEntry } from '../../telemetry/nova-topics';
-
-  export interface TankSlice {
-    resource: string;
-    capacity: number;
-    contents: number;
-  }
+  import type { TankCustomEntry, TankSlice } from '../../telemetry/nova-topics';
 
   interface Props {
     partId: string;
@@ -223,18 +217,32 @@
   // though the dev-server Chromium accepted it.
 
   let barEl: HTMLDivElement | null = $state(null);
-  type CapDrag = { sliceIdx: number; startX: number; cap0: number; freeAtStart: number };
+  type CapDrag = {
+    sliceIdx: number;
+    startX: number;
+    cap0: number;
+    freeAtStart: number;
+    /** Fill fraction (contents/capacity) at drag start. Held constant
+     *  during the drag so an 80%-full slice stays 80%-full as it
+     *  resizes — the user's notion of "how full" tracks the geometry,
+     *  not an absolute litre amount. New (contents=0) slices stay at
+     *  fillFrac0=0 and remain empty regardless of resize. */
+    fillFrac0: number;
+  };
   let capDrag: CapDrag | null = null;
 
   function onCapHandlePointerDown(e: PointerEvent, sliceIdx: number): void {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    const cap0 = slices[sliceIdx].capacity;
+    const contents0 = slices[sliceIdx].contents;
     capDrag = {
       sliceIdx,
       startX: e.clientX,
-      cap0: slices[sliceIdx].capacity,
+      cap0,
       freeAtStart: unused,
+      fillFrac0: cap0 > 0 ? contents0 / cap0 : 0,
     };
     document.addEventListener('pointermove', onCapHandlePointerMove);
     document.addEventListener('pointerup', onCapHandlePointerUp);
@@ -250,7 +258,7 @@
     const next = Math.max(0, Math.min(capDrag.cap0 + capDrag.freeAtStart, capDrag.cap0 + delta));
     const li = capDrag.sliceIdx;
     slices[li].capacity = next;
-    if (slices[li].contents > next) slices[li].contents = next;
+    slices[li].contents = next * capDrag.fillFrac0;
   }
   function onCapHandlePointerUp(): void {
     if (!capDrag) return;

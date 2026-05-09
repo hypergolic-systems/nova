@@ -27,9 +27,10 @@
     type NovaPart,
     type NovaPartStruct,
     type TankCustomEntry,
+    type TankSlice,
   } from '../../telemetry/nova-topics';
   import { resourceMeta } from '../resource/resource-codes';
-  import TankRowEditor, { type TankSlice } from './TankRowEditor.svelte';
+  import TankRowEditor from './TankRowEditor.svelte';
 
   interface Props {
     /** Part id from the most recent right-click PAW pulse. When this
@@ -57,16 +58,13 @@
     (frame) => decodePart(frame as Parameters<typeof decodePart>[0]),
   );
 
-  // Slice list derived from the part's per-buffer resource frames.
-  // Order matches Buffer order on the C# side, which mirrors the proto
-  // round-trip — stable across reconfigures.
+  // Slice list comes directly from the TankVolume component frame
+  // on the wire — the tank's own buffers, not state.resources (which
+  // mixes EVERY buffer on the part, including unrelated Battery EC).
+  // Order matches Buffer order on the C# side, which mirrors the
+  // proto round-trip — stable across reconfigures.
   function slicesOf(state: NovaPart | undefined): TankSlice[] {
-    if (!state) return [];
-    return state.resources.map((r) => ({
-      resource: r.resourceId,
-      capacity: r.capacity,
-      contents: r.amount,
-    }));
+    return state?.tank?.[0]?.slices ?? [];
   }
   function volumeOf(state: NovaPart | undefined): number {
     return state?.tank?.[0]?.volume ?? 0;

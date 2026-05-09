@@ -44,7 +44,13 @@ export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, 
 export type NovaBatteryFrame  = ['B', soc: number, capacity: number, rate: number];
 export type NovaWheelFrame    = ['W', motorRate: number, busRate: number, bufferFraction: number, refillActive: 0 | 1];
 export type NovaLightFrame    = ['L', rate: number];
-export type NovaTankFrame     = ['T', volume: number];
+// Per-buffer slice on a TankVolume — `[resource, capacity, contents]`,
+// litres. The tank carries its own buffers on this frame so consumers
+// (e.g. the editor's Tanks view) don't have to disambiguate which
+// entries in the part's flat `resources` list are tank slices vs.
+// unrelated buffers (Battery's Electric Charge, etc.).
+export type NovaTankSliceFrame = [resource: string, capacity: number, contents: number];
+export type NovaTankFrame     = ['T', volume: number, slices: NovaTankSliceFrame[]];
 export type NovaCommandFrame  = [
   'C',
   idleRate: number,
@@ -288,12 +294,24 @@ export interface LightState {
   rate: number;
 }
 
+export interface TankSlice {
+  /** Canonical resource name (e.g. "Liquid Oxygen"). */
+  resource: string;
+  /** Allocated litres for this slice. */
+  capacity: number;
+  /** Currently filled litres. 0 ≤ contents ≤ capacity. */
+  contents: number;
+}
+
 export interface TankState {
-  /** Geometric capacity of the tank in litres. The current resource
-   *  loadout is in `NovaPart.resources`; this `volume` is the input
-   *  the editor uses to compute new buffer capacities when the player
-   *  picks a different preset via Set Tank Config. */
+  /** Geometric capacity of the tank in litres. */
   volume: number;
+  /** Per-buffer slice list — what this tank actually holds, separate
+   *  from any other buffers on the part. The editor Tanks view
+   *  consumes this directly; reading from `NovaPart.resources` would
+   *  conflate Battery EC and other unrelated component buffers with
+   *  the tank's own slices. */
+  slices: TankSlice[];
 }
 
 export interface CommandState {
@@ -1033,7 +1051,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
         out.light.push({ rate: c[1] });
         break;
       case 'T':
-        out.tank.push({ volume: c[1] });
+        out.tank.push({
+          volume: c[1],
+          slices: c[2].map(([resource, capacity, contents]) => ({
+            resource, capacity, contents,
+          })),
+        });
         break;
       case 'C':
         out.command.push({
