@@ -22,12 +22,14 @@ import type {
   NovaVesselStructureFrame,
   NovaPartFrame,
   NovaPartStructFrame,
+  NovaResourceFrame,
   NovaComponentFrame,
   NovaScienceFrame,
   NovaStorageFrame,
   NovaAtmExperimentFrame,
   NovaLtsExperimentFrame,
   NovaScienceFileFrame,
+  TankCustomEntry,
 } from '../telemetry/nova-topics';
 
 // Match Dragonglass's simulator's active vessel id so flight.vesselId
@@ -36,6 +38,7 @@ import type {
 const SIM_VESSEL_ID = 'sim-vessel';
 
 const VESSEL_STRUCT_PREFIX = 'NovaVesselStructure/';
+const EDITOR_STRUCT_TOPIC  = 'NovaEditorShipStructure/editor';
 const PART_PREFIX     = 'NovaPart/';
 const SCIENCE_PREFIX  = 'NovaScience/';
 const STORAGE_PREFIX  = 'NovaStorage/';
@@ -343,6 +346,82 @@ function buildThermometerScience(): ScienceBody {
   return [[buildThermometerInstrument()]];
 }
 
+// ---------- Editor-scene fixtures ----------------------------------
+
+// Mutable fixture state for tanks visible in the editor's Vessel
+// window. Each entry has a fixed `volume` (the part prefab's geometric
+// capacity) plus a mutable `tanks` list — `setTankCustom` rewrites the
+// list in place so the round-trip mirrors the C# Reconfigure path.
+//
+// The shape is deliberately separate from FIXTURE_PARTS (flight
+// fixtures): the two scenes never share a structure frame, and the
+// editor side needs mutability that the flight side doesn't.
+interface EditorTankFixture {
+  id: string;
+  name: string;
+  title: string;
+  parentId: string | null;
+  volume: number;
+  tanks: { resource: string; capacity: number; contents: number }[];
+}
+
+const EDITOR_TANK_FIXTURES: EditorTankFixture[] = [
+  {
+    id: '7001',
+    name: 'fuelTank4-2',
+    title: 'FL-T800 Kerolox Tank',
+    parentId: null,
+    volume: 4000,
+    tanks: [
+      { resource: 'RP-1',          capacity: 1600, contents: 1600 },
+      { resource: 'Liquid Oxygen', capacity: 2400, contents: 2400 },
+    ],
+  },
+  {
+    id: '7002',
+    name: 'monoTank',
+    title: 'FL-R10 Monoprop Tank',
+    parentId: '7001',
+    volume: 1000,
+    // Partial fill so the contents-slider visualization has a non-trivial
+    // starting state to demo against.
+    tanks: [
+      { resource: 'Hydrazine', capacity: 1000, contents: 600 },
+    ],
+  },
+  {
+    id: '7003',
+    name: 'cryoTank',
+    title: 'C-2H Hydrolox Tank',
+    parentId: '7001',
+    volume: 10000,
+    tanks: [
+      { resource: 'Liquid Hydrogen', capacity: 7400, contents: 7400 },
+      { resource: 'Liquid Oxygen',   capacity: 2600, contents: 2600 },
+    ],
+  },
+  {
+    id: '7004',
+    name: 'xenonTank',
+    title: 'PB-X750 Xenon Container',
+    parentId: '7001',
+    volume: 700,
+    // Empty by default — exercises the FREE/unused trailing tile after
+    // the user pulls a slice down via drag handle.
+    tanks: [
+      { resource: 'Xenon', capacity: 700, contents: 0 },
+    ],
+  },
+];
+
+const EDITOR_SHIP_NAME = 'Editor Test Stack';
+
+function findEditorTank(partId: string): EditorTankFixture | undefined {
+  return EDITOR_TANK_FIXTURES.find((p) => p.id === partId);
+}
+
+// ---------- Flight-scene fixtures ----------------------------------
+
 const FIXTURE_PARTS: PartFixture[] = [
   {
     id: '5001',
@@ -433,6 +512,33 @@ export class NovaSimulatedKsp implements Ksp {
   }
 
   send: Ksp['send'] = (topic, op, ...args) => {
+    // Intercept editor tank reconfigures. setTankCustom carries the
+    // resolved [resource, capacity, contents] triples; rewrite the
+    // fixture's tanks array in place and force-emit so the UI sees
+    // the round-trip on the next frame rather than waiting on the
+    // 100 ms tick.
+    if (topic.name.startsWith(PART_PREFIX) && op === 'setTankCustom') {
+      const partId = topic.name.slice(PART_PREFIX.length);
+      const fixture = findEditorTank(partId);
+      const [entries] = args as unknown as [TankCustomEntry[]];
+      if (fixture && Array.isArray(entries)) {
+        const sumCap = entries.reduce((a, [, c]) => a + (c ?? 0), 0);
+        if (sumCap <= fixture.volume + 1e-6) {
+          fixture.tanks = entries
+            .filter(([, c]) => (c ?? 0) > 0)
+            .map(([resource, capacity, contents]) => ({
+              resource,
+              capacity,
+              contents: Math.min(capacity, Math.max(0, contents)),
+            }));
+          this.tickEmit();
+        }
+        // Reject silently when the payload exceeds volume — mirrors
+        // the C# handler's no-op-and-log behaviour.
+      }
+      return;
+    }
+
     // Intercept Nova ops we recognise — currently just the experiment
     // toggle. Mutating `simEnabled` makes the next emit reflect the
     // change; we also force-emit immediately so the UI doesn't have to
@@ -462,7 +568,8 @@ export class NovaSimulatedKsp implements Ksp {
   };
 
   private isNovaTopic(name: string): boolean {
-    return name.startsWith(VESSEL_STRUCT_PREFIX)
+    return name === EDITOR_STRUCT_TOPIC
+        || name.startsWith(VESSEL_STRUCT_PREFIX)
         || name.startsWith(PART_PREFIX)
         || name.startsWith(SCIENCE_PREFIX)
         || name.startsWith(STORAGE_PREFIX);
@@ -506,6 +613,9 @@ export class NovaSimulatedKsp implements Ksp {
     if (topicName === VESSEL_STRUCT_PREFIX + SIM_VESSEL_ID) {
       return this.vesselStructureFrame();
     }
+    if (topicName === EDITOR_STRUCT_TOPIC) {
+      return this.editorShipStructureFrame();
+    }
     if (topicName.startsWith(PART_PREFIX)) {
       return this.partFrame(topicName.slice(PART_PREFIX.length));
     }
@@ -525,7 +635,25 @@ export class NovaSimulatedKsp implements Ksp {
     return [SIM_VESSEL_ID, FIXTURE_VESSEL_NAME, parts];
   }
 
+  // Editor ship-structure frame. Tag set is fixed (`storage` + `tank`)
+  // since every editor fixture is a TankVolume part — matches what
+  // SystemTags.For emits server-side for any TankVolume-bearing part.
+  private editorShipStructureFrame(): NovaVesselStructureFrame {
+    const parts: NovaPartStructFrame[] = EDITOR_TANK_FIXTURES.map((p) => [
+      p.id, p.name, p.title, p.parentId, ['storage', 'tank'] as never,
+    ]);
+    return ['editor', EDITOR_SHIP_NAME, parts];
+  }
+
   private partFrame(partId: string): NovaPartFrame | undefined {
+    const tank = findEditorTank(partId);
+    if (tank) {
+      const resources: NovaResourceFrame[] = tank.tanks.map((t) => [
+        t.resource, t.contents, t.capacity, 0,
+      ]);
+      const components: NovaComponentFrame[] = [['T', tank.volume]];
+      return [partId, resources, components];
+    }
     const p = FIXTURE_PARTS.find((q) => q.id === partId);
     if (!p) return undefined;
     return [partId, [], p.build()];

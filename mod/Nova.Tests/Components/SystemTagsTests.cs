@@ -30,9 +30,11 @@ public class SystemTagsTests {
   }
 
   [TestMethod]
-  public void TankVolume_TagsStorage() {
+  public void TankVolume_TagsStorageAndTank() {
     var tags = SystemTags.For(new VirtualComponent[] { new TankVolume() });
-    CollectionAssert.AreEqual(new List<string> { SystemTags.Storage }, tags);
+    CollectionAssert.AreEqual(
+      new List<string> { SystemTags.Storage, SystemTags.Tank },
+      tags);
   }
 
   [TestMethod]

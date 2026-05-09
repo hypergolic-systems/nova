@@ -24,6 +24,10 @@ public static class SystemTags {
   // monoprop pods. Drives the Resource view, where every storage-bearing
   // part shows up regardless of which subsystem it serves.
   public const string Storage      = "storage";
+  // Volumetric propellant tank — parts carrying a TankVolume component.
+  // Narrower than `Storage` (excludes batteries) so the editor's Tanks
+  // view has a clean filter for parts whose mix is editable.
+  public const string Tank         = "tank";
   // Science. Instrument = thermometer-class part; Storage = data drive
   // (separate from the resource Storage tag — different subsystem).
   public const string ScienceInstrument = "science-instrument";
@@ -77,6 +81,7 @@ public static class SystemTags {
           break;
         case TankVolume _:
           set.Add(Storage);
+          set.Add(Tank);
           break;
         case Thermometer _:
           set.Add(ScienceInstrument);
@@ -96,7 +101,7 @@ public static class SystemTags {
 
   // Canonical ordering used by `For` so list equality is meaningful.
   private static readonly string[] Order = new[] {
-    PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude, Storage,
+    PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude, Storage, Tank,
     ScienceInstrument, ScienceStorage, Thermal,
   };
 }

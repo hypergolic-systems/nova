@@ -79,13 +79,17 @@ namespace Nova.Telemetry;
 //                                IsDeployed flag. No-op on fixed
 //                                panels (IsDeployable=false). State
 //                                round-trips on save via RadiatorState.
-//   "setTankConfig" [string]   — replace the part's tank loadout with
-//                                the named TankPresets preset, built
-//                                fresh against the current Volume.
-//                                Editor-only — rejected outside
-//                                GameScenes.EDITOR. No-op if the part
-//                                has no NovaTankModule or the preset
-//                                id is unknown.
+//   "setTankCustom" [[[name, capacity, contents], ...]]
+//                              — replace the part's tank loadout with
+//                                the supplied resource/capacity/contents
+//                                triples. Editor-only — rejected outside
+//                                GameScenes.EDITOR. Rejected (no-op)
+//                                when the summed capacity exceeds the
+//                                part's TankVolume.Volume, when a name
+//                                doesn't resolve, or when contents fall
+//                                outside [0, capacity]. Presets live
+//                                UI-side (editor/tank-presets.ts) and
+//                                resolve to this op before dispatch.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -187,23 +191,49 @@ public sealed class NovaPartTopic : Topic {
         else module.Retract();
         return;
       }
-      case "setTankConfig": {
-        if (args == null || args.Count < 1 || !(args[0] is string presetId)) {
-          Debug.LogWarning(LogPrefix + Name + " setTankConfig: expected [string]");
+      case "setTankCustom": {
+        if (args == null || args.Count < 1 || !(args[0] is List<object> rawTanks)) {
+          Debug.LogWarning(LogPrefix + Name + " setTankCustom: expected [[[name, capacity, contents], ...]]");
           return;
         }
         if (HighLogic.LoadedScene != GameScenes.EDITOR) {
-          Debug.Log(LogPrefix + Name + " setTankConfig rejected outside editor");
+          Debug.Log(LogPrefix + Name + " setTankCustom rejected outside editor");
           return;
         }
         var module = _part?.FindModuleImplementing<NovaTankModule>();
         if (module?.TankVolume == null) return;
-        var preset = TankPresets.GetById(presetId);
-        if (preset == null) {
-          Debug.LogWarning(LogPrefix + Name + " setTankConfig: unknown preset '" + presetId + "'");
+
+        var buffers = new List<Buffer>(rawTanks.Count);
+        double sumCap = 0;
+        foreach (var raw in rawTanks) {
+          if (!(raw is List<object> entry) || entry.Count < 3
+              || !(entry[0] is string resourceName)
+              || !(entry[1] is double capacity)
+              || !(entry[2] is double contents)) {
+            Debug.LogWarning(LogPrefix + Name + " setTankCustom: malformed entry");
+            return;
+          }
+          if (!Resource.TryGet(resourceName, out var resource)) {
+            Debug.LogWarning(LogPrefix + Name + " setTankCustom: unknown resource '" + resourceName + "'");
+            return;
+          }
+          if (capacity < 0) {
+            Debug.LogWarning(LogPrefix + Name + " setTankCustom: negative capacity for '" + resourceName + "'");
+            return;
+          }
+          if (contents < 0 || contents > capacity + 1e-6) {
+            Debug.LogWarning(LogPrefix + Name + " setTankCustom: contents out of range for '" + resourceName + "'");
+            return;
+          }
+          sumCap += capacity;
+          buffers.Add(new Buffer { Resource = resource, Capacity = capacity, Contents = contents });
+        }
+        if (sumCap > module.TankVolume.Volume + 1e-6) {
+          Debug.LogWarning(LogPrefix + Name + " setTankCustom: total capacity " + sumCap
+              + " exceeds TankVolume.Volume " + module.TankVolume.Volume);
           return;
         }
-        module.TankVolume.Reconfigure(preset.Build(module.TankVolume.Volume));
+        module.TankVolume.Reconfigure(buffers);
         MarkDirty();
         return;
       }

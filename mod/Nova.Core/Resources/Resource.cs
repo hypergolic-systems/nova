@@ -131,4 +131,10 @@ public class Resource {
   public static Resource Get(string name) {
     return registry[name];
   }
+
+  public static bool TryGet(string name, out Resource resource) {
+    return registry.TryGetValue(name, out resource);
+  }
+
+  public static IEnumerable<Resource> All => registry.Values;
 }

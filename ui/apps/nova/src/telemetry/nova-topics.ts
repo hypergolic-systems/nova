@@ -24,6 +24,7 @@ export type SystemTag =
   | 'rcs'
   | 'attitude'
   | 'storage'
+  | 'tank'
   | 'science-instrument'
   | 'science-storage'
   | 'thermal';
@@ -590,6 +591,20 @@ export const NovaVesselStructureTopic = (
 ): Topic<NovaVesselStructureFrame> =>
   topic<NovaVesselStructureFrame>(`NovaVesselStructure/${vesselId}`);
 
+// Editor-scene parallel of NovaVesselStructureTopic. Single-instance
+// (ship id constant `"editor"`) since the VAB/SPH only ever holds one
+// ShipConstruct at a time. Wire shape matches NovaVesselStructureFrame
+// exactly — `decodeStructure` works against either.
+export const NovaEditorShipStructureTopic: Topic<NovaVesselStructureFrame> =
+  topic<NovaVesselStructureFrame>('NovaEditorShipStructure/editor');
+
+// Wire payload for setTankCustom: [resourceName, capacity, startingAmount].
+// `capacity` is in litres (matches Buffer.Capacity); `startingAmount` in
+// the same units, must satisfy 0 ≤ startingAmount ≤ capacity. The mod
+// rejects any payload whose summed capacity exceeds the part's
+// TankVolume.Volume.
+export type TankCustomEntry = [resource: string, capacity: number, contents: number];
+
 /**
  * Inbound ops the UI can fire at a per-part NovaPart topic. Keep in
  * sync with `NovaPartTopic.HandleOp` in mod/Nova/Telemetry — adding
@@ -608,13 +623,13 @@ export interface NovaPartOps {
   setSolarDeployed(deployed: boolean): void;
 
   /**
-   * Editor-only. Replace this part's tank loadout with the named
-   * preset (one of the ids in `editor/tank-presets.ts`), built fresh
-   * against the part's geometric `volume`. No-op if the part has no
-   * `NovaTankModule`, the preset id is unknown, or the call lands
-   * outside `GameScenes.EDITOR`.
+   * Editor-only. Replace this part's tank loadout with the supplied
+   * resource/capacity/contents triples. Rejected outside the editor;
+   * also rejected when the summed capacity exceeds the part's
+   * `TankVolume.Volume`, when a resource name doesn't resolve, or
+   * when contents fall outside [0, capacity].
    */
-  setTankConfig(presetId: string): void;
+  setTankCustom(tanks: TankCustomEntry[]): void;
 
   /**
    * Toggle the debug "test load" on this part's command pod (a
