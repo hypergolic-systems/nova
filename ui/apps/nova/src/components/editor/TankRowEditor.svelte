@@ -121,16 +121,22 @@
     }
     const scale = budget / denominator;
 
+    // Capture each slice's fill fraction BEFORE mutating capacity, then
+    // apply it to the new capacity — same fill-preservation semantics
+    // as the capacity-handle drag. A 100%-full LOX slice that grows
+    // during balance stays 100% full; a half-full one stays half-full.
     let newOxCap = 0;
     for (const f of fuelSlices) {
       const share = f.capacity / fuelSum;
       const newCap = scale * share;
+      const fillFrac = f.capacity > 0 ? f.contents / f.capacity : 0;
       f.capacity = newCap;
-      if (f.contents > newCap) f.contents = newCap;
+      f.contents = newCap * fillFrac;
       newOxCap += newCap * LOX_PER_FUEL[f.resource];
     }
+    const oxFillFrac = oxSlice.capacity > 0 ? oxSlice.contents / oxSlice.capacity : 0;
     oxSlice.capacity = newOxCap;
-    if (oxSlice.contents > newOxCap) oxSlice.contents = newOxCap;
+    oxSlice.contents = newOxCap * oxFillFrac;
   }
 
   // Local working copy of the slice list. Edits land here; the
@@ -177,16 +183,18 @@
     slices = slices.filter((_, j) => j !== i);
   }
 
-  // Append a resource at the current free-space size, contents = 0
-  // (user fills via the contents slider). The new slice lands at the
-  // end of the list — wire order — so existing slices don't shift out
-  // from under the user. Called from the FREE-tile context menu; the
-  // menu only opens when free > 0, so capacity is always > 0 here.
+  // Append a resource at the current free-space size, full by default
+  // — players adding fuel almost always want the tank to launch with
+  // it; the contents slider is right there if they want partial. The
+  // new slice lands at the end of the list — wire order — so existing
+  // slices don't shift out from under the user. Called from the FREE-
+  // tile context menu; the menu only opens when free > 0, so capacity
+  // is always > 0 here.
   function addResource(name: string): void {
     if (slices.some(s => s.resource === name)) return;
     const cap = unused;
     if (cap <= 0) return;
-    slices = [...slices, { resource: name, capacity: cap, contents: 0 }];
+    slices = [...slices, { resource: name, capacity: cap, contents: cap }];
   }
 
   // Swap the resource of an existing slice in place. Capacity and
