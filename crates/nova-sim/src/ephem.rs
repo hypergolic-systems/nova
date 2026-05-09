@@ -39,6 +39,10 @@ pub struct BodyRotation {
 pub struct Ephemeris {
     bodies: Vec<Body>,
     by_id: Vec<usize>, // BodyId.0 → index into `bodies`
+    /// Direct children per body, keyed by `BodyId.0`. Precomputed at
+    /// construction so `OccluderSet` can walk down the SOI tree
+    /// without rebuilding an index per query.
+    children_by_id: Vec<Vec<BodyId>>,
 }
 
 impl Ephemeris {
@@ -50,7 +54,13 @@ impl Ephemeris {
             assert!(by_id[slot] == usize::MAX, "duplicate BodyId {}", b.id.0);
             by_id[slot] = i;
         }
-        Ephemeris { bodies, by_id }
+        let mut children_by_id: Vec<Vec<BodyId>> = vec![Vec::new(); max_id + 1];
+        for b in &bodies {
+            if let Some(parent) = b.parent {
+                children_by_id[parent.0 as usize].push(b.id);
+            }
+        }
+        Ephemeris { bodies, by_id, children_by_id }
     }
 
     pub fn bodies(&self) -> &[Body] { &self.bodies }
@@ -72,6 +82,24 @@ impl Ephemeris {
                 Some(p) => id = p,
                 None => return id,
             }
+        }
+    }
+
+    /// Direct children of `id` in the SOI tree. Empty for leaf bodies.
+    pub fn children(&self, id: BodyId) -> &[BodyId] {
+        self.children_by_id
+            .get(id.0 as usize)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Append `id` plus every descendant in `id`'s subtree to `out`.
+    /// Order: pre-order DFS. Used by `OccluderSet` to enumerate the
+    /// subtree of a penultimate body.
+    pub fn descendants(&self, id: BodyId, out: &mut Vec<BodyId>) {
+        out.push(id);
+        for &child in self.children(id) {
+            self.descendants(child, out);
         }
     }
 
@@ -120,5 +148,46 @@ impl Ephemeris {
             (Some(orbit), Some(parent)) => orbit.period(self.body(parent).mu),
             _ => f64::INFINITY,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::{ids, kerbol_bodies};
+
+    #[test]
+    fn children_index_links_kerbol_tree() {
+        let ephem = Ephemeris::new(kerbol_bodies());
+
+        let sun_children = ephem.children(ids::SUN);
+        assert!(sun_children.contains(&ids::KERBIN));
+        assert!(sun_children.contains(&ids::DUNA));
+        assert!(!sun_children.contains(&ids::MUN));
+
+        let kerbin_children = ephem.children(ids::KERBIN);
+        assert!(kerbin_children.contains(&ids::MUN));
+        assert!(kerbin_children.contains(&ids::MINMUS));
+
+        assert!(ephem.children(ids::MUN).is_empty());
+    }
+
+    #[test]
+    fn descendants_kerbin_subtree_includes_mun_and_minmus() {
+        let ephem = Ephemeris::new(kerbol_bodies());
+        let mut out = Vec::new();
+        ephem.descendants(ids::KERBIN, &mut out);
+        assert!(out.contains(&ids::KERBIN));
+        assert!(out.contains(&ids::MUN));
+        assert!(out.contains(&ids::MINMUS));
+        assert!(!out.contains(&ids::DUNA));
+    }
+
+    #[test]
+    fn descendants_sun_includes_full_tree() {
+        let ephem = Ephemeris::new(kerbol_bodies());
+        let mut out = Vec::new();
+        ephem.descendants(ids::SUN, &mut out);
+        assert_eq!(out.len(), ephem.bodies().len());
     }
 }

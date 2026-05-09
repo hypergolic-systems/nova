@@ -1,4 +1,5 @@
 use crate::components::{Component, Part};
+use crate::comms::Antenna;
 use crate::ephem::{Body, BodyId, Ephemeris};
 use crate::math::Vec3d;
 use crate::orbit::OrbitalElements;
@@ -8,7 +9,7 @@ use crate::systems::{NodeId, VesselSystems};
 use std::collections::HashMap;
 
 /// Stable identifier for a vessel within a World.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VesselId(pub u32);
 
 /// A simulated vessel. Carries orbital elements (for ephem queries),
@@ -66,6 +67,21 @@ impl Vessel {
     pub fn part_mut(&mut self, id: u32) -> &mut Part {
         self.parts.iter_mut().find(|p| p.id == id)
             .unwrap_or_else(|| panic!("unknown part id {}", id))
+    }
+
+    /// Walk every part's `Component::Comms` and return the antenna
+    /// specs. Used by `CommsSystem` to synthesise the vessel's
+    /// endpoint at solve time.
+    pub fn comms_antennas(&self) -> Vec<Antenna> {
+        let mut out = Vec::new();
+        for part in &self.parts {
+            for c in &part.components {
+                if let Component::Comms(comms) = c {
+                    out.push(comms.antenna);
+                }
+            }
+        }
+        out
     }
 
     /// Build the staging-system topology from `parts` and run each

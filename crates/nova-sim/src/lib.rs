@@ -12,6 +12,7 @@
 
 pub mod atmosphere;
 pub mod buffer;
+pub mod comms;
 pub mod components;
 pub mod ephem;
 pub mod fixtures;
@@ -24,7 +25,11 @@ pub mod world;
 
 pub use atmosphere::{Atmosphere, FloatCurve, FloatCurveKey};
 pub use buffer::Buffer;
-pub use components::{Battery, Component, Engine, Part, Propellant, TankSpec, TankVolume};
+pub use comms::{
+    Antenna, CommsSystem, Endpoint, EndpointId, EndpointKind, GraphSnapshot, GroundStationSpec,
+    Job, JobId, JobStatus, Link, MotionModel, PathSummary, TopicKey,
+};
+pub use components::{Battery, Comms, Component, Engine, Part, Propellant, TankSpec, TankVolume};
 pub use ephem::{Body, BodyId, BodyRotation, Ephemeris};
 pub use math::Vec3d;
 pub use orbit::OrbitalElements;

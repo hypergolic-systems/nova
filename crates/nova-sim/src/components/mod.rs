@@ -3,10 +3,12 @@
 //! Unity/KSP `Component` namespace conflict to dodge.
 
 pub mod battery;
+pub mod comms;
 pub mod engine;
 pub mod tank;
 
 pub use battery::Battery;
+pub use comms::Comms;
 pub use engine::{Engine, Propellant};
 pub use tank::{TankSpec, TankVolume};
 
@@ -20,6 +22,7 @@ pub enum Component {
     Engine(Engine),
     TankVolume(TankVolume),
     Battery(Battery),
+    Comms(Comms),
 }
 
 impl Component {
@@ -31,15 +34,18 @@ impl Component {
             Component::Engine(e) => e.on_build_systems(sys, node),
             Component::TankVolume(t) => t.on_build_systems(sys, node),
             Component::Battery(b) => b.on_build_systems(sys, node),
+            Component::Comms(c) => c.on_build_systems(sys, node),
         }
     }
 
     /// Called once at the start of each `Vessel::tick(...)` call —
     /// before any solve. Components reset per-tick state here.
-    /// (M4-M5 components don't have any.)
     pub fn on_tick_begin(&mut self) {
         match self {
-            Component::Engine(_) | Component::TankVolume(_) | Component::Battery(_) => {}
+            Component::Engine(_)
+            | Component::TankVolume(_)
+            | Component::Battery(_)
+            | Component::Comms(_) => {}
         }
     }
 
@@ -48,16 +54,18 @@ impl Component {
     pub fn on_pre_solve(&mut self, sys: &mut VesselSystems) {
         match self {
             Component::Engine(e) => e.on_pre_solve(sys),
-            Component::TankVolume(_) | Component::Battery(_) => {}
+            Component::TankVolume(_) | Component::Battery(_) | Component::Comms(_) => {}
         }
     }
 
     /// Called after each solve. Components recompute internal
-    /// post-solve state (e.g. Accumulator hysteresis flips). M4-M5
-    /// components are pure read-out and don't need this hook yet.
+    /// post-solve state (e.g. Accumulator hysteresis flips).
     pub fn on_post_solve(&mut self, _sys: &VesselSystems) {
         match self {
-            Component::Engine(_) | Component::TankVolume(_) | Component::Battery(_) => {}
+            Component::Engine(_)
+            | Component::TankVolume(_)
+            | Component::Battery(_)
+            | Component::Comms(_) => {}
         }
     }
 
@@ -68,9 +76,10 @@ impl Component {
     /// time can advance before the next solve.
     pub fn valid_until(&self) -> f64 {
         match self {
-            Component::Engine(_) | Component::TankVolume(_) | Component::Battery(_) => {
-                f64::INFINITY
-            }
+            Component::Engine(_)
+            | Component::TankVolume(_)
+            | Component::Battery(_)
+            | Component::Comms(_) => f64::INFINITY,
         }
     }
 }
