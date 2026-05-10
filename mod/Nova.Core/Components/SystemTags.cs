@@ -36,6 +36,11 @@ public static class SystemTags {
   // Distinct from PowerGen so the THERMAL tab can filter independently;
   // RTGs carry both tags.
   public const string Thermal           = "thermal";
+  // Vessel control sources — Command (crewed pods) and Probe (probe
+  // cores). The SYS tab's Communications accordion filters on this to
+  // surface the StoredCommands ledger / control-authority view without
+  // pulling every Power-consuming part.
+  public const string CommandSource     = "command-source";
 
   /// <summary>
   /// Compute the deterministic, deduplicated tag list for the given
@@ -72,6 +77,11 @@ public static class SystemTags {
           break;
         case Command cmd:
           if (cmd.IdleDraw > 0 || cmd.TestLoadRate > 0) set.Add(PowerConsume);
+          set.Add(CommandSource);
+          break;
+        case Probe probe:
+          if (probe.IdleDraw > 0 || probe.TestLoadRate > 0) set.Add(PowerConsume);
+          set.Add(CommandSource);
           break;
         case Engine _:
           set.Add(Propulsion);
@@ -102,6 +112,6 @@ public static class SystemTags {
   // Canonical ordering used by `For` so list equality is meaningful.
   private static readonly string[] Order = new[] {
     PowerGen, PowerConsume, PowerStore, Propulsion, Rcs, Attitude, Storage, Tank,
-    ScienceInstrument, ScienceStorage, Thermal,
+    ScienceInstrument, ScienceStorage, Thermal, CommandSource,
   };
 }

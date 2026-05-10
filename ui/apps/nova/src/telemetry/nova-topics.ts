@@ -27,7 +27,8 @@ export type SystemTag =
   | 'tank'
   | 'science-instrument'
   | 'science-storage'
-  | 'thermal';
+  | 'thermal'
+  | 'command-source';
 
 // ---------- Wire (frame) types ---------------------------------
 
@@ -40,10 +41,10 @@ export type NovaResourceFrame = [
 
 // One named tuple per kind so visualization code can import the
 // specific frame type it cares about without re-narrowing the union.
-export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1];
+export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, deployed: 0 | 1, sunlit: 0 | 1, retractable: 0 | 1, ratedEcRate: number];
 export type NovaBatteryFrame  = ['B', soc: number, capacity: number, rate: number];
-export type NovaWheelFrame    = ['W', motorRate: number, busRate: number, bufferFraction: number, refillActive: 0 | 1];
-export type NovaLightFrame    = ['L', rate: number];
+export type NovaWheelFrame    = ['W', motorRate: number, busRate: number, bufferFraction: number, refillActive: 0 | 1, motorRated: number, busRated: number];
+export type NovaLightFrame    = ['L', rate: number, ratedRate: number];
 // Per-buffer slice on a TankVolume — `[resource, capacity, contents]`,
 // litres. The tank carries its own buffers on this frame so consumers
 // (e.g. the editor's Tanks view) don't have to disambiguate which
@@ -57,6 +58,20 @@ export type NovaCommandFrame  = [
   testLoadRate: number,
   testLoadMaxRate: number,
   testLoadActive: 0 | 1,
+  idleRated: number,
+];
+export type NovaProbeFrame    = [
+  'P',
+  idleRate: number,
+  testLoadRate: number,
+  testLoadMaxRate: number,
+  testLoadActive: 0 | 1,
+  idleRated: number,
+  sasLevel: number,
+  commandBytes: number,
+  commandCapacityBytes: number,
+  commandRefillBps: number,
+  commandDecayBps: number,
 ];
 export type NovaFuelCellFrame = [
   'F',
@@ -192,6 +207,7 @@ export type NovaComponentFrame =
   | NovaLightFrame
   | NovaTankFrame
   | NovaCommandFrame
+  | NovaProbeFrame
   | NovaFuelCellFrame
   | NovaRtgFrame;
 
@@ -259,6 +275,11 @@ export interface SolarState {
    *  button (false). Fixed (non-deployable) panels also report
    *  false, but they're always `deployed: true` so no button shows. */
   retractable: boolean;
+  /** BoL design rate at full sun, independent of orientation / sunlit /
+   *  deployment state. The editor view uses this as the panel's
+   *  contribution to the load-vs-source balance; the flight view sticks
+   *  with `rate / maxRate` for live behavior. */
+  ratedRate: number;
 }
 
 export interface BatteryState {
@@ -287,11 +308,22 @@ export interface WheelState {
   /** True while the buffer is refilling from the bus (between the
    *  10 % trip-on and the 100 % trip-off). */
   refillActive: boolean;
+  /** Design peak motor draw, W (single-axis-full). Editor view shows
+   *  this as the wheel's contribution to consumption since `motorRate`
+   *  is 0 with no solver running. */
+  motorRated: number;
+  /** Design buffer-refill ceiling, W (= RefillRateWatts). What the
+   *  bus sees at refill peak in flight; serves as the editor row's
+   *  bus-side rated draw. */
+  busRated: number;
 }
 
 export interface LightState {
   /** Live EC/s draw, post-LP-throttle. */
   rate: number;
+  /** Design draw, W. Independent of toggle / solver state — used by
+   *  the editor view for the consumption balance. */
+  ratedRate: number;
 }
 
 export interface TankSlice {
@@ -331,6 +363,36 @@ export interface CommandState {
    *  load (intentionally non-persistent — a forgotten toggle shouldn't
    *  silently drain a vessel after a quickload). */
   testLoadActive: boolean;
+  /** Design rated `idleDraw`, W. Solver-independent — used by the
+   *  editor view since `idleRate` is 0 without an LP solve. */
+  idleRated: number;
+}
+
+export interface ProbeState {
+  /** See `CommandState.idleRate`. */
+  idleRate: number;
+  /** See `CommandState.testLoadRate`. */
+  testLoadRate: number;
+  /** See `CommandState.testLoadMaxRate`. */
+  testLoadMaxRate: number;
+  /** See `CommandState.testLoadActive`. */
+  testLoadActive: boolean;
+  /** See `CommandState.idleRated`. */
+  idleRated: number;
+  /** Stock SASServiceLevel, 0..3. Carried as data today; consumed
+   *  once Nova's SAS replacement lands. */
+  sasLevel: number;
+  /** Live StoredCommands ledger, bytes — the per-probe authority pool
+   *  spent by attitude/throttle inputs and decayed continuously. */
+  commandBytes: number;
+  /** Maximum ledger fill, bytes. Constant per probe. */
+  commandCapacityBytes: number;
+  /** Bytes/s currently flowing in from the comms `Receive` job (KSC →
+   *  this vessel). 0 when the link is dark. */
+  commandRefillBps: number;
+  /** Bytes/s of constant decay, regardless of comms / inputs.
+   *  Probe-specific config. */
+  commandDecayBps: number;
 }
 
 export interface ScienceFile {
@@ -550,6 +612,7 @@ export interface NovaPart {
   light: LightState[];
   tank: TankState[];
   command: CommandState[];
+  probe: ProbeState[];
   fuelCell: FuelCellState[];
   rtg: RtgState[];
   radiator: RadiatorState[];
@@ -1021,6 +1084,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     light: [],
     tank: [],
     command: [],
+    probe: [],
     fuelCell: [],
     rtg: [],
     radiator: [],
@@ -1034,6 +1098,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           deployed: c[3] === 1,
           sunlit: c[4] === 1,
           retractable: c[5] === 1,
+          ratedRate: c[6],
         });
         break;
       case 'B':
@@ -1045,10 +1110,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           busRate: c[2],
           bufferFraction: c[3],
           refillActive: c[4] === 1,
+          motorRated: c[5],
+          busRated: c[6],
         });
         break;
       case 'L':
-        out.light.push({ rate: c[1] });
+        out.light.push({ rate: c[1], ratedRate: c[2] });
         break;
       case 'T':
         out.tank.push({
@@ -1064,6 +1131,21 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           testLoadRate: c[2],
           testLoadMaxRate: c[3],
           testLoadActive: c[4] === 1,
+          idleRated: c[5],
+        });
+        break;
+      case 'P':
+        out.probe.push({
+          idleRate: c[1],
+          testLoadRate: c[2],
+          testLoadMaxRate: c[3],
+          testLoadActive: c[4] === 1,
+          idleRated: c[5],
+          sasLevel: c[6],
+          commandBytes: c[7],
+          commandCapacityBytes: c[8],
+          commandRefillBps: c[9],
+          commandDecayBps: c[10],
         });
         break;
       case 'F':

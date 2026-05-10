@@ -283,6 +283,19 @@ public class CommunicationsNetwork {
         if (to.Antennas.Count == 0) continue;
         var distance = (positions[j] - positions[i]).Magnitude;
         BestPair(from, to, distance, out var snr, out var rate);
+        // Symmetrise: a duplex session is bounded by the weaker
+        // direction, so collapse A→B and B→A to the slower side at
+        // graph-build time. Without this, KSC's huge transmitter
+        // saturates the downlink while the vessel's small antenna
+        // crawls upstream — gameplay reads as "20 B/s telemetry but
+        // 100 B/s control bandwidth", which doesn't match player
+        // intuition (you can't command faster than you can confirm).
+        // Both Link entries (from→to and to→from) end up reporting
+        // the same RateBps via this min, so the allocator and routing
+        // see one symmetric capacity per pair.
+        BestPair(to, from, distance, out var revSnr, out var revRate);
+        if (revRate < rate) rate = revRate;
+        if (revSnr  < snr)  snr  = revSnr;
         // Quantise against the link's hardware-max ceiling so bucket
         // boundaries are constant per link across pair switches and
         // distance changes. Reported RateBps is the bucket floor —

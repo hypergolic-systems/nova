@@ -49,6 +49,13 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     NovaBodyRegistry.WarmAll();  // populate the SOI tree (children index) up-front
     BuildKscEndpoint();
     Network.AddEndpoint(kscEndpoint);
+
+    // KSC's StoredCommands broadcast — once at addon boot, never
+    // cancelled. The 1e9 B/s ceiling is well above any plausible
+    // per-vessel CommandReceiveRateBps, so each vessel's `MaxRateBps`
+    // is the binding cap, not KSC's push.
+    Network.Submit(new Broadcast<string>(kscEndpoint, "StoredCommands", 1.0e9));
+
     GameEvents.onVesselSOIChanged.Add(OnVesselSOIChanged);
     NovaLog.Log($"[Comms] addon online; KSC registered, network has {Network.Endpoints.Count} endpoint(s)");
 

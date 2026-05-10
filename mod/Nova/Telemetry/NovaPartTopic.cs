@@ -45,20 +45,42 @@ namespace Nova.Telemetry;
 // rates in W, fractions in 0..1 (for fills/SoC), absolutes in their
 // natural unit. No solver-internal "activity" leaks into the wire;
 // callers that want "current draw" get it directly.
-//   ["S", currentEcRate, maxEcRate, deployed, sunlit, retractable]  SolarPanel
-//   ["B", soc(0..1), capacity, currentRate]                         Battery
-//   ["W", motorRate, busRate, bufferFraction, refillActive]          ReactionWheel
-//   ["L", currentRate]                                              Light
+//
+// Each generator/consumer kind carries TWO rate fields so both the
+// flight HUD (live, LP-throttled) and the editor HUD (design-rated,
+// solver-independent) read off the same wire:
+//   currentRate  — LP-throttled actual flow last tick. Always 0 in
+//                  the editor (no VirtualVessel / solver).
+//   ratedRate    — BoL design spec, independent of orientation /
+//                  vessel state. Useful in editor for the load /
+//                  source balance, and in flight for "what could
+//                  this deliver in nominal conditions".
+//
+//   ["S", currentEcRate, maxEcRate, deployed, sunlit, retractable, ratedEcRate]   SolarPanel
+//   ["B", soc(0..1), capacity, currentRate]                                       Battery
+//   ["W", motorRate, busRate, bufferFraction, refillActive, motorRated, busRated] ReactionWheel
+//   ["L", currentRate, ratedRate]                                                 Light
 //   ["T", volume,
-//          [[resource, capacity, contents], ...]]                     TankVolume
+//          [[resource, capacity, contents], ...]]                                  TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
-//          manifoldFraction, refillActive]                             FuelCell
-//   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive]   Command
+//          manifoldFraction, refillActive]                                         FuelCell
+//   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive, idleRated]    Command
+//   ["P", idleRate, testLoadRate, testLoadMaxRate, testLoadActive, idleRated,
+//          sasLevel,
+//          commandBytes, commandCapacityBytes,
+//          commandRefillBps, commandDecayBps]                                      Probe
 //   ["R", currentRate, currentPower, referencePower,
 //          declineWattsPerKerbinYear,
 //          wasteHeatW, exportW, rejectionW,
-//          currentTempC, maxOperatingTempC, dTdtCps]                   Rtg
-//   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable]      Radiator
+//          currentTempC, maxOperatingTempC, dTdtCps]                               Rtg
+//   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable]                  Radiator
+//
+// Solar's `maxEcRate` stays orientation-and-sunlit gated (live "what
+// this panel could give right now"); `ratedEcRate` is the always-on
+// design value (what it'd give at full sun in a healthy orbit). The
+// flight UI uses `current/max`; the editor UI uses `rated`.
+// FuelCell and RTG already expose their design specs in the existing
+// slots (`maxOutput` / `referencePower`), so no new field there.
 //
 // `deployed` / `sunlit` / `retractable` are encoded as `0`/`1`
 // rather than literal JSON booleans (consistent with the rest of
@@ -170,13 +192,24 @@ public sealed class NovaPartTopic : Topic {
           return;
         }
         // Reach through the live VirtualVessel to find the part's
-        // Command component. Editor scope has no Virtual; rejected.
+        // Command/Probe component. Editor scope has no Virtual;
+        // rejected. The op covers both control-source kinds because
+        // the test-load toggle is identical between them — only the
+        // host component type differs.
         var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
-        var cmp = vesselModule?.Virtual?.GetComponents(_part.persistentId)
-            .OfType<Command>()
-            .FirstOrDefault();
-        if (cmp == null) return;
-        cmp.TestLoadActive = active;
+        var components = vesselModule?.Virtual?.GetComponents(_part.persistentId);
+        if (components == null) return;
+        bool toggled = false;
+        foreach (var c in components) {
+          if (c is Command command) {
+            command.TestLoadActive = active;
+            toggled = true;
+          } else if (c is Probe probe) {
+            probe.TestLoadActive = active;
+            toggled = true;
+          }
+        }
+        if (!toggled) return;
         vesselModule.Virtual.Invalidate();
         MarkDirty();
         return;
@@ -348,6 +381,7 @@ public sealed class NovaPartTopic : Topic {
         WriteBit(sb, solar.IsDeployed, ref f);
         WriteBit(sb, solar.IsSunlit, ref f);
         WriteBit(sb, solar.IsRetractable, ref f);
+        WriteNum(sb, solar.ChargeRate, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -374,11 +408,15 @@ public sealed class NovaPartTopic : Topic {
         // honestly: motor draw can be supplied from the buffer, the
         // bus, or both, and the UI needs both halves to show the
         // signed buffer flow (= busRate − motorRate) without solver
-        // internals.
+        // internals. motorRated/busRated are the design specs (peak
+        // single-axis-full motor draw and the buffer refill ceiling)
+        // — invariant of solver state, used by the editor view.
         WriteNum(sb, wheel.CurrentDrain, ref f);
         WriteNum(sb, wheel.CurrentRefill, ref f);
         WriteNum(sb, wheel.Buffer?.FillFraction ?? 1.0, ref f);
         WriteBit(sb, wheel.RefillActive, ref f);
+        WriteNum(sb, wheel.ElectricRate, ref f);
+        WriteNum(sb, wheel.RefillRateWatts, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -388,6 +426,7 @@ public sealed class NovaPartTopic : Topic {
         bool f = true;
         WriteKind(sb, "L", ref f);
         WriteNum(sb, light.Rate * light.Activity, ref f);
+        WriteNum(sb, light.Rate, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -431,6 +470,26 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, command.TestLoadRate * command.TestLoadActivity, ref f);
         WriteNum(sb, command.TestLoadRate, ref f);
         WriteBit(sb, command.TestLoadActive, ref f);
+        WriteNum(sb, command.IdleDraw, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case Probe probe: {
+        if (probe.IdleDraw <= 0 && probe.TestLoadRate <= 0) return false;
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "P", ref f);
+        WriteNum(sb, probe.IdleDraw * probe.IdleActivity, ref f);
+        WriteNum(sb, probe.TestLoadRate * probe.TestLoadActivity, ref f);
+        WriteNum(sb, probe.TestLoadRate, ref f);
+        WriteBit(sb, probe.TestLoadActive, ref f);
+        WriteNum(sb, probe.IdleDraw, ref f);
+        WriteNum(sb, probe.SasLevel, ref f);
+        WriteNum(sb, probe.CommandBytes, ref f);
+        WriteNum(sb, probe.CommandCapacityBytes, ref f);
+        WriteNum(sb, probe.CommandRefillBps, ref f);
+        WriteNum(sb, probe.CommandDecayBps, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
@@ -449,9 +508,11 @@ public sealed class NovaPartTopic : Topic {
         return true;
       }
       case Rtg rtg: {
-        if (rtg.Vessel == null) return false;
-        double now = rtg.Vessel.Systems.Clock.UT;
-        double currentPower = rtg.ReferencePower * rtg.DecayFactor(now);
+        // No vessel guard — Rtg's accessors (CurrentPower, CurrentRate,
+        // CurrentWasteHeatW, CurrentRejectionW, CurrentExportW,
+        // CurrentTempC, DTdtCps) all handle Vessel == null by falling
+        // back to BoL / 0, which is exactly what the editor view wants.
+        double currentPower = rtg.CurrentPower;
         double halfLifeSec = rtg.HalfLifeDays * 86400.0;
         // P(t+Ky) = P(t) × 2^(-Ky / halfLife) → decline = P × (1 - …).
         double decayFracOverKy = 1.0 - System.Math.Pow(2.0, -KerbinYearSeconds / halfLifeSec);

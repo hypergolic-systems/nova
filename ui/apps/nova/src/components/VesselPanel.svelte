@@ -12,9 +12,12 @@
   import { useFlightData } from '@dragonglass/telemetry/svelte';
   import { FloatingWindow } from '@dragonglass/windows';
   import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
+  import { useNovaPartsByTag } from '../telemetry/use-nova-parts-by-tag.svelte';
+  import type { SystemTag } from '../telemetry/nova-topics';
   import PowerView from './power/PowerView.svelte';
   import ResourceView from './resource/ResourceView.svelte';
   import ScienceView from './science/ScienceView.svelte';
+  import SystemView from './system/SystemView.svelte';
   import ThermalView from './thermal/ThermalView.svelte';
 
   const MIN_W = 300;
@@ -30,30 +33,31 @@
   const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'power' | 'thermal' | 'resource' | 'propulsion' | 'rcs' | 'attitude' | 'science';
+  type TabId = 'system' | 'power' | 'thermal' | 'resource' | 'science';
 
   interface Tab {
     id: TabId;
     short: string;
     label: string;
-    enabled: boolean;
   }
 
+  // Disabled placeholder tabs (PRP / RCS / ATT) lived here while the
+  // visual rhythm was being prototyped. Now that the row carries five
+  // live views, dim placeholders just crowd the chip strip — re-add
+  // entries here as those views land.
   const tabs: Tab[] = [
-    { id: 'power',      short: 'PWR', label: 'Power',      enabled: true  },
-    { id: 'thermal',    short: 'THM', label: 'Thermal',    enabled: true  },
-    { id: 'resource',   short: 'RES', label: 'Resources',  enabled: true  },
-    { id: 'propulsion', short: 'PRP', label: 'Propulsion', enabled: false },
-    { id: 'rcs',        short: 'RCS', label: 'RCS',        enabled: false },
-    { id: 'attitude',   short: 'ATT', label: 'Attitude',   enabled: false },
-    { id: 'science',    short: 'SCI', label: 'Science',    enabled: true  },
+    { id: 'system',     short: 'SYS', label: 'Systems'   },
+    { id: 'power',      short: 'PWR', label: 'Power'     },
+    { id: 'thermal',    short: 'THM', label: 'Thermal'   },
+    { id: 'resource',   short: 'RES', label: 'Resources' },
+    { id: 'science',    short: 'SCI', label: 'Science'   },
   ];
 
   const flight = useFlightData();
   const structureRef = useNovaVesselStructure(() => flight.vesselId);
   const vesselName = $derived(structureRef.current?.name ?? '');
 
-  let activeTab = $state<TabId>('power');
+  let activeTab = $state<TabId>('system');
   let z = $state(100);
 
   function raise(): void {
@@ -82,10 +86,8 @@
         type="button"
         class="vp__chip"
         class:vp__chip--active={activeTab === t.id}
-        class:vp__chip--disabled={!t.enabled}
-        disabled={!t.enabled}
         title={t.label}
-        onclick={() => t.enabled && (activeTab = t.id)}
+        onclick={() => (activeTab = t.id)}
       >
         <span class="vp__chip-short">{t.short}</span>
       </button>
@@ -93,8 +95,10 @@
   </nav>
 
   <div class="vp__scroll">
-    {#if activeTab === 'power' && flight.vesselId}
-      <PowerView vesselId={flight.vesselId} />
+    {#if activeTab === 'system' && flight.vesselId}
+      <SystemView vesselId={flight.vesselId} />
+    {:else if activeTab === 'power' && flight.vesselId}
+      <PowerView partsByTag={(tag: SystemTag) => useNovaPartsByTag(() => flight.vesselId, tag)} />
     {:else if activeTab === 'thermal' && flight.vesselId}
       <ThermalView vesselId={flight.vesselId} />
     {:else if activeTab === 'resource' && flight.vesselId}
@@ -174,12 +178,10 @@
 
   /* Subsystem chips — sub-tab navigation. Borrowed visually from the
      workbench EngineeringPanel prototype: 1 px-bordered cells with a
-     bright accent on the active chip. Disabled chips render at half
-     opacity to advertise "more views coming" without inviting clicks. */
-  /* Tab nav sits as a pinned header above the scroll area — when a
-     subsystem tree expands past the viewport, the chips stay visible
-     so the user can pivot to another tab without scrolling back to
-     the top. */
+     bright accent on the active chip. Tab nav sits as a pinned header
+     above the scroll area — when a subsystem tree expands past the
+     viewport, the chips stay visible so the user can pivot without
+     scrolling back to the top. */
   .vp__tabs {
     flex: 0 0 auto;
     display: flex;
@@ -200,7 +202,7 @@
     cursor: pointer;
     transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
   }
-  .vp__chip:hover:not(.vp__chip--disabled) {
+  .vp__chip:hover {
     color: var(--accent);
     border-color: var(--accent-dim);
   }
@@ -209,11 +211,6 @@
     border-color: var(--accent);
     background: rgba(126, 245, 184, 0.08);
     text-shadow: 0 0 6px var(--accent-glow);
-  }
-  .vp__chip--disabled {
-    color: var(--fg-mute);
-    cursor: not-allowed;
-    opacity: 0.5;
   }
   .vp__chip-short {
     font-variant-numeric: tabular-nums;

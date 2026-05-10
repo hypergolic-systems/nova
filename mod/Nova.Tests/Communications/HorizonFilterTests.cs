@@ -117,28 +117,29 @@ public class HorizonFilterTests {
   }
 
   [TestMethod]
-  public void PairMaxRange_AsymmetricAntennas_UsesMaxOverPairs() {
-    // A has a weak antenna; B has a strong one. The strong-pair r_max
-    // exceeds A's self-r_max. The filter must use the MAX over pairs
-    // — otherwise the strong asymmetric link gets falsely pre-screened.
+  public void PairMaxRange_MultiAntennaEndpoint_UsesMaxOverPairs() {
+    // Both endpoints carry a weak and a strong antenna. At a range
+    // where weak↔weak is far past its r_max but strong↔strong is
+    // comfortably in range, the pre-screen filter must take the MAX
+    // over antenna pairs (using min would cull the viable strong-pair
+    // route entirely). With graph-level symmetrisation collapsing each
+    // direction to the weaker side, the matching strong antenna on
+    // both endpoints is what keeps the symmetric rate non-zero.
     var weak   = new Antenna { TxPower = 1, Gain = 1,    MaxRate = 100,  RefDistance = 100 };
     var strong = new Antenna { TxPower = 1, Gain = 1000, MaxRate = 1000, RefDistance = 100 };
 
-    // Distance 5000m: weak↔weak would be far past range; strong→weak
-    // lifts the pair above bucket 0.
     var net = new CommunicationsNetwork();
-    var a = EndpointAt("A", Orbits.Stationary(Vec3d.Zero), weak);
-    var b = EndpointAt("B", Orbits.Stationary(new Vec3d(5000, 0, 0)), strong);
+    var a = EndpointAt("A", Orbits.Stationary(Vec3d.Zero),               weak, strong);
+    var b = EndpointAt("B", Orbits.Stationary(new Vec3d(1000, 0, 0)),    weak, strong);
     net.AddEndpoint(a); net.AddEndpoint(b);
 
     net.Solve(0);
 
-    // At least one direction must report a non-zero rate (proof that
-    // the pre-screen did NOT incorrectly skip — and BuildGraph found
-    // a non-bucket-0 link).
-    var anyNonZero = net.Graph.Links.Any(l => l.RateBps > 0);
-    Assert.IsTrue(anyNonZero,
-        "asymmetric strong-pair link should not be pre-screened away");
+    // Both directions must report a non-zero rate (proof that the
+    // pre-screen did NOT incorrectly skip — and BuildGraph found a
+    // non-bucket-0 link via the strong-pair on either side).
+    Assert.IsTrue(net.Graph.Links.All(l => l.RateBps > 0),
+        "best-pair-of-antennas symmetric link should not be pre-screened away");
   }
 
   [TestMethod]

@@ -170,6 +170,7 @@ message PartState {
   ThermometerState    thermometer    = 10;
   RtgState            rtg            = 11;
   RadiatorState       radiator       = 12;
+  ProbeState          probe          = 13;
 }
 
 message TankVolumeState {
@@ -217,6 +218,17 @@ message RtgState {
 // deployable folding rads round-trip the player's toggle.
 message RadiatorState {
   bool is_deployed = 1;
+}
+
+// Probe StoredCommands ledger — see Nova.Core/Components/Control/Probe.cs.
+// Lerp baseline pair only; capacity/decay/receive/input-cost are
+// cfg-declared on the component and recomputed at OnBuildSystems, and
+// the comms refill rate is rederived from the next network Solve (so a
+// reload sees decay-only until the link resolves rather than crediting
+// a stale inflow).
+message ProbeState {
+  double command_baseline_bytes = 1;
+  double command_baseline_ut    = 2;
 }
 
 // --- Science state ---

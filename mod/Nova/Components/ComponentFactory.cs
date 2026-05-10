@@ -34,6 +34,7 @@ public static class ComponentFactory {
     ["NovaDockingModule"] = "DockingPort",
     ["NovaCrewModule"] = "Crew",
     ["NovaCommandModule"] = "Command",
+    ["NovaProbeModule"] = "Probe",
     ["NovaThermometerModule"] = "Thermometer",
     ["NovaDataStorageModule"] = "DataStorage",
     ["NovaAntennaModule"] = "Antenna",
@@ -74,6 +75,7 @@ public static class ComponentFactory {
       "DockingPort" => CreateDockingPort(moduleNode),
       "Crew" => CreateCrew(moduleNode),
       "Command" => CreateCommand(moduleNode),
+      "Probe" => CreateProbe(moduleNode),
       "Thermometer" => CreateThermometer(moduleNode),
       "DataStorage" => CreateDataStorage(moduleNode),
       "Antenna" => CreateAntenna(moduleNode),
@@ -234,6 +236,24 @@ public static class ComponentFactory {
     return new Command {
       IdleDraw = double.Parse(node.GetValue("idleDraw")),
       TestLoadRate = double.Parse(node.GetValue("testLoadRate")),
+    };
+  }
+
+  public static Probe CreateProbe(ConfigNode node) {
+    var capacity = double.Parse(node.GetValue("commandCapacityBytes"));
+    return new Probe {
+      IdleDraw = double.Parse(node.GetValue("idleDraw")),
+      TestLoadRate = double.Parse(node.GetValue("testLoadRate")),
+      SasLevel = int.Parse(node.GetValue("sasLevel")),
+      CommandCapacityBytes  = capacity,
+      CommandDecayBps       = double.Parse(node.GetValue("commandDecayBps")),
+      CommandReceiveRateBps = double.Parse(node.GetValue("commandReceiveRateBps")),
+      InputCostBps          = double.Parse(node.GetValue("inputCostBps")),
+      // Prime the ledger to full so editor reads land on capacity (no
+      // VirtualVessel / sim clock there). Flight `OnBuildSystems` re-
+      // anchors `CommandBaselineUT` to the live clock; `Load` overrides
+      // both fields when a save is restored.
+      CommandBaselineBytes = capacity,
     };
   }
 

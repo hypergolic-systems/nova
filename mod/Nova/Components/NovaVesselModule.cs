@@ -4,8 +4,10 @@ using System.Linq;
 using UnityEngine;
 using Nova.Core;
 using Nova.Communications;
+using Nova.Core.Communications;
 using Nova.Core.Components;
 using Nova.Core.Components.Communications;
+using Nova.Core.Components.Control;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
 using Nova.Core.Utils;
@@ -86,6 +88,7 @@ public class NovaVesselModule : VesselModule {
     GameEvents.onVesselGoOnRails.Remove(OnVesselGoOnRails);
     GameEvents.onVesselGoOffRails.Remove(OnVesselGoOffRails);
     Virtual?.Systems?.Transmission?.CancelActive();
+    CancelCommandLink();
     if (vessel != null)
       NovaCommunicationsAddon.Instance?.RemoveVesselEndpoint(vessel.id);
   }
@@ -160,11 +163,13 @@ public class NovaVesselModule : VesselModule {
     if (antennas.Count == 0) return;
     addon.AddVesselEndpoint(vessel, antennas);
     WireScienceTransmission();
+    WireCommandLink();
   }
 
   // Re-register: drop the existing endpoint and re-add. Used when the
   // antenna set changes (parts added/removed, dock/undock).
   private void RebuildCommsEndpoint() {
+    CancelCommandLink();
     NovaCommunicationsAddon.Instance?.RemoveVesselEndpoint(vessel.id);
     RegisterCommsEndpoint();
   }
@@ -183,9 +188,113 @@ public class NovaVesselModule : VesselModule {
         vessel.persistentId, vessel.vesselName ?? "");
   }
 
+  // ── StoredCommands link ──────────────────────────────────────────
+  // Per-vessel Receive<string>("StoredCommands", probe.CommandReceiveRateBps).
+  // Submitted alongside the antenna endpoint; cancelled on
+  // dock/undock/destroy. The job's AllocatedRateBps is rolled into
+  // the primary Probe's lerp each FixedUpdate.
+  private Receive<string> commandReceiveJob;
+
+  private void WireCommandLink() {
+    var addon = NovaCommunicationsAddon.Instance;
+    if (addon == null) return;
+    var ep = addon.GetVesselEndpoint(vessel.id);
+    if (ep == null) return;
+    var probe = PrimaryProbe;
+    if (probe == null) return;
+    if (probe.CommandReceiveRateBps <= 0) return;
+
+    // RegisterCommsEndpoint can fire more than once for the same vessel
+    // — once from ConfigureVirtualVessel during load and once from the
+    // addon's Awake catch-up loop, in either order depending on which
+    // KSPAddon instance comes online first. Without cancelling first,
+    // both submissions stay Active and the allocator water-fills them
+    // by splitting the KSC→vessel link between the duplicates, so each
+    // receive sees half the achievable rate. Cancel-then-submit makes
+    // this idempotent: the field always points at the only Active job.
+    CancelCommandLink();
+
+    commandReceiveJob = new Receive<string>(ep, "StoredCommands", probe.CommandReceiveRateBps);
+    addon.Network.Submit(commandReceiveJob);
+  }
+
+  private void CancelCommandLink() {
+    if (commandReceiveJob == null) return;
+    NovaCommunicationsAddon.Instance?.Network?.Cancel(commandReceiveJob);
+    commandReceiveJob = null;
+  }
+
+  // ── Primary Probe ────────────────────────────────────────────────
+  // The vessel's authoritative command store: largest-capacity Probe
+  // on the vessel. Multi-probe summation is a follow-up. Cached and
+  // invalidated by the same `rcsModulesDirty` flag the topology hooks
+  // already maintain — it flips on every onVesselWasModified and
+  // RebuildTopology, which is exactly when the Probe roster could
+  // change too.
+  private Probe cachedPrimaryProbe;
+  private bool primaryProbeDirty = true;
+
+  public Probe PrimaryProbe {
+    get {
+      if (primaryProbeDirty) {
+        cachedPrimaryProbe = Virtual?.AllComponents().OfType<Probe>()
+            .OrderByDescending(p => p.CommandCapacityBytes).FirstOrDefault();
+        primaryProbeDirty = false;
+      }
+      return cachedPrimaryProbe;
+    }
+  }
+
+  // ── Control authorization ────────────────────────────────────────
+  // Recomputed once per FixedUpdate against the primary Probe's
+  // StoredCommands ledger. False = the ledger couldn't pay for this
+  // tick's input, so attitude inputs zero out and engines see throttle
+  // 0. Crewed vessels and probe-less debris are unconditionally true
+  // (kerbals fly by hand; debris has no input either way).
+  private bool controlAuthorizedThisTick = true;
+  public bool ControlAuthorizedThisTick => controlAuthorizedThisTick;
+
+  // Roll the comms allocator's current AllocatedRateBps for this
+  // vessel's StoredCommands receive job into the primary Probe's
+  // ledger. Cheap when the rate hasn't changed (no rebaseline).
+  private void PullCommandRefill() {
+    var probe = PrimaryProbe;
+    if (probe == null || commandReceiveJob == null) return;
+    var rate = commandReceiveJob.AllocatedRateBps;
+    if (rate != probe.CommandRefillBps) probe.SetCommandRefillRate(rate);
+  }
+
+  // Decide whether this FixedUpdate's input passes the StoredCommands
+  // gate. Vessels with crew (kerbal pilot) or no probe at all are
+  // unconditionally authorized — gating is the probe-only sanction
+  // for an idle KSC link. Cost is `(attitudeMag + throttle) ×
+  // probe.InputCostBps × fixedDt`; deduction happens once per tick on
+  // the primary Probe regardless of how many engines / RCS modules
+  // read it back via `ControlAuthorizedThisTick`.
+  private void AuthorizeControlForThisTick() {
+    controlAuthorizedThisTick = true;
+    if (vessel == null) return;
+    if (vessel.GetCrewCount() > 0) return;
+    var probe = PrimaryProbe;
+    if (probe == null) return;
+    if (probe.InputCostBps <= 0) return;
+
+    double attitudeMag = inputReady
+        ? System.Math.Sqrt(cachedInputRot.SqrMagnitude + cachedInputLin.SqrMagnitude)
+        : 0;
+    double throttleMag = vessel.ctrlState.mainThrottle;
+    double inputMag = attitudeMag + throttleMag;
+    if (inputMag <= 1e-6) return;
+
+    double cost = inputMag * probe.InputCostBps * Time.fixedDeltaTime;
+    if (!probe.TrySpendCommands(cost))
+      controlAuthorizedThisTick = false;
+  }
+
   public void InvalidateRcsCache() {
     rcsModulesDirty = true;
     rcsSolver = null;
+    primaryProbeDirty = true;
   }
 
   public void InvalidateSolarData() {
@@ -410,6 +519,8 @@ public class NovaVesselModule : VesselModule {
       Virtual.InitializeSolver(Planetarium.GetUniversalTime());
     }
     if (Virtual.Context == null) Virtual.Context = new KspVesselContext(vessel);
+    PullCommandRefill();
+    AuthorizeControlForThisTick();
     SolveAttitude();
     Virtual.Tick(Planetarium.GetUniversalTime());
 
@@ -536,6 +647,14 @@ public class NovaVesselModule : VesselModule {
     if (!inputReady) return;
     var inputRot = cachedInputRot;
     var inputLin = cachedInputLin;
+
+    // StoredCommands gate — when the ledger couldn't pay for this
+    // tick's input (see AuthorizeControlForThisTick), drive the rest
+    // of the solver as if the player let go of the stick.
+    if (!controlAuthorizedThisTick) {
+      inputRot = Vec3d.Zero;
+      inputLin = Vec3d.Zero;
+    }
 
     bool hasInput = inputRot.SqrMagnitude > 1e-6 || inputLin.SqrMagnitude > 1e-6;
     if (!hasInput) {

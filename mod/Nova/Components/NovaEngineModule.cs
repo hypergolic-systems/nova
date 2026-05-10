@@ -196,11 +196,16 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
 
     if (!activated) return;
 
-    var throttle = vessel.ctrlState.mainThrottle;
+    var vm = vessel.FindVesselModuleImplementing<NovaVesselModule>();
+    // StoredCommands gate — when the vessel-level authorization fails
+    // (probe ledger empty), the throttle reads as 0 regardless of
+    // mainThrottle, matching how SolveAttitude zeroes attitude inputs.
+    var throttle = (vm == null || vm.ControlAuthorizedThisTick)
+        ? vessel.ctrlState.mainThrottle : 0f;
     if (throttle != lastThrottle) {
       lastThrottle = throttle;
       engine.Throttle = throttle;
-      vessel.FindVesselModuleImplementing<NovaVesselModule>()?.Virtual?.Invalidate();
+      vm?.Virtual?.Invalidate();
     }
 
     // Apply thrust force at each thrust transform. The thrust transform

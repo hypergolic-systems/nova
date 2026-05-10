@@ -10,12 +10,11 @@
   // remounted (vessel switch, hud reload). Persisting later is a
   // settings concern, not a view concern.
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
-  import type { SolarState, CommandState, WheelState } from '../../telemetry/nova-topics';
+  import type { SolarState, CommandState, ProbeState, WheelState, SystemTag } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import { siPrefix, fmtMag } from '../../util/units';
@@ -26,14 +25,33 @@
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
 
+  // The renderer is scene-agnostic: the parent supplies a factory that
+  // hands back a reactive `{readonly current}` for any tag. Flight wires
+  // it to `useNovaPartsByTag(() => vesselId, tag)`; editor wires it to
+  // `useNovaEditorPartsByTag(tag)`. Lifecycle of the underlying
+  // subscriptions binds to PowerView (the factory is invoked from this
+  // setup), so unmounting on tab switch still tears them down.
+  //
+  // `mode` switches presentation: flight shows live LP-throttled rates
+  // alongside design max, with battery gauges + SoC; editor shows only
+  // design-rated values (no live solver runs there) and strips storage
+  // rows down to the part list — at design time the user is balancing
+  // sources vs loads, not watching a snapshot of energy in motion.
   interface Props {
-    vesselId: string;
+    partsByTag: (tag: SystemTag) => { readonly current: NovaTaggedPart[] };
+    mode?: 'flight' | 'editor';
   }
-  const { vesselId }: Props = $props();
+  const { partsByTag, mode = 'flight' }: Props = $props();
+  const isEditor = $derived(mode === 'editor');
 
-  const generators = useNovaPartsByTag(() => vesselId, 'power-gen');
-  const consumers  = useNovaPartsByTag(() => vesselId, 'power-consume');
-  const storage    = useNovaPartsByTag(() => vesselId, 'power-store');
+  // Invoke the factory once at setup. `untrack` suppresses Svelte's
+  // state_referenced_locally warning — the prop is a stable factory,
+  // not a reactive value we want to track. Each call wires up keyed
+  // subscriptions whose own `$effect`s bind to PowerView's lifecycle
+  // and clean up on unmount.
+  const generators = untrack(() => partsByTag('power-gen'));
+  const consumers  = untrack(() => partsByTag('power-consume'));
+  const storage    = untrack(() => partsByTag('power-store'));
 
   type NodeKey = 'gen' | 'gen_solar' | 'consume' | 'store';
   let expanded = $state<Record<NodeKey, boolean>>({
@@ -56,24 +74,36 @@
     return expandedRow[key] ?? false;
   }
 
+  // Per-part generation total. In flight this is the live LP-throttled
+  // EC/s being injected into the bus. In editor (no solver running) we
+  // fall back to design-rated specs — solar `ratedRate`, fuel-cell
+  // `maxOutput`, RTG `referencePower` — so the gen vs consume balance
+  // reflects what the craft will deliver in nominal operation.
   function generationRate(p: NovaTaggedPart): number {
     if (!p.state) return 0;
     let total = 0;
-    for (const s of p.state.solar) total += s.rate;
-    for (const fc of p.state.fuelCell) total += fc.currentOutput;
-    for (const r of p.state.rtg) total += r.currentRate;
+    if (isEditor) {
+      for (const s of p.state.solar)    total += s.ratedRate;
+      for (const fc of p.state.fuelCell) total += fc.maxOutput;
+      for (const r of p.state.rtg)      total += r.referencePower;
+    } else {
+      for (const s of p.state.solar)    total += s.rate;
+      for (const fc of p.state.fuelCell) total += fc.currentOutput;
+      for (const r of p.state.rtg)      total += r.currentRate;
+    }
     return total;
   }
 
   // Per-cell sums for the fuel-cell row. A part should only ever
   // hold one fuel cell, but iterate to stay symmetric with the rest
-  // of the helpers.
+  // of the helpers. In editor the cell isn't producing — current
+  // collapses to the rated max so the row reads as the design spec.
   function fuelCellOutput(p: NovaTaggedPart): { current: number; max: number } {
     let current = 0;
     let max = 0;
     if (p.state) {
       for (const fc of p.state.fuelCell) {
-        current += fc.currentOutput;
+        current += isEditor ? fc.maxOutput : fc.currentOutput;
         max += fc.maxOutput;
       }
     }
@@ -82,14 +112,16 @@
 
   // Solar current+max in one pass — every solar component on a part
   // contributes both. Drives the per-panel and subgroup current/max
-  // readout (e.g. "0.50/1.20 kW").
+  // readout (e.g. "0.50/1.20 kW"). In editor mode both collapse to the
+  // BoL `ratedRate` since live orientation/sunlit gating is meaningless
+  // off the launch pad.
   function solarRates(p: NovaTaggedPart): { current: number; max: number } {
     let current = 0;
     let max = 0;
     if (p.state) {
       for (const s of p.state.solar) {
-        current += s.rate;
-        max += s.maxRate;
+        current += isEditor ? s.ratedRate : s.rate;
+        max     += isEditor ? s.ratedRate : s.maxRate;
       }
     }
     return { current, max };
@@ -99,25 +131,26 @@
     ksp.send(NovaPartTopic(partId), 'setCommandTestLoad', active);
   }
 
-  // Per-component consumer row. Each Command / ReactionWheel / Light
-  // on a part becomes its own row at the top consumption level —
+  // Per-component consumer row. Each Command / Probe / ReactionWheel /
+  // Light on a part becomes its own row at the top consumption level —
   // the bus-facing rate is what the row reports as its "draw", so
   // a wheel that's idling on a full buffer reads `0 W` (no bus
   // inflow), even when the motor is being driven from buffered
   // energy. The wheel's expandable detail lines surface that
   // separately so the energy balance stays visible.
-  type ConsumerRowKind = 'command' | 'wheel' | 'light';
+  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light';
   interface ConsumerRow {
     key: string;
     partId: string;
     partTitle: string;
     kind: ConsumerRowKind;
-    /** Bus-facing W. For Command this is idleRate + testLoadRate; for
-     *  Wheel it is the refill device's busRate (motor draw is shown
+    /** Bus-facing W. For Command/Probe this is idleRate + testLoadRate;
+     *  for Wheel it is the refill device's busRate (motor draw is shown
      *  in the wheel-detail Torque sub-row, not here); for Light it's
      *  light.rate. */
     busRate: number;
     command?: CommandState;
+    probe?: ProbeState;
     wheel?: WheelState;
   }
 
@@ -137,8 +170,17 @@
       rows.push({
         key: `${partId}:c${i}`, partId, partTitle,
         kind: 'command',
-        busRate: c.idleRate + c.testLoadRate,
+        busRate: isEditor ? c.idleRated : (c.idleRate + c.testLoadRate),
         command: c,
+      });
+    }
+    for (let i = 0; i < p.state.probe.length; i++) {
+      const pr = p.state.probe[i];
+      rows.push({
+        key: `${partId}:p${i}`, partId, partTitle,
+        kind: 'probe',
+        busRate: isEditor ? pr.idleRated : (pr.idleRate + pr.testLoadRate),
+        probe: pr,
       });
     }
     for (let i = 0; i < p.state.wheel.length; i++) {
@@ -146,7 +188,7 @@
       rows.push({
         key: `${partId}:w${i}`, partId, partTitle,
         kind: 'wheel',
-        busRate: w.busRate,
+        busRate: isEditor ? w.busRated : w.busRate,
         wheel: w,
       });
     }
@@ -155,7 +197,7 @@
       rows.push({
         key: `${partId}:l${i}`, partId, partTitle,
         kind: 'light',
-        busRate: l.rate,
+        busRate: isEditor ? l.ratedRate : l.rate,
       });
     }
     return rows;
@@ -163,6 +205,7 @@
 
   function rowKindIcon(kind: ConsumerRowKind): ComponentKind {
     if (kind === 'command') return 'command';
+    if (kind === 'probe') return 'command';
     if (kind === 'wheel') return 'wheel';
     return 'light';
   }
@@ -170,16 +213,25 @@
   const consumerRows = $derived.by((): ConsumerRow[] =>
     consumers.current.flatMap(buildConsumerRows));
 
-  // Update the section total to reflect each component's bus-facing
-  // rate (matches the per-row totals, so summing rows = consumption
-  // total). Wheel rows now contribute `busRate` instead of motor
-  // power.
+  // Per-part consumption total. Flight: live bus-facing draw (matches
+  // the per-row totals). Editor: design-rated bus draws — wheel
+  // `busRated`, light `ratedRate`, command/probe `idleRated` (test-load
+  // is an interactive flight-only feature, so it doesn't contribute to
+  // the editor balance).
   function consumptionRate(p: NovaTaggedPart): number {
     if (!p.state) return 0;
     let total = 0;
-    for (const w of p.state.wheel) total += w.busRate;
-    for (const l of p.state.light) total += l.rate;
-    for (const c of p.state.command) total += c.idleRate + c.testLoadRate;
+    if (isEditor) {
+      for (const w of p.state.wheel)   total += w.busRated;
+      for (const l of p.state.light)   total += l.ratedRate;
+      for (const c of p.state.command) total += c.idleRated;
+      for (const pr of p.state.probe)  total += pr.idleRated;
+    } else {
+      for (const w of p.state.wheel)   total += w.busRate;
+      for (const l of p.state.light)   total += l.rate;
+      for (const c of p.state.command) total += c.idleRate + c.testLoadRate;
+      for (const pr of p.state.probe)  total += pr.idleRate + pr.testLoadRate;
+    }
     return total;
   }
 
@@ -224,13 +276,15 @@
   // Per-part RTG aggregate. Stock has one RTG per part, but the wire
   // supports multiple components per part — sum across them so a
   // future multi-RTG part renders one cohesive row.
+  // In editor mode `current` collapses to `referencePower` so the
+  // current/max pair reads as the BoL design output, not "0/X".
   function rtgOutput(p: NovaTaggedPart): {
     current: number; max: number; reference: number; decline: number;
   } {
     let current = 0, max = 0, reference = 0, decline = 0;
     if (p.state) {
       for (const r of p.state.rtg) {
-        current   += r.currentRate;
+        current   += isEditor ? r.referencePower : r.currentRate;
         max       += r.currentPower;
         reference += r.referencePower;
         decline   += r.declineWattsPerKerbinYear;
@@ -324,6 +378,14 @@
       cMag: fmtMag(capacity / p.div),
       unit: p.letter + 'J',
     };
+  }
+
+  // Single capacity readout in SI-prefixed Joules. Used by the editor
+  // storage rows (no stored/rate pair — just "this battery holds X").
+  function fmtCap(capacity: number): { mag: string; unit: string } {
+    const abs = Math.abs(capacity);
+    const p = siPrefix(abs);
+    return { mag: fmtMag(abs / p.div), unit: p.letter + 'J' };
   }
 
   function batteryFraction(stored: number, capacity: number): number {
@@ -424,11 +486,20 @@
   </p>
 {/snippet}
 
-<!-- Flat consumer row: Command / Light. The whole row is the part title
-     with an icon and a single rate readout. Command also carries the
-     LOAD test-load toggle when configured. -->
+<!-- Flat consumer row: Command / Probe / Light. The whole row is the
+     part title with an icon and a single rate readout. Command and
+     Probe also carry the LOAD test-load toggle when configured. Probe
+     rows additionally surface the StoredCommands ledger as a small
+     inline gauge between name and rate — that ledger is the probe's
+     primary live state, so it earns the row real estate. Hover for
+     bytes / refill / decay numbers. -->
 {#snippet consumerFlatRow(row: ConsumerRow)}
   {@const r = fmtRate(row.busRate)}
+  {@const tlRate = row.command?.testLoadRate ?? row.probe?.testLoadRate ?? 0}
+  {@const tlActive = row.command?.testLoadActive ?? row.probe?.testLoadActive ?? false}
+  {@const hasTestLoad = !isEditor && (row.kind === 'command' || row.kind === 'probe') && tlRate > 0}
+  {@const cmdGauge = !isEditor && row.kind === 'probe' && row.probe && row.probe.commandCapacityBytes > 0
+                       ? row.probe : undefined}
   <li class="pwr__row"
       onmouseenter={() => highlightOn([row.partId])}
       onmouseleave={highlightOff}>
@@ -437,13 +508,21 @@
       <ComponentIcon kind={rowKindIcon(row.kind)} />
     </span>
     <span class="pwr__row-name">{row.partTitle}</span>
-    {#if row.kind === 'command' && row.command && row.command.testLoadRate > 0}
+    {#if cmdGauge}
+      <span class="pwr__cmd-gauge"
+            title={`StoredCommands: ${cmdGauge.commandBytes.toFixed(0)} / ${cmdGauge.commandCapacityBytes.toFixed(0)} B`
+              + ` · refill ${cmdGauge.commandRefillBps.toFixed(2)} B/s`
+              + ` · decay ${cmdGauge.commandDecayBps.toFixed(3)} B/s`}>
+        <SegmentGauge fraction={cmdGauge.commandBytes / cmdGauge.commandCapacityBytes} segments={6} />
+      </span>
+    {/if}
+    {#if hasTestLoad}
       <button type="button"
               class="pwr__deploy-btn pwr__test-load-btn"
-              class:pwr__test-load-btn--on={row.command.testLoadActive}
-              aria-label={row.command.testLoadActive ? 'Disable test load' : 'Enable test load'}
-              title={`Toggle ${row.command.testLoadRate} W debug load`}
-              onclick={(e) => { e.stopPropagation(); setCommandTestLoad(row.partId, !row.command!.testLoadActive); }}>
+              class:pwr__test-load-btn--on={tlActive}
+              aria-label={tlActive ? 'Disable test load' : 'Enable test load'}
+              title={`Toggle ${tlRate} W debug load`}
+              onclick={(e) => { e.stopPropagation(); setCommandTestLoad(row.partId, !tlActive); }}>
         <span>LOAD</span>
       </button>
     {/if}
@@ -618,11 +697,15 @@
                   </span>
                   <span class="pwr__row-rate"
                         class:pwr__row-rate--zero={isZero(genGroups.solarTotal)}>
-                    <span class="pwr__row-rate-cur">{solarSubgroupFmt.cMag}</span><span
-                      class="pwr__row-rate-max">/{solarSubgroupFmt.mMag}</span><em>{solarSubgroupFmt.unit}</em>
+                    {#if isEditor}
+                      {solarSubgroupFmt.cMag}<em>{solarSubgroupFmt.unit}</em>
+                    {:else}
+                      <span class="pwr__row-rate-cur">{solarSubgroupFmt.cMag}</span><span
+                        class="pwr__row-rate-max">/{solarSubgroupFmt.mMag}</span><em>{solarSubgroupFmt.unit}</em>
+                    {/if}
                   </span>
                 </button>
-                {@render solarBulkControl(genGroups.solar)}
+                {#if !isEditor}{@render solarBulkControl(genGroups.solar)}{/if}
               </div>
               {#if expanded.gen_solar}
                 <ul class="pwr__rows pwr__rows--nested">
@@ -631,18 +714,22 @@
                     {@const sr = solarRates(p)}
                     {@const sp = fmtRatePair(sr.current, sr.max)}
                     <li class="pwr__row pwr__row--nested"
-                        class:pwr__row--closed={s && !s.deployed}
+                        class:pwr__row--closed={!isEditor && s && !s.deployed}
                         onmouseenter={() => highlightOn([p.struct.id])}
                         onmouseleave={highlightOff}>
                       <span class="pwr__row-icon">
                         <ComponentIcon kind="solar" />
                       </span>
                       <span class="pwr__row-name">{p.struct.title}</span>
-                      {@render solarControl(p)}
+                      {#if !isEditor}{@render solarControl(p)}{/if}
                       <span class="pwr__row-rate"
                             class:pwr__row-rate--zero={isZero(sr.current)}>
-                        <span class="pwr__row-rate-cur">{sp.cMag}</span><span
-                          class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+                        {#if isEditor}
+                          {sp.cMag}<em>{sp.unit}</em>
+                        {:else}
+                          <span class="pwr__row-rate-cur">{sp.cMag}</span><span
+                            class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+                        {/if}
                       </span>
                     </li>
                   {/each}
@@ -655,83 +742,117 @@
               {@const ro = rtgOutput(p)}
               {@const rr = fmtRatePair(ro.current, ro.reference)}
               {@const dr = fmtRate(ro.decline)}
-              <li class="pwr__row pwr__row--storage pwr__row--rtg"
-                  onmouseenter={() => highlightOn([p.struct.id])}
-                  onmouseleave={highlightOff}>
-                <span class="pwr__row-icon">
-                  <ComponentIcon kind="rtg" />
-                </span>
-                <div class="pwr__row-stack">
-                  <div class="pwr__row-line">
-                    <span class="pwr__row-name">{p.struct.title}</span>
-                    <span class="pwr__row-rate"
-                          class:pwr__row-rate--zero={isZero(ro.current)}>
-                      <span class="pwr__row-rate-cur">{rr.cMag}</span><span
-                        class="pwr__row-rate-max">/{rr.mMag}</span><em>{rr.unit}</em>
-                    </span>
+              {#if isEditor}
+                <li class="pwr__row"
+                    onmouseenter={() => highlightOn([p.struct.id])}
+                    onmouseleave={highlightOff}>
+                  <span class="pwr__row-icon">
+                    <ComponentIcon kind="rtg" />
+                  </span>
+                  <span class="pwr__row-name">{p.struct.title}</span>
+                  <span class="pwr__row-rate"
+                        class:pwr__row-rate--zero={isZero(ro.reference)}>
+                    {rr.cMag}<em>{rr.unit}</em>
+                  </span>
+                </li>
+              {:else}
+                <li class="pwr__row pwr__row--storage pwr__row--rtg"
+                    onmouseenter={() => highlightOn([p.struct.id])}
+                    onmouseleave={highlightOff}>
+                  <span class="pwr__row-icon">
+                    <ComponentIcon kind="rtg" />
+                  </span>
+                  <div class="pwr__row-stack">
+                    <div class="pwr__row-line">
+                      <span class="pwr__row-name">{p.struct.title}</span>
+                      <span class="pwr__row-rate"
+                            class:pwr__row-rate--zero={isZero(ro.current)}>
+                        <span class="pwr__row-rate-cur">{rr.cMag}</span><span
+                          class="pwr__row-rate-max">/{rr.mMag}</span><em>{rr.unit}</em>
+                      </span>
+                    </div>
+                    <div class="pwr__row-line pwr__row-line--gauge">
+                      <SegmentGauge fraction={rtgDesignFraction(p)} />
+                      <span class="pwr__rtg-decline"
+                            title="Predicted output loss over the next Kerbin year">
+                        ↓ {dr.mag}<em>{dr.unit}/Ky</em>
+                      </span>
+                    </div>
                   </div>
-                  <div class="pwr__row-line pwr__row-line--gauge">
-                    <SegmentGauge fraction={rtgDesignFraction(p)} />
-                    <span class="pwr__rtg-decline"
-                          title="Predicted output loss over the next Kerbin year">
-                      ↓ {dr.mag}<em>{dr.unit}/Ky</em>
-                    </span>
-                  </div>
-                </div>
-              </li>
+                </li>
+              {/if}
             {:else if isFuelCellPart(p)}
               {@const fc = p.state!.fuelCell[0]}
               {@const fco = fuelCellOutput(p)}
               {@const fcr = fmtRatePair(fco.current, fco.max)}
-              <li class="pwr__row pwr__row--storage pwr__row--fuel-cell"
-                  onmouseenter={() => highlightOn([p.struct.id])}
-                  onmouseleave={highlightOff}>
-                <span class="pwr__row-icon">
-                  <ComponentIcon kind="fuelCell" />
-                </span>
-                <div class="pwr__row-stack">
-                  <div class="pwr__row-line">
-                    <span class="pwr__row-name">{p.struct.title}</span>
-                    <span class="pwr__fc-tag"
-                          class:pwr__fc-tag--on={fc.isActive}
-                          class:pwr__fc-tag--off={!fc.isActive}
-                          title={fc.isActive ? 'Producing — battery SoC below 80%' : 'Standby — battery SoC above 20%'}>
-                      {fc.isActive ? 'ON' : 'OFF'}
-                    </span>
-                    <span class="pwr__row-rate"
-                          class:pwr__row-rate--zero={isZero(fco.current)}>
-                      <span class="pwr__row-rate-cur">{fcr.cMag}</span><span
-                        class="pwr__row-rate-max">/{fcr.mMag}</span><em>{fcr.unit}</em>
-                    </span>
+              {#if isEditor}
+                <li class="pwr__row"
+                    onmouseenter={() => highlightOn([p.struct.id])}
+                    onmouseleave={highlightOff}>
+                  <span class="pwr__row-icon">
+                    <ComponentIcon kind="fuelCell" />
+                  </span>
+                  <span class="pwr__row-name">{p.struct.title}</span>
+                  <span class="pwr__row-rate"
+                        class:pwr__row-rate--zero={isZero(fco.max)}>
+                    {fcr.mMag}<em>{fcr.unit}</em>
+                  </span>
+                </li>
+              {:else}
+                <li class="pwr__row pwr__row--storage pwr__row--fuel-cell"
+                    onmouseenter={() => highlightOn([p.struct.id])}
+                    onmouseleave={highlightOff}>
+                  <span class="pwr__row-icon">
+                    <ComponentIcon kind="fuelCell" />
+                  </span>
+                  <div class="pwr__row-stack">
+                    <div class="pwr__row-line">
+                      <span class="pwr__row-name">{p.struct.title}</span>
+                      <span class="pwr__fc-tag"
+                            class:pwr__fc-tag--on={fc.isActive}
+                            class:pwr__fc-tag--off={!fc.isActive}
+                            title={fc.isActive ? 'Producing — battery SoC below 80%' : 'Standby — battery SoC above 20%'}>
+                        {fc.isActive ? 'ON' : 'OFF'}
+                      </span>
+                      <span class="pwr__row-rate"
+                            class:pwr__row-rate--zero={isZero(fco.current)}>
+                        <span class="pwr__row-rate-cur">{fcr.cMag}</span><span
+                          class="pwr__row-rate-max">/{fcr.mMag}</span><em>{fcr.unit}</em>
+                      </span>
+                    </div>
+                    <div class="pwr__row-line pwr__row-line--gauge">
+                      <span class="pwr__fc-gauge"
+                            class:pwr__fc-gauge--refilling={fc.refillActive}
+                            title="Fuel-cell manifold (LH₂ + LOx mix)">
+                        <SegmentGauge fraction={fc.manifoldFraction} />
+                      </span>
+                    </div>
                   </div>
-                  <div class="pwr__row-line pwr__row-line--gauge">
-                    <span class="pwr__fc-gauge"
-                          class:pwr__fc-gauge--refilling={fc.refillActive}
-                          title="Fuel-cell manifold (LH₂ + LOx mix)">
-                      <SegmentGauge fraction={fc.manifoldFraction} />
-                    </span>
-                  </div>
-                </div>
-              </li>
+                </li>
+              {/if}
             {:else}
               {@const isSolar = isSolarPart(p)}
               {@const s = isSolar ? solarOf(p) : undefined}
               <li class="pwr__row"
-                  class:pwr__row--closed={s && !s.deployed}
+                  class:pwr__row--closed={!isEditor && s && !s.deployed}
                   onmouseenter={() => highlightOn([p.struct.id])}
                   onmouseleave={highlightOff}>
                 <span class="pwr__row-icon">
                   <ComponentIcon kind={genKind(p)} />
                 </span>
                 <span class="pwr__row-name">{p.struct.title}</span>
-                {#if isSolar}{@render solarControl(p)}{/if}
+                {#if isSolar && !isEditor}{@render solarControl(p)}{/if}
                 {#if isSolar}
                   {@const sr = solarRates(p)}
                   {@const sp = fmtRatePair(sr.current, sr.max)}
                   <span class="pwr__row-rate"
                         class:pwr__row-rate--zero={isZero(sr.current)}>
-                    <span class="pwr__row-rate-cur">{sp.cMag}</span><span
-                      class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+                    {#if isEditor}
+                      {sp.cMag}<em>{sp.unit}</em>
+                    {:else}
+                      <span class="pwr__row-rate-cur">{sp.cMag}</span><span
+                        class="pwr__row-rate-max">/{sp.mMag}</span><em>{sp.unit}</em>
+                    {/if}
                   </span>
                 {:else}
                   {@const gr = fmtRate(generationRate(p))}
@@ -767,7 +888,7 @@
       {:else}
         <ul class="pwr__rows">
           {#each consumerRows as row (row.key)}
-            {#if row.kind === 'wheel' && row.wheel}
+            {#if !isEditor && row.kind === 'wheel' && row.wheel}
               {@render wheelRow(row, row.wheel)}
             {:else}
               {@render consumerFlatRow(row)}
@@ -779,23 +900,39 @@
   </div>
 
   <!-- Storage ----------------------------------------------------- -->
+  <!-- In editor mode the section collapses to "what storage exists" —
+       no SoC gauge, no per-row stored / capacity / rate, no aggregate
+       gauge. Batteries always start full at launch and there's no
+       solver running, so any quantitative readout would either be
+       redundant ("100%") or zero. The section header still surfaces
+       the vessel-wide capacity as a single number — that's the design
+       fact worth seeing while balancing sources vs loads. -->
   <div class="pwr__node">
     <button type="button" class="pwr__node-head"
             aria-expanded={expanded.store}
             onclick={() => toggle('store')}>
       {@render chev(expanded.store)}
       <span class="pwr__node-title">STORAGE</span>
-      <span class="pwr__total"
-            class:pwr__total--zero={totals.capacity <= 0}
-            class:pwr__total--hot={totals.capacity > 0}>
-        {storedFmt.sMag}/{storedFmt.cMag}
-        <em>{storedFmt.unit} · {netStorageFmt.mag} {netStorageFmt.unit}</em>
-      </span>
+      {#if isEditor}
+        <span class="pwr__total"
+              class:pwr__total--zero={totals.capacity <= 0}
+              class:pwr__total--hot={totals.capacity > 0}>
+          {storedFmt.cMag}<em>{storedFmt.unit}</em>
+        </span>
+      {:else}
+        <span class="pwr__total"
+              class:pwr__total--zero={totals.capacity <= 0}
+              class:pwr__total--hot={totals.capacity > 0}>
+          {storedFmt.sMag}/{storedFmt.cMag}
+          <em>{storedFmt.unit} · {netStorageFmt.mag} {netStorageFmt.unit}</em>
+        </span>
+      {/if}
     </button>
     <!-- Aggregate gauge stays visible whether or not the children
          are expanded — it's the at-a-glance "vessel power health"
-         line and shouldn't disappear behind a collapsed node. -->
-    {#if storage.current.length > 0}
+         line and shouldn't disappear behind a collapsed node. Skipped
+         in editor mode (always reads "full"). -->
+    {#if !isEditor && storage.current.length > 0}
       <div class="pwr__node-gauge">
         <SegmentGauge fraction={batteryFraction(totals.stored, totals.capacity)} />
       </div>
@@ -803,6 +940,26 @@
     {#if expanded.store}
       {#if storage.current.length === 0}
         {@render emptyMsg('NO BATTERIES')}
+      {:else if isEditor}
+        <ul class="pwr__rows">
+          {#each storage.current as p (p.struct.id)}
+            {@const cap = batteryCapacity(p)}
+            {@const cf = fmtCap(cap)}
+            <li class="pwr__row"
+                onmouseenter={() => highlightOn([p.struct.id])}
+                onmouseleave={highlightOff}>
+              <span class="pwr__row-chev-spacer" aria-hidden="true"></span>
+              <span class="pwr__row-icon">
+                <ComponentIcon kind="battery" />
+              </span>
+              <span class="pwr__row-name">{p.struct.title}</span>
+              <span class="pwr__row-rate"
+                    class:pwr__row-rate--zero={cap <= 0}>
+                {cf.mag}<em>{cf.unit}</em>
+              </span>
+            </li>
+          {/each}
+        </ul>
       {:else}
         <ul class="pwr__rows">
           {#each storage.current as p (p.struct.id)}
@@ -1561,6 +1718,16 @@
     border-color: var(--warn);
     box-shadow: 0 0 4px var(--warn-glow);
     text-shadow: 0 0 4px var(--warn-glow);
+  }
+
+  /* StoredCommands ledger gauge inside a probe row. Sized just narrow
+     enough to live between the part name and the LOAD/rate cluster
+     without forcing the row to grow vertically. */
+  .pwr__cmd-gauge {
+    flex: 0 0 auto;
+    width: 56px;
+    display: inline-flex;
+    align-items: center;
   }
 
   /* Subgroup head wrapper — places the head button and the bulk

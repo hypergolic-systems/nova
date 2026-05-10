@@ -50,9 +50,12 @@ public class CommunicationsNetworkTests {
   }
 
   [TestMethod]
-  public void Solve_AsymmetricAntennas_AsymmetricRates() {
-    // A has the lower-RefSnr (more generous) antenna; A→B scales against
-    // 100, B→A scales against 1600. Different rates expected.
+  public void Solve_AsymmetricAntennas_CollapseToWeakerDirection() {
+    // A has the lower-RefSnr (more generous) antenna; without
+    // symmetrisation A→B scales against 100, B→A against 1600 — yielding
+    // 800 vs 700 bps. BuildGraph collapses to the weaker direction so
+    // the player sees one link bandwidth, matching the gameplay model
+    // where you can't command faster than telemetry confirms.
     var net = new CommunicationsNetwork();
     var aAnt = new Antenna { TxPower = 100, Gain = 10, MaxRate = 1000, RefDistance = 10 };
     var bAnt = new Antenna { TxPower = 400, Gain = 20, MaxRate = 1000, RefDistance = 10 };
@@ -63,17 +66,15 @@ public class CommunicationsNetworkTests {
     var ab = FindLink(g, "A", "B");
     var ba = FindLink(g, "B", "A");
 
-    // SNR(A→B) = 100·10·20 / 400 = 50. RefSnr(A) = 100. Ratio = log(51)/log(101) ≈ 0.852.
-    // Continuous rate ≈ 851.94 bps; quantised to bucket 8 floor = 800.
-    Assert.AreEqual(50, ab.Snr, 1e-9);
-    Assert.AreEqual(800, ab.RateBps, 1e-6);
-
-    // SNR(B→A) = 400·20·10 / 400 = 200. RefSnr(B) = 400·400/100 = 1600. Ratio = log(201)/log(1601) ≈ 0.719.
-    // Continuous rate ≈ 718.94 bps; quantised to bucket 7 floor = 700.
-    Assert.AreEqual(200, ba.Snr, 1e-9);
+    // Both directions report the slower (B→A) bucketed rate.
+    Assert.AreEqual(700, ab.RateBps, 1e-6);
     Assert.AreEqual(700, ba.RateBps, 1e-6);
+    Assert.AreEqual(ab.RateBps, ba.RateBps, 1e-9);
 
-    Assert.AreNotEqual(ab.RateBps, ba.RateBps);
+    // SNR likewise collapses to the smaller of the two (per-direction
+    // SNRs are 50 and 200 respectively).
+    Assert.AreEqual(50, ab.Snr, 1e-9);
+    Assert.AreEqual(50, ba.Snr, 1e-9);
   }
 
   [TestMethod]
