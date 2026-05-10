@@ -121,7 +121,16 @@ impl Component {
 #[derive(Debug, Clone)]
 pub struct Part {
     pub id: u32,
+    /// Prefab name (KSP `AvailablePart.name`, e.g. `"probeCoreCube"`).
+    /// The simulator only uses this for diagnostic logging / lookup;
+    /// Components carry the behavioral data.
     pub name: String,
+    /// Player-facing display title (e.g. `"Probodobodyne RoveMate"`).
+    /// Sourced from KSP's `AvailablePart.title` and surfaced on the
+    /// `nova/vessel-structure/<id>` wire so the UI can label parts
+    /// without a separate KSP→title lookup. Empty when the host
+    /// doesn't supply one (legacy tests, hand-built fixtures).
+    pub display_title: String,
     pub dry_mass_kg: f64,
     pub parent: Option<u32>,
     pub components: Vec<Component>,
@@ -135,6 +144,7 @@ impl Part {
         Part {
             id,
             name: name.into(),
+            display_title: String::new(),
             dry_mass_kg,
             parent: None,
             components: Vec::new(),
@@ -144,6 +154,11 @@ impl Part {
 
     pub fn with_components(mut self, components: Vec<Component>) -> Self {
         self.components = components;
+        self
+    }
+
+    pub fn with_display_title(mut self, title: impl Into<String>) -> Self {
+        self.display_title = title.into();
         self
     }
 }

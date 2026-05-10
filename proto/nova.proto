@@ -166,6 +166,13 @@ message NovaPart {
   BatteryPrefab battery  = 4;
   // Future: EnginePrefab, RcsPrefab, ReactionWheelPrefab,
   // SolarPanelPrefab, FuelCellPrefab, ...
+
+  // Player-facing display title (e.g. "Z-100 Rechargeable Battery
+  // Pack"). Sourced from KSP's `AvailablePart.title` and pushed into
+  // Rust at startup. Surfaces on the `nova/vessel-structure/<id>`
+  // wire so the UI can label parts without owning a separate
+  // KSP→title lookup path. Falls back to `name` when not set.
+  string  display_title  = 5;
 }
 
 message CommandPrefab {

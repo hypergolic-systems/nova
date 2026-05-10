@@ -10,10 +10,12 @@
   // remounted (vessel switch, hud reload). Persisting later is a
   // settings concern, not a view concern.
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaPartEntry } from '../../telemetry/use-nova-parts.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
-  import type { SolarState, CommandState, WheelState } from '../../telemetry/nova-topics';
+  import type {
+    SolarState, CommandState, WheelState, ComponentKindCode,
+  } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
@@ -31,9 +33,32 @@
   }
   const { vesselId }: Props = $props();
 
-  const generators = useNovaPartsByTag(() => vesselId, 'power-gen');
-  const consumers  = useNovaPartsByTag(() => vesselId, 'power-consume');
-  const storage    = useNovaPartsByTag(() => vesselId, 'power-store');
+  // Single subscription to every part on the vessel; per-section
+  // filters select by component kind. PowerView's domain rules:
+  //   generators   = parts with FuelCell ('F') or SolarPanel ('S')
+  //   consumers    = parts with Command ('C'), Wheel ('W'), or Light ('L')
+  //   storage      = parts with Battery ('B')
+  // No wire-level tag taxonomy — these mappings live here, the only
+  // place that knows what "power-gen" means visually.
+  const allParts = useNovaParts(() => vesselId);
+  function hasAnyKind(p: NovaPartEntry, kinds: ComponentKindCode[]): boolean {
+    for (const k of p.struct.componentKinds) if (kinds.includes(k)) return true;
+    return false;
+  }
+  const generatorsArr = $derived(
+    allParts.current.filter((p) => hasAnyKind(p, ['F', 'S'])),
+  );
+  const consumersArr = $derived(
+    allParts.current.filter((p) => hasAnyKind(p, ['C', 'W', 'L'])),
+  );
+  const storageArr = $derived(
+    allParts.current.filter((p) => hasAnyKind(p, ['B'])),
+  );
+  // Preserve the legacy `.current` accessor shape so the templates
+  // and helpers below don't churn.
+  const generators = { get current() { return generatorsArr; } };
+  const consumers  = { get current() { return consumersArr; } };
+  const storage    = { get current() { return storageArr; } };
 
   type NodeKey = 'gen' | 'gen_solar' | 'consume' | 'store';
   let expanded = $state<Record<NodeKey, boolean>>({
@@ -56,7 +81,7 @@
     return expandedRow[key] ?? false;
   }
 
-  function generationRate(p: NovaTaggedPart): number {
+  function generationRate(p: NovaPartEntry): number {
     if (!p.state) return 0;
     let total = 0;
     for (const s of p.state.solar) total += s.rate;
@@ -67,7 +92,7 @@
   // Per-cell sums for the fuel-cell row. A part should only ever
   // hold one fuel cell, but iterate to stay symmetric with the rest
   // of the helpers.
-  function fuelCellOutput(p: NovaTaggedPart): { current: number; max: number } {
+  function fuelCellOutput(p: NovaPartEntry): { current: number; max: number } {
     let current = 0;
     let max = 0;
     if (p.state) {
@@ -82,7 +107,7 @@
   // Solar current+max in one pass — every solar component on a part
   // contributes both. Drives the per-panel and subgroup current/max
   // readout (e.g. "0.50/1.20 kW").
-  function solarRates(p: NovaTaggedPart): { current: number; max: number } {
+  function solarRates(p: NovaPartEntry): { current: number; max: number } {
     let current = 0;
     let max = 0;
     if (p.state) {
@@ -120,7 +145,7 @@
     wheel?: WheelState;
   }
 
-  function buildConsumerRows(p: NovaTaggedPart): ConsumerRow[] {
+  function buildConsumerRows(p: NovaPartEntry): ConsumerRow[] {
     const rows: ConsumerRow[] = [];
     if (!p.state) return rows;
     const partId = p.struct.id;
@@ -173,7 +198,7 @@
   // rate (matches the per-row totals, so summing rows = consumption
   // total). Wheel rows now contribute `busRate` instead of motor
   // power.
-  function consumptionRate(p: NovaTaggedPart): number {
+  function consumptionRate(p: NovaPartEntry): number {
     if (!p.state) return 0;
     let total = 0;
     for (const w of p.state.wheel) total += w.busRate;
@@ -182,21 +207,21 @@
     return total;
   }
 
-  function batteryStored(p: NovaTaggedPart): number {
+  function batteryStored(p: NovaPartEntry): number {
     if (!p.state) return 0;
     let total = 0;
     for (const b of p.state.battery) total += b.soc * b.capacity;
     return total;
   }
 
-  function batteryCapacity(p: NovaTaggedPart): number {
+  function batteryCapacity(p: NovaPartEntry): number {
     if (!p.state) return 0;
     let total = 0;
     for (const b of p.state.battery) total += b.capacity;
     return total;
   }
 
-  function batteryRate(p: NovaTaggedPart): number {
+  function batteryRate(p: NovaPartEntry): number {
     if (!p.state) return 0;
     let total = 0;
     for (const b of p.state.battery) total += b.rate;
@@ -205,20 +230,20 @@
 
   // Per-row icon choice. State-driven when loaded; falls back to the
   // section's dominant kind so first-frame rows aren't iconless.
-  function genKind(p: NovaTaggedPart): ComponentKind {
+  function genKind(p: NovaPartEntry): ComponentKind {
     if (p.state && p.state.fuelCell.length > 0) return 'fuelCell';
     return 'solar';
   }
-  function isSolarPart(p: NovaTaggedPart): boolean {
+  function isSolarPart(p: NovaPartEntry): boolean {
     return !!p.state && p.state.solar.length > 0;
   }
-  function isFuelCellPart(p: NovaTaggedPart): boolean {
+  function isFuelCellPart(p: NovaPartEntry): boolean {
     return !!p.state && p.state.fuelCell.length > 0;
   }
 
   const genGroups = $derived.by(() => {
-    const solar: NovaTaggedPart[] = [];
-    const other: NovaTaggedPart[] = [];
+    const solar: NovaPartEntry[] = [];
+    const other: NovaPartEntry[] = [];
     for (const p of generators.current) {
       (isSolarPart(p) ? solar : other).push(p);
     }
@@ -323,7 +348,7 @@
   const ksp = getKsp();
   const PENDING_TIMEOUT_MS = 4000;
 
-  function solarOf(p: NovaTaggedPart): SolarState | undefined {
+  function solarOf(p: NovaPartEntry): SolarState | undefined {
     return p.state?.solar?.[0];
   }
 
@@ -337,7 +362,7 @@
     return () => window.clearInterval(id);
   });
 
-  function isPending(p: NovaTaggedPart): boolean {
+  function isPending(p: NovaPartEntry): boolean {
     const e = pending[p.struct.id];
     if (!e) return false;
     if (now >= e.deadline) return false;
@@ -354,7 +379,7 @@
 
   // Bulk action across the SOLAR subgroup. Fans out one op per panel
   // matching the source state — extend retracts, retract deployeds.
-  function bulkSetSolarDeployed(parts: NovaTaggedPart[], deployed: boolean): void {
+  function bulkSetSolarDeployed(parts: NovaPartEntry[], deployed: boolean): void {
     for (const p of parts) {
       const s = solarOf(p);
       if (!s) continue;
@@ -366,10 +391,10 @@
 
   // Subgroup-level state — drives the bulk button label and which of
   // EXT-ALL / RET-ALL is offered.
-  function subgroupAnyRetracted(parts: NovaTaggedPart[]): boolean {
+  function subgroupAnyRetracted(parts: NovaPartEntry[]): boolean {
     return parts.some((p) => { const s = solarOf(p); return !!s && !s.deployed; });
   }
-  function subgroupAnyExtendedRetractable(parts: NovaTaggedPart[]): boolean {
+  function subgroupAnyExtendedRetractable(parts: NovaPartEntry[]): boolean {
     return parts.some((p) => {
       const s = solarOf(p);
       return !!s && s.deployed && s.retractable;
@@ -498,7 +523,7 @@
      hasn't flipped yet.
      Click stops propagation so the row's hover-highlight handlers
      stay coherent. -->
-{#snippet solarControl(p: NovaTaggedPart)}
+{#snippet solarControl(p: NovaPartEntry)}
   {@const s = solarOf(p)}
   {#if s}
     {@const busy = isPending(p)}
@@ -532,7 +557,7 @@
      retractable. Mixed states (some retracted, some extended) get
      EXT-ALL — finishing the deploy first matches the typical "I
      need power, deploy everything" intent. -->
-{#snippet solarBulkControl(parts: NovaTaggedPart[])}
+{#snippet solarBulkControl(parts: NovaPartEntry[])}
   {#if subgroupAnyRetracted(parts)}
     <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ext pwr__deploy-btn--bulk"
             aria-label="Extend all retracted solar panels"

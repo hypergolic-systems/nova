@@ -44,6 +44,7 @@ fn main() {
         .input_extern_file("src/arena.rs")
         .input_extern_file("src/state/battery.rs")
         .input_extern_file("src/state/command.rs")
+        .input_extern_file("src/topic.rs")
         .csharp_dll_name("nova_ksp")
         .csharp_namespace("Nova.Ffi.Generated")
         .csharp_class_name("NovaNative")

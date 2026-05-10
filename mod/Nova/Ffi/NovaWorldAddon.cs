@@ -174,4 +174,42 @@ public sealed unsafe class NovaWorldAddon : MonoBehaviour {
         meanAnomalyAtEpoch, epoch, bodyIndex);
     if (rc != 0) NovaLog.LogError($"nova_vessel_set_situation_orbit({vesselId}) rc={rc}");
   }
+
+  /// <summary>
+  /// Add a refcount on the topic and return a stable pointer to the
+  /// Rust-side buffer (16-byte header + payload) — subscribers use
+  /// it directly to read the version and payload without any
+  /// per-frame FFI traffic. Buffer layout:
+  ///
+  /// <code>
+  /// offset  0..8   version (u64) — bumps on payload change
+  /// offset  8..12  len     (u32) — current payload byte length
+  /// offset 12..16  cap     (u32) — payload capacity
+  /// offset 16..    payload bytes
+  /// </code>
+  ///
+  /// The pointer stays valid until the matching
+  /// <see cref="UnsubscribeTopic"/> drops the refcount to zero.
+  /// Returns <c>null</c> on null name / uninitialised world.
+  /// </summary>
+  public byte* SubscribeTopic(string name) {
+    if (!_initialized || _world == null || string.IsNullOrEmpty(name)) return null;
+    var bytes = System.Text.Encoding.UTF8.GetBytes(name);
+    fixed (byte* p = bytes) {
+      return NovaNative.nova_topic_subscribe(_world, p, (uint)bytes.Length);
+    }
+  }
+
+  /// <summary>
+  /// Drop a refcount. Returns the remaining refcount; the buffer
+  /// is freed when it hits zero (caller must drop the pointer it
+  /// previously held).
+  /// </summary>
+  public uint UnsubscribeTopic(string name) {
+    if (!_initialized || _world == null || string.IsNullOrEmpty(name)) return 0;
+    var bytes = System.Text.Encoding.UTF8.GetBytes(name);
+    fixed (byte* p = bytes) {
+      return NovaNative.nova_topic_unsubscribe(_world, p, (uint)bytes.Length);
+    }
+  }
 }

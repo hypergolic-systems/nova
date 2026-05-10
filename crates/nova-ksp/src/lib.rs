@@ -27,11 +27,13 @@
 pub mod arena;
 pub mod proto;
 pub mod state;
+pub mod topic;
 pub mod vessel;
 pub mod world;
 
 pub use arena::{ComponentKind, ComponentSlot};
 pub use state::{BatteryState, CommandState};
+pub use topic::{nova_topic_subscribe, nova_topic_unsubscribe};
 pub use vessel::{nova_vessel_new, nova_vessel_remove, VesselHandle};
 pub use world::{
     nova_world_create, nova_world_destroy, nova_world_set_part_database, nova_world_tick,

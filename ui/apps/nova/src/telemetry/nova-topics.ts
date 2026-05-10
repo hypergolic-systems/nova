@@ -1,40 +1,31 @@
 // Nova-specific telemetry topic types.
 //
-// Wire types are positional tuples that mirror the JSON emitted by
-// the C# topics. Three per-part topics live alongside the structure
-// topic:
-//   NovaPart/<id>     → resources + virtual-component view
+// Wire types are positional tuples that mirror the JSON the live
+// broadcaster emits. Three per-part topics live alongside the
+// structure topic:
+//   nova/part/<id>    → component view (Rust-served via nova-telemetry)
 //   NovaScience/<id>  → instrument capabilities + experiment frames
 //   NovaStorage/<id>  → DataStorage counters + inline file list
 // UI types are clean named objects; `decodeStructure`, `decodePart`,
 // `decodeScience`, `decodeStorage` translate at the boundary so
 // Svelte components only see the friendly shape.
+//
+// `nova/part/*` is sourced from the Rust simulator (FFI-served bytes
+// spliced through Dragonglass's broadcaster). The legacy upper-case
+// `NovaPart/<id>` topic was retired with the C# emitter; callers
+// auto-pick up the new wire name through the `NovaPartTopic` factory
+// below. Science / Storage migrate alongside their nova-sim ports.
 
 import { topic, type Topic } from '@dragonglass/telemetry/core';
 
-// ---------- System tags ----------------------------------------
-
-// Mirrors `Nova.Core.Components.SystemTags` constants. Keep in sync
-// — a typo here makes a part silently disappear from a view.
-export type SystemTag =
-  | 'power-gen'
-  | 'power-consume'
-  | 'power-store'
-  | 'propulsion'
-  | 'rcs'
-  | 'attitude'
-  | 'storage'
-  | 'science-instrument'
-  | 'science-storage';
-
 // ---------- Wire (frame) types ---------------------------------
 
-export type NovaResourceFrame = [
-  resourceId: string,
-  amount: number,
-  capacity: number,
-  rate: number,
-];
+// Single-character component-kind prefix. Matches the leading slot
+// of every component frame in `nova/part/{id}` and the per-part
+// `componentKinds` list in `nova/vessel-structure/{guid}`. Views
+// understand which kinds they care about and filter parts by
+// looking at this list — no wire-level tag taxonomy.
+export type ComponentKindCode = 'B' | 'C' | 'F' | 'S' | 'E' | 'T' | 'M' | 'W' | 'L';
 
 // One named tuple per kind so visualization code can import the
 // specific frame type it cares about without re-narrowing the union.
@@ -164,9 +155,18 @@ export type NovaComponentFrame =
   | NovaCommandFrame
   | NovaFuelCellFrame;
 
+// nova/part/<id> wire frame.
+//
+// Two-element positional array: [partId, components]. Each component
+// frame self-describes any buffer state it owns (Battery's "B" frame
+// includes contents/capacity/rate; FuelCell's "F" frame includes the
+// manifold fraction). The legacy `[partId, resources, components]`
+// shape duplicated buffer state across both lists; the new shape
+// drops the resources slot and the decoder derives `NovaPart.resources`
+// from buffer-bearing component frames so existing consumers keep
+// working unchanged.
 export type NovaPartFrame = [
   partId: string,
-  resources: NovaResourceFrame[],
   components: NovaComponentFrame[],
 ];
 
@@ -190,7 +190,7 @@ export type NovaPartStructFrame = [
   partName: string,    // KSP internal name (e.g. "solarPanels3")
   partTitle: string,   // player-facing display title (e.g. "OX-STAT Photovoltaic Panels")
   parentId: string | null,
-  tags: SystemTag[],
+  componentKinds: ComponentKindCode[],
 ];
 
 export type NovaVesselStructureFrame = [
@@ -200,19 +200,6 @@ export type NovaVesselStructureFrame = [
 ];
 
 // ---------- UI-facing types ------------------------------------
-
-export interface NovaResourceFlow {
-  /** Canonical resource name as registered in Nova.Core.Resources
-   *  (e.g. "Electric Charge", "Liquid Hydrogen"). The UI maps this to
-   *  a short code via `resource-codes.ts` for in-row display. */
-  resourceId: string;
-  /** Current units stored. */
-  amount: number;
-  /** Maximum units (>0 — zero-capacity buffers are filtered upstream). */
-  capacity: number;
-  /** Live flow rate in units/s; positive = filling, negative = draining. */
-  rate: number;
-}
 
 export interface SolarState {
   /** Actual EC/s output last tick — LP-throttled by demand. Drops to
@@ -442,9 +429,14 @@ export interface FuelCellState {
   refillActive: boolean;
 }
 
+// Component frames are the only source of per-part state on the
+// wire — components self-describe any buffers they own (Battery's
+// "B" frame carries contents/capacity/rate; future Tank frames will
+// carry their own per-buffer state). Views that want a "resources
+// on this part" view derive it from the component arrays they care
+// about (see ResourceView for the canonical example).
 export interface NovaPart {
   id: string;
-  resources: NovaResourceFlow[];
   solar: SolarState[];
   battery: BatteryState[];
   wheel: WheelState[];
@@ -492,7 +484,11 @@ export interface NovaPartStruct {
    *  by `shortenPartTitle` so rows stay readable. */
   title: string;
   parentId: string | null;
-  tags: SystemTag[];
+  /** Component kind codes present on this part — matches the leading
+   *  slot of every component frame in `nova/part/{id}`. Views filter
+   *  parts by inspecting which kinds they care about (PowerView wants
+   *  `B` / `C` / `F` / `S`; ResourceView wants `B` / `T`; …). */
+  componentKinds: ComponentKindCode[];
 }
 
 export interface NovaVesselStructure {
@@ -503,10 +499,13 @@ export interface NovaVesselStructure {
 
 // ---------- Topic factories ------------------------------------
 
+// Wire name: `nova/vessel-structure/<persistentId>`. Served by the
+// Rust simulator (crates/nova-telemetry/src/topics/vessel_structure.rs).
+// `vesselId` is the KSP `Vessel.persistentId` as a string.
 export const NovaVesselStructureTopic = (
   vesselId: string,
 ): Topic<NovaVesselStructureFrame> =>
-  topic<NovaVesselStructureFrame>(`NovaVesselStructure/${vesselId}`);
+  topic<NovaVesselStructureFrame>(`nova/vessel-structure/${vesselId}`);
 
 /**
  * Inbound ops the UI can fire at a per-part NovaPart topic. Keep in
@@ -544,8 +543,13 @@ export interface NovaPartOps {
   setCommandTestLoad(active: boolean): void;
 }
 
+// Wire name: `nova/part/<persistentId>`. The C# delegate
+// (mod/Nova/Telemetry/NovaPartTopic.cs) reads pre-serialized JSON
+// from the Rust simulator and forwards through Dragonglass's
+// broadcaster — see crates/nova-telemetry/src/topics/part.rs for
+// the Rust serializer.
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
-  topic<NovaPartFrame, NovaPartOps>(`NovaPart/${partId}`);
+  topic<NovaPartFrame, NovaPartOps>(`nova/part/${partId}`);
 
 /**
  * Inbound ops the UI can fire at a NovaScience topic. Keep in sync
@@ -872,26 +876,20 @@ export function decodeStructure(
   return {
     vesselId,
     name,
-    parts: parts.map(([id, partName, partTitle, parentId, tags]) => ({
+    parts: parts.map(([id, partName, partTitle, parentId, componentKinds]) => ({
       id,
       name: partName,
       title: shortenPartTitle(partTitle),
       parentId,
-      tags,
+      componentKinds,
     })),
   };
 }
 
 export function decodePart(f: NovaPartFrame): NovaPart {
-  const [id, resources, components] = f;
+  const [id, components] = f;
   const out: NovaPart = {
     id,
-    resources: resources.map(([resourceId, amount, capacity, rate]) => ({
-      resourceId,
-      amount,
-      capacity,
-      rate,
-    })),
     solar: [],
     battery: [],
     wheel: [],

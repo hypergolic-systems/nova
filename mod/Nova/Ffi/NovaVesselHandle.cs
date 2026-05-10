@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Nova.Ffi.Generated;
 
 namespace Nova.Ffi;
@@ -22,6 +23,7 @@ public sealed unsafe class NovaVesselHandle : IDisposable {
   private VesselHandle _raw;
   // (part_id × kind tag) → byte pointer into the arena.
   private readonly Dictionary<(uint partId, uint kind), IntPtr> _slots;
+  private readonly Guid _guid;
   private bool _disposed;
 
   internal NovaVesselHandle(NovaWorld* world, VesselHandle raw) {
@@ -34,14 +36,33 @@ public sealed unsafe class NovaVesselHandle : IDisposable {
       IntPtr ptr = (IntPtr)(raw.ArenaBase + slot.StateOffset);
       _slots[(slot.PartId, slot.Kind)] = ptr;
     }
+
+    // Decode the Rust-assigned GUID once at construction. KSP's
+    // ShipConstruction.AssembleForLaunch will call Guid.NewGuid()
+    // for `vessel.id`; a Harmony patch reads `Guid` here and
+    // overrides that with the simulator-assigned value so both
+    // sides agree on identity.
+    if (raw.GuidPtr != null && raw.GuidLen > 0) {
+      var s = Encoding.UTF8.GetString(raw.GuidPtr, (int)raw.GuidLen);
+      _guid = Guid.TryParse(s, out var g) ? g : Guid.Empty;
+    } else {
+      _guid = Guid.Empty;
+    }
   }
 
   /// <summary>
-  /// Vessel id (mirrors KSP's <c>vessel.id.GetHashCode()</c> or
-  /// however the C# side keys vessels — exact mapping decided when
-  /// <c>NovaVesselModule</c> wiring lands).
+  /// Vessel persistent id (KSP's uint <c>persistentId</c>).
   /// </summary>
   public uint VesselId => _raw.VesselId;
+
+  /// <summary>
+  /// Vessel GUID assigned by the Rust simulator at registration.
+  /// For VAB launches, Rust mints a fresh v4 UUID; for save loads
+  /// the proto carries the persisted GUID. Either way KSP's
+  /// <c>Vessel.id</c> is forced to this value via Harmony so both
+  /// halves of Nova see the same identity.
+  /// </summary>
+  public Guid Guid => _guid;
 
   /// <summary>
   /// Typed <c>ref</c> into the arena slot for <c>(partFlightId,

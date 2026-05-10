@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use nova_sim::{Body, World};
+use nova_telemetry::TopicRegistry;
 use prost::Message;
 
 use crate::proto;
@@ -14,12 +15,15 @@ use crate::vessel::FfiVessel;
 /// - The per-vessel `FfiVessel` map (mirror arenas + slot manifests).
 /// - The prefab `PartDatabase` (`name → NovaPart`) used at vessel-add
 ///   time to discover which components a part contributes.
+/// - The telemetry topic registry — refcounted snapshot buffers
+///   for the `nova/*` topic family.
 ///
 /// Layout is opaque to C#: callers only ever see `*mut NovaWorld`.
 pub struct NovaWorld {
     pub(crate) world: World,
     pub(crate) ffi_vessels: HashMap<u32, FfiVessel>,
     pub(crate) part_db: HashMap<String, proto::NovaPart>,
+    pub(crate) topic_registry: TopicRegistry,
 }
 
 impl NovaWorld {
@@ -32,6 +36,7 @@ impl NovaWorld {
             world: World::builder().bodies(kerbol_bodies()).build(),
             ffi_vessels: HashMap::new(),
             part_db: HashMap::new(),
+            topic_registry: TopicRegistry::new(),
         }
     }
 }
@@ -107,4 +112,7 @@ pub unsafe extern "C" fn nova_world_tick(world: *mut NovaWorld, target_ut: f64) 
     for fv in w.ffi_vessels.values_mut() {
         fv.write_outputs(&w.world);
     }
+    // Refresh every active topic's snapshot. Pointers handed out by
+    // `nova_topic_get_payload` stay valid until the next tick.
+    w.topic_registry.refresh(&w.world);
 }

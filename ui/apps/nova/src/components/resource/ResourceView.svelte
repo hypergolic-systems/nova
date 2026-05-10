@@ -23,9 +23,9 @@
   // misleading. Aggregate rate appears once at the resource level
   // where it physically maps to the LP solution.
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaResourceFlow } from '../../telemetry/nova-topics';
+  import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaPartEntry } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaPart, ComponentKindCode } from '../../telemetry/nova-topics';
   import { useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
@@ -36,12 +36,47 @@
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
 
+  // Per-part resource view, derived from buffer-bearing component
+  // frames. Battery contributes one ElectricCharge flow; future Tank
+  // ports will contribute one entry per propellant in the mix. Lives
+  // here (not in `decodePart`) because "what is a resource on this
+  // part" is a presentation-level question — the wire ships only
+  // self-describing component frames per the design rule.
+  interface ResourceFlow {
+    resourceId: string;
+    amount: number;
+    capacity: number;
+    rate: number;
+  }
+
+  function partFlows(p: NovaPart): ResourceFlow[] {
+    const out: ResourceFlow[] = [];
+    for (const b of p.battery) {
+      out.push({
+        resourceId: 'ElectricCharge',
+        amount: b.soc * b.capacity,
+        capacity: b.capacity,
+        rate: b.rate,
+      });
+    }
+    return out;
+  }
+
   interface Props {
     vesselId: string;
   }
   const { vesselId }: Props = $props();
 
-  const parts = useNovaPartsByTag(() => vesselId, 'storage');
+  // Resource view = parts whose components own a buffer. Today
+  // that's Battery ('B'); when Tank ports it'll add 'T'. Filter
+  // happens here, not on the wire.
+  const STORAGE_KINDS: ComponentKindCode[] = ['B', 'T'];
+  const allParts = useNovaParts(() => vesselId);
+  const partsArr = $derived(
+    allParts.current.filter((p) =>
+      p.struct.componentKinds.some((k) => STORAGE_KINDS.includes(k))),
+  );
+  const parts = { get current() { return partsArr; } };
 
   let byResource = $state(false);
 
@@ -59,9 +94,23 @@
     resCollapsed[id] = !resCollapsed[id];
   };
 
-  const partsWithResources = $derived.by<NovaTaggedPart[]>(() =>
-    parts.current.filter((p) => (p.state?.resources?.length ?? 0) > 0),
-  );
+  // Per-part flow cache. Computed once per render in `partsWithResources`
+  // so the by-part summary, the by-part rows, and the by-resource
+  // groups all read the same `partFlows` shape — no double-walking
+  // of `state.battery` etc. on each render.
+  interface TaggedPartWithFlows {
+    part: NovaPartEntry;
+    flows: ResourceFlow[];
+  }
+  const partsWithResources = $derived.by<TaggedPartWithFlows[]>(() => {
+    const out: TaggedPartWithFlows[] = [];
+    for (const p of parts.current) {
+      if (!p.state) continue;
+      const flows = partFlows(p.state);
+      if (flows.length > 0) out.push({ part: p, flows });
+    }
+    return out;
+  });
 
   // Pick a kind icon for the part. Battery if its only resource is
   // electric charge (Z-100s, the EC slot of a probe core); tank for
@@ -69,28 +118,25 @@
   // fuel as well as EC). Falls back to tank during the brief window
   // where state hasn't loaded — better than no icon, and correct for
   // the common "has fuel" case.
-  function partKind(p: NovaTaggedPart): ComponentKind {
-    const rs = p.state?.resources;
-    if (!rs || rs.length === 0) return 'tank';
-    for (const r of rs) {
-      if (r.resourceId !== 'Electric Charge' && r.resourceId !== 'ElectricCharge') {
-        return 'tank';
-      }
-    }
+  function partKind(state: NovaPart | undefined): ComponentKind {
+    if (!state || state.battery.length === 0) return 'tank';
+    // Future: when Tank ports, return 'tank' if any tank has a non-EC
+    // buffer. Today only Battery surfaces a flow, so a populated
+    // state with only batteries is a battery part.
     return 'battery';
   }
 
   interface ResourceGroup {
     resourceId: string;
-    entries: { part: NovaTaggedPart; flow: NovaResourceFlow }[];
+    entries: { part: NovaPartEntry; flow: ResourceFlow }[];
     totalAmount: number;
     totalCapacity: number;
     totalRate: number;
   }
   const resourceGroups = $derived.by<ResourceGroup[]>(() => {
     const groups = new Map<string, ResourceGroup>();
-    for (const p of partsWithResources) {
-      for (const flow of p.state!.resources) {
+    for (const { part, flows } of partsWithResources) {
+      for (const flow of flows) {
         let g = groups.get(flow.resourceId);
         if (!g) {
           g = {
@@ -102,7 +148,7 @@
           };
           groups.set(flow.resourceId, g);
         }
-        g.entries.push({ part: p, flow });
+        g.entries.push({ part, flow });
         g.totalAmount += flow.amount;
         g.totalCapacity += flow.capacity;
         g.totalRate += flow.rate;
@@ -212,7 +258,7 @@
     {#if partsWithResources.length === 0}
       {@render emptyMsg('NO STORAGE')}
     {:else}
-      {#each partsWithResources as p (p.struct.id)}
+      {#each partsWithResources as { part: p, flows } (p.struct.id)}
         {@const open = isPartExpanded(p.struct.id)}
         <div class="rsv__node">
           <button
@@ -225,11 +271,11 @@
           >
             {@render chev(open)}
             <span class="rsv__node-icon">
-              <ComponentIcon kind={partKind(p)} />
+              <ComponentIcon kind={partKind(p.state)} />
             </span>
             <span class="rsv__node-title">{p.struct.title}</span>
             <span class="rsv__node-summary">
-              {#each p.state!.resources as r, i (r.resourceId)}
+              {#each flows as r, i (r.resourceId)}
                 {#if i > 0}<span class="rsv__node-summary-sep">·</span>{/if}
                 <span
                   class="rsv__node-summary-code"
@@ -240,7 +286,7 @@
           </button>
           {#if open}
             <ul class="rsv__rows">
-              {#each p.state!.resources as r (r.resourceId)}
+              {#each flows as r (r.resourceId)}
                 {@const m = resourceMeta(r.resourceId)}
                 {@const frac = fillFraction(r.amount, r.capacity)}
                 {@const ap = fmtAmountPair(r.amount, r.capacity, m.unit)}
@@ -326,7 +372,7 @@
                     onmouseenter={() => highlightOn([e.part.struct.id])}
                     onmouseleave={highlightOff}>
                   <span class="rsv__row-icon">
-                    <ComponentIcon kind={partKind(e.part)} />
+                    <ComponentIcon kind={partKind(e.part.state)} />
                   </span>
                   <span class="rsv__row-name">{e.part.struct.title}</span>
                   <!-- Unit is implicit from the parent resource header

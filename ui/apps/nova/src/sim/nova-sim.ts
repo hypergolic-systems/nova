@@ -2,7 +2,7 @@
 // `SimulatedKsp` (so the navball / staging / PAW continue to work
 // against the Dragonglass fixtures), but intercepts subscriptions to
 // the Nova-prefixed topics — `NovaVesselStructure/<id>`,
-// `NovaPart/<id>`, `NovaScience/<id>`, `NovaStorage/<id>` — and
+// `nova/part/<id>`, `NovaScience/<id>`, `NovaStorage/<id>` — and
 // emits canned frames so the SCI / PWR / RES views have something
 // to render in the browser.
 //
@@ -35,8 +35,8 @@ import type {
 // on the SimulatedKsp class, but the value is stable across DG versions.
 const SIM_VESSEL_ID = 'sim-vessel';
 
-const VESSEL_STRUCT_PREFIX = 'NovaVesselStructure/';
-const PART_PREFIX     = 'NovaPart/';
+const VESSEL_STRUCT_PREFIX = 'nova/vessel-structure/';
+const PART_PREFIX     = 'nova/part/';
 const SCIENCE_PREFIX  = 'NovaScience/';
 const STORAGE_PREFIX  = 'NovaStorage/';
 
@@ -96,8 +96,9 @@ interface PartFixture {
   name: string;       // KSP internal part name
   title: string;      // Player-facing
   parentId: string | null;
-  tags: NovaPartStructFrame[4];
-  /** Resources + virtual-component view — published on NovaPart/<id>. */
+  componentKinds: NovaPartStructFrame[4];
+  /** Component frames — published on nova/part/<id>. Resources are
+   *  derived in the decoder from buffer-bearing component frames. */
   build: () => NovaComponentFrame[];
   /** Optional science payload — published on NovaScience/<id> if set. */
   buildScience?: () => ScienceBody;
@@ -349,7 +350,7 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'mk1pod_v2',
     title: 'Mk1 Command Pod',
     parentId: null,
-    tags: ['power-store', 'power-consume', 'science-storage'],
+    componentKinds: ['B', 'C'],
     build: () => [
       // Battery: 50% SoC, slow drain.
       ['B', 0.5, 200, -0.4],
@@ -369,7 +370,7 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'sensorThermometer',
     title: '2HOT Thermometer',
     parentId: '5001',
-    tags: ['power-consume', 'science-instrument'],
+    componentKinds: [],
     build: () => [],   // no resources / components — pure instrument
     buildScience: buildThermometerScience,
   },
@@ -378,7 +379,7 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'probeCoreOcto_v2',
     title: 'OKTO2 Probe Core',
     parentId: '5001',
-    tags: ['power-consume', 'science-storage'],
+    componentKinds: ['C'],
     build: () => [
       // Command idle draw.
       ['C', 0.02, 0, 0, 0],
@@ -520,7 +521,7 @@ export class NovaSimulatedKsp implements Ksp {
 
   private vesselStructureFrame(): NovaVesselStructureFrame {
     const parts: NovaPartStructFrame[] = FIXTURE_PARTS.map((p) => [
-      p.id, p.name, p.title, p.parentId, p.tags as never,
+      p.id, p.name, p.title, p.parentId, p.componentKinds as never,
     ]);
     return [SIM_VESSEL_ID, FIXTURE_VESSEL_NAME, parts];
   }
@@ -528,7 +529,7 @@ export class NovaSimulatedKsp implements Ksp {
   private partFrame(partId: string): NovaPartFrame | undefined {
     const p = FIXTURE_PARTS.find((q) => q.id === partId);
     if (!p) return undefined;
-    return [partId, [], p.build()];
+    return [partId, p.build()];
   }
 
   private scienceFrame(partId: string): NovaScienceFrame | undefined {

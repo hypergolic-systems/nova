@@ -114,6 +114,16 @@ pub struct VesselHandle {
     pub ArenaLen: u32,
     pub SlotCount: u32,
     pub SlotsPtr: *const ComponentSlot,
+    /// Pointer to the vessel's GUID string (e.g.
+    /// `"01d76ab5-6d88-4105-b7ae-504d77b978c1"`, lowercase, no
+    /// braces). Stable until the matching `nova_vessel_remove` —
+    /// the simulator never reassigns a vessel's GUID after creation.
+    /// C# reads this once at registration and assigns it to
+    /// `Vessel.id` via a Harmony patch on
+    /// `ShipConstruction.AssembleForLaunch`, replacing KSP's
+    /// would-be `Guid.NewGuid()`.
+    pub GuidPtr: *const u8,
+    pub GuidLen: u32,
 }
 
 impl VesselHandle {
@@ -123,6 +133,8 @@ impl VesselHandle {
         ArenaLen: 0,
         SlotCount: 0,
         SlotsPtr: std::ptr::null(),
+        GuidPtr: std::ptr::null(),
+        GuidLen: 0,
     };
 }
 
@@ -195,7 +207,18 @@ pub unsafe extern "C" fn nova_vessel_new(
     };
 
     let name = state.name.clone();
-    let mut vessel = Vessel::new(vessel_id, name, situation);
+    // Rust owns vessel GUIDs. Save loads carry one in the proto;
+    // editor launches send empty and we mint a fresh v4 here. C#
+    // reads the assigned GUID back through `VesselHandle.GuidPtr`
+    // and overrides KSP's `Guid.NewGuid()` (via Harmony on
+    // `ShipConstruction.AssembleForLaunch`) so KSP and the
+    // simulator agree from the start.
+    let guid = if structure.vessel_id.is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        structure.vessel_id.clone()
+    };
+    let mut vessel = Vessel::new(vessel_id, name, situation).with_guid(guid);
 
     // Walk parts, build components from PartStructure + PartState +
     // prefab database lookup.
@@ -205,13 +228,15 @@ pub unsafe extern "C" fn nova_vessel_new(
     let mut plan = ArenaPlan::new();
 
     for ps in &structure.parts {
-        let prefab_mass = w
-            .part_db
-            .get(&ps.part_name)
-            .map(|n| n.dry_mass_kg)
-            .unwrap_or(0.0);
+        let prefab = w.part_db.get(&ps.part_name);
+        let prefab_mass = prefab.map(|n| n.dry_mass_kg).unwrap_or(0.0);
+        let display_title = prefab
+            .map(|n| n.display_title.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| ps.part_name.clone());
 
         vessel.add_part(ps.id, ps.part_name.clone(), prefab_mass, Vec::new());
+        vessel.part_mut(ps.id).display_title = display_title;
         if ps.parent_index >= 0 {
             let parent_idx = ps.parent_index as usize;
             if parent_idx < structure.parts.len() {
@@ -220,7 +245,6 @@ pub unsafe extern "C" fn nova_vessel_new(
             }
         }
 
-        let prefab = w.part_db.get(&ps.part_name);
         let part_state = state_by_id.get(&ps.id).copied();
 
         // Battery — capacity comes from PartStructure (editor
@@ -286,12 +310,27 @@ pub unsafe extern "C" fn nova_vessel_new(
     v_mut.initialize_solver(&ctx, ut);
     fv.write_outputs(&w.world);
 
+    // Borrow the (now-immutable) Vessel.guid to expose its bytes
+    // through the handle. `vessel.guid` is a `String` we set above
+    // and never reassign; its allocation moves only on Vec
+    // reallocation, which doesn't happen between the push above
+    // and the read here.
+    let v_ref = w
+        .world
+        .vessels
+        .iter()
+        .find(|v| v.id == vessel_id)
+        .unwrap();
+    let guid_bytes = v_ref.guid.as_bytes();
+
     let handle = VesselHandle {
         VesselId: structure.persistent_id,
         ArenaBase: fv.arena_base(),
         ArenaLen: fv.arena_len(),
         SlotCount: fv.slots().len() as u32,
         SlotsPtr: fv.slots().as_ptr(),
+        GuidPtr: guid_bytes.as_ptr(),
+        GuidLen: guid_bytes.len() as u32,
     };
 
     w.ffi_vessels.insert(structure.persistent_id, fv);

@@ -1,0 +1,13 @@
+[package]
+name = "nova-telemetry"
+description = "Topic registry, snapshot buffers, and per-topic JSON serializers for Nova. Reads &World; never extern \"C\". The transport (DG WS in production, tokio-tungstenite in nova-stand, wasm-bindgen in browser) lives outside this crate — nova-telemetry only owns the bytes."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+nova-sim = { path = "../nova-sim" }
+
+[dev-dependencies]
+approx = "0.5"

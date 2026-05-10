@@ -39,6 +39,12 @@ pub struct VesselId(pub u32);
 pub struct Vessel {
     pub id: VesselId,
     pub name: String,
+    /// Stable host-supplied GUID identity (KSP `Vessel.id.ToString("D")`).
+    /// Empty for tests / fixtures that don't supply one. Used as the
+    /// wire key for vessel-scoped telemetry topics so the UI can
+    /// subscribe with the same GUID Dragonglass's `flight.vesselId`
+    /// already exposes.
+    pub guid: String,
     pub situation: Situation,
     pub parts: Vec<Part>,
     pub systems: Option<VesselSystems>,
@@ -50,11 +56,17 @@ impl Vessel {
         Vessel {
             id,
             name: name.into(),
+            guid: String::new(),
             situation,
             parts: Vec::new(),
             systems: None,
             solar: None,
         }
+    }
+
+    pub fn with_guid(mut self, guid: impl Into<String>) -> Self {
+        self.guid = guid.into();
+        self
     }
 
     /// Convenience constructor for `Situation::Orbit`. Most callers want

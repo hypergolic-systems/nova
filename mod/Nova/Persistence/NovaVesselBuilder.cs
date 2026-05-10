@@ -184,6 +184,7 @@ public static class NovaVesselBuilder {
       var entry = new Proto.NovaPart {
         Name = info.name,
         DryMassKg = (info.partPrefab?.mass ?? 0) * 1000.0,
+        DisplayTitle = info.title ?? info.name,
       };
 
       foreach (var moduleNode in info.partConfig.GetNodes("MODULE")) {

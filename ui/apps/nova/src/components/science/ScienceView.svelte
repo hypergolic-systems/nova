@@ -13,8 +13,8 @@
   import {
     useNovaScienceByTag,
     useNovaStorageByTag,
-  } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTagged } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaTagged } from '../../telemetry/use-nova-parts.svelte';
   import { NovaScienceTopic } from '../../telemetry/nova-topics';
   import type {
     ScienceFile,
