@@ -433,7 +433,7 @@ const FIXTURE_PARTS: PartFixture[] = [
       // Battery: 50% SoC, slow drain.
       ['B', 0.5, 200, -0.4],
       // Command idle draw.
-      ['C', 0.05, 0, 0, 0],
+      ['C', 0.05, 0, 0, 0, 0.05],
     ],
     // Small science drive — holds the atm-profile files.
     buildStorage: () => [
@@ -460,7 +460,7 @@ const FIXTURE_PARTS: PartFixture[] = [
     tags: ['power-consume', 'science-storage'],
     build: () => [
       // Command idle draw.
-      ['C', 0.02, 0, 0, 0],
+      ['C', 0.02, 0, 0, 0, 0.02],
     ],
     // Larger drive on the probe core — holds the LTS files.
     buildStorage: () => [

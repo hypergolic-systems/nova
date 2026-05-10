@@ -68,7 +68,7 @@ namespace Nova.Telemetry;
 //   ["P", idleRate, testLoadRate, testLoadMaxRate, testLoadActive, idleRated,
 //          sasLevel,
 //          commandBytes, commandCapacityBytes,
-//          commandRefillBps, commandDecayBps]                                      Probe
+//          commandRefillBps, commandDecayBps, commandConsumeBps]                   Probe
 //   ["R", currentRate, currentPower, referencePower,
 //          declineWattsPerKerbinYear,
 //          wasteHeatW, exportW, rejectionW,
@@ -490,6 +490,7 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, probe.CommandCapacityBytes, ref f);
         WriteNum(sb, probe.CommandRefillBps, ref f);
         WriteNum(sb, probe.CommandDecayBps, ref f);
+        WriteNum(sb, probe.CommandConsumeBps, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

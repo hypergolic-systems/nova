@@ -263,6 +263,12 @@ public class NovaCommunicationsAddon : MonoBehaviour {
       NovaLog.Log($"[Comms] solve: {sw.Elapsed.TotalMilliseconds:F3}ms ({Network.Endpoints.Count} ep, {Network.Graph.Links.Count} links) | next in {maxDt:F1}s");
     }
 
+    // SNR varies continuously with distance, but the bucket-quantised
+    // rate fields only change at discrete transitions. Above the top
+    // bucket, no transition fires and the cached SNR freezes. Refresh
+    // it independently every FixedUpdate so the dB readout tracks live.
+    Network.RefreshHomeDirectSnrs(kscEndpoint, ut);
+
     if (ut - lastLogUT < LogIntervalSeconds) return;
     lastLogUT = ut;
 

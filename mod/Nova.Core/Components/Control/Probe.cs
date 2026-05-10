@@ -53,6 +53,14 @@ public class Probe : VirtualComponent {
   public double CommandBaselineUT;      // lerp anchor UT (persisted)
   public double CommandRefillBps;       // most recent comms allocation (runtime)
 
+  // Live consumption rate (B/s) — what control inputs are *asking* the
+  // ledger to spend right now. Set by NovaVesselModule per FixedUpdate
+  // before the TrySpendCommands gate runs, so the wire reflects intent
+  // even when the gate denies (empty buffer + held stick = high
+  // consume reading, zero actual deduction). Not folded into the lerp:
+  // spending is discrete via TrySpendCommands, not rate-baselined.
+  public double CommandConsumeBps;
+
   private double CommandClockUT => Vessel?.Systems?.Clock?.UT ?? CommandBaselineUT;
   private double CommandNetRateBps => CommandRefillBps - CommandDecayBps;
 
@@ -111,6 +119,7 @@ public class Probe : VirtualComponent {
       CommandBaselineBytes = CommandBaselineBytes,
       CommandBaselineUT = CommandBaselineUT,
       CommandRefillBps = CommandRefillBps,
+      CommandConsumeBps = CommandConsumeBps,
     };
   }
 

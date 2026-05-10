@@ -242,6 +242,27 @@ public class CommunicationsNetwork {
     }
   }
 
+  // Per-tick refresh of just the direct-edge live SNR on every
+  // endpoint's PathToHome summary. Solve-cadence is event-driven —
+  // when the link sits in the highest rate bucket nothing forecasts
+  // a transition, so re-solves stop and the cached SNR freezes. The
+  // SNR itself varies continuously with distance (1/r²), so for the
+  // dB display we recompute it each FixedUpdate from live positions
+  // without touching the (bucket-quantised) rate or path topology.
+  public void RefreshHomeDirectSnrs(Endpoint home, double ut) {
+    if (home == null) return;
+    var homePos = home.PositionAt(ut);
+    foreach (var ep in endpoints) {
+      if (ep == null || ep == home) continue;
+      if (!ep.PathToHome.HasPath) continue;
+      var d = (ep.PositionAt(ut) - homePos).Magnitude;
+      BestPair(ep, home, d, out var snr, out _);
+      var summary = ep.PathToHome;
+      summary.DirectSnr = snr;
+      ep.PathToHome = summary;
+    }
+  }
+
   private void Integrate(double dt) {
     foreach (var job in jobs) {
       if (job.Status != JobStatus.Active) continue;

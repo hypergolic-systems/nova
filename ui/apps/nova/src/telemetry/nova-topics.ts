@@ -72,6 +72,7 @@ export type NovaProbeFrame    = [
   commandCapacityBytes: number,
   commandRefillBps: number,
   commandDecayBps: number,
+  commandConsumeBps: number,
 ];
 export type NovaFuelCellFrame = [
   'F',
@@ -393,6 +394,11 @@ export interface ProbeState {
   /** Bytes/s of constant decay, regardless of comms / inputs.
    *  Probe-specific config. */
   commandDecayBps: number;
+  /** Live consumption demand, bytes/s — `inputCostBps × |input|` set
+   *  by the C# gate before it tries to spend. Reads as the player's
+   *  intent: a held stick over a starved buffer keeps this at its
+   *  full magnitude even though no actual deduction lands. */
+  commandConsumeBps: number;
 }
 
 export interface ScienceFile {
@@ -1146,6 +1152,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           commandCapacityBytes: c[8],
           commandRefillBps: c[9],
           commandDecayBps: c[10],
+          commandConsumeBps: c[11],
         });
         break;
       case 'F':

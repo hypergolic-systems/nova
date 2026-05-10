@@ -267,27 +267,68 @@ public class NovaVesselModule : VesselModule {
   // Decide whether this FixedUpdate's input passes the StoredCommands
   // gate. Vessels with crew (kerbal pilot) or no probe at all are
   // unconditionally authorized — gating is the probe-only sanction
-  // for an idle KSC link. Cost is `(attitudeMag + throttle) ×
-  // probe.InputCostBps × fixedDt`; deduction happens once per tick on
-  // the primary Probe regardless of how many engines / RCS modules
-  // read it back via `ControlAuthorizedThisTick`.
+  // for an idle KSC link.
+  //
+  // Cost model — only RAW user input counts; SAS torque is free.
+  //   Attitude: continuous spend while the user holds the stick.
+  //     rate = |pitch,yaw,roll,X,Y,Z| · InputCostBps  (B/s)
+  //   Throttle: discrete spend on adjustment, not on holding.
+  //     pulse = |Δthrottle| · InputCostBps            (bytes, this tick)
+  // Read from FlightInputHandler.state — that's the pre-SAS axis read
+  // (stock ModuleReactionWheel uses the same source). vessel.ctrlState
+  // is the SAS-modified output and would charge the player for the
+  // autopilot's torque commands.
+  //
+  // Side effect: writes `probe.CommandConsumeBps` to the live (per-
+  // second) consumption demand BEFORE the spend gate runs, so the SYS
+  // panel's CONTROL view shows the player's intent even when the gate
+  // denies (an empty ledger with a held stick still reads as a heavy
+  // consume rate, just with zero actual deduction).
+  private double lastUserThrottle;
+  private bool   lastUserThrottleReady;
+
   private void AuthorizeControlForThisTick() {
     controlAuthorizedThisTick = true;
+    var probe = PrimaryProbe;
+    if (probe != null) probe.CommandConsumeBps = 0;
+
     if (vessel == null) return;
     if (vessel.GetCrewCount() > 0) return;
-    var probe = PrimaryProbe;
     if (probe == null) return;
     if (probe.InputCostBps <= 0) return;
 
-    double attitudeMag = inputReady
-        ? System.Math.Sqrt(cachedInputRot.SqrMagnitude + cachedInputLin.SqrMagnitude)
-        : 0;
-    double throttleMag = vessel.ctrlState.mainThrottle;
-    double inputMag = attitudeMag + throttleMag;
-    if (inputMag <= 1e-6) return;
+    // FlightInputHandler.state is static — it reflects whatever the
+    // player is doing to the *active* vessel. Background NovaVesselModule
+    // FixedUpdates would otherwise charge their probes for input the
+    // player aimed at someone else. Background vessels generate no user
+    // input, full stop.
+    if (vessel != FlightGlobals.ActiveVessel) {
+      lastUserThrottleReady = false;
+      return;
+    }
 
-    double cost = inputMag * probe.InputCostBps * Time.fixedDeltaTime;
-    if (!probe.TrySpendCommands(cost))
+    var raw = FlightInputHandler.state;
+    if (raw == null) return;
+
+    var dt = Time.fixedDeltaTime;
+    double attitudeMag = System.Math.Sqrt(
+        raw.pitch * raw.pitch + raw.yaw * raw.yaw + raw.roll * raw.roll
+      + raw.X     * raw.X     + raw.Y   * raw.Y   + raw.Z    * raw.Z);
+
+    double throttleDelta = lastUserThrottleReady
+        ? System.Math.Abs(raw.mainThrottle - lastUserThrottle)
+        : 0;
+    lastUserThrottle      = raw.mainThrottle;
+    lastUserThrottleReady = true;
+
+    // Continuous attitude rate + throttle pulse expressed as a one-tick
+    // rate spike so it's visible in the consume gauge.
+    double attitudeBps = attitudeMag * probe.InputCostBps;
+    double throttleBps = (dt > 0) ? throttleDelta * probe.InputCostBps / dt : 0;
+    probe.CommandConsumeBps = attitudeBps + throttleBps;
+
+    double cost = probe.CommandConsumeBps * dt;
+    if (cost > 0 && !probe.TrySpendCommands(cost))
       controlAuthorizedThisTick = false;
   }
 
