@@ -1,5 +1,15 @@
 # LP hygiene — keeping ProcessFlowSystem well-conditioned
 
+> **Status (post-Rust-cutover):** this document was written for the C# `ProcessFlowSystem`
+> on OR-Tools GLOP. The simulator now lives in Rust (`crates/nova-sim`) and the LP backend
+> is HiGHS (via `crates/nova-highs`). The **conceptual contract still holds** — bounded
+> conservation-row coefficients, the EC-as-Joules unit convention, event-driven re-solves,
+> the priority loop + lex-2 cleanup — but the **specific numbers below (GLOP's ~10⁻⁶
+> tolerance, per-row-scaling-at-BuildLP analysis) need re-verifying against HiGHS'
+> tolerances**, and the API references (`systems.AddDevice`, `Buffer.MaxRateIn`) are now
+> the Rust equivalents (`VesselSystems::add_device`, `Buffer::flow_limits`, …). Treat the
+> numeric envelope as a known-safe lower bound until someone re-derives it for HiGHS.
+
 Nova's resource flow is solved by two systems (see `PLAN.md` for the architectural rationale):
 
 - **`StagingFlowSystem`** — water-fill on vessel topology. Topological resources (RP-1, LOX, LH₂, Hydrazine, Xenon). Not an LP. **Immune to dynamic-range issues by construction:** the algorithm is proportional allocation + saturation clipping over a connectivity graph — sums, divides, and comparisons in IEEE 754, no matrix, no basis, no coefficient tolerance to violate. A 100 L/s engine and a 10⁻⁵ L/s trickle-feeder coexist on the same topology without preconditioning. This document is not about staging.
