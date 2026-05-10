@@ -115,6 +115,34 @@ public class Resource {
       Density = 2,
       Domain = ResourceDomain.Topological,
     };
+
+    registry["Methane"] = new Resource {
+      Name = "Methane",
+      Abbreviation = "CH4",
+      Unit = UnitDefinition.Liter,
+      Density = 0.42,
+      Domain = ResourceDomain.Topological,
+    };
+
+    // Nitrogen tetroxide. Hypergolic oxidizer for Hydrazine.
+    registry["NTO"] = new Resource {
+      Name = "NTO",
+      Abbreviation = "NTO",
+      Unit = UnitDefinition.Liter,
+      Density = 1.45,
+      Domain = ResourceDomain.Topological,
+    };
+
+    // Pre-mixed APCP-like solid grain. SRBs cast it as a single propellant
+    // (no separate fuel/oxidizer plumbing), so a single resource is the
+    // physically accurate model.
+    registry["Solid Propellant"] = new Resource {
+      Name = "Solid Propellant",
+      Abbreviation = "APCP",
+      Unit = UnitDefinition.Liter,
+      Density = 1.8,
+      Domain = ResourceDomain.Topological,
+    };
   }
 
   public static Resource ElectricCharge => registry["Electric Charge"];
@@ -124,6 +152,9 @@ public class Resource {
   public static Resource RP1 => registry["RP-1"];
   public static Resource Hydrazine => registry["Hydrazine"];
   public static Resource Xenon => registry["Xenon"];
+  public static Resource Methane => registry["Methane"];
+  public static Resource NTO => registry["NTO"];
+  public static Resource SolidPropellant => registry["Solid Propellant"];
 
   private Resource() {}
 
