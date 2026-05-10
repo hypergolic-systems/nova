@@ -16,6 +16,7 @@
 
 import type { Topic } from '@dragonglass/telemetry/core';
 import { useNovaVesselStructure } from './use-nova-vessel-structure.svelte';
+import { useNovaEditorShipStructure } from './use-nova-editor-ship-structure.svelte';
 import { useKeyedSubscriptions } from './use-keyed-subscriptions.svelte';
 import {
   NovaPartTopic,
@@ -28,6 +29,7 @@ import {
   type NovaScience,
   type NovaStorage,
   type NovaPartStruct,
+  type NovaVesselStructure,
   type SystemTag,
 } from './nova-topics';
 
@@ -36,17 +38,20 @@ export interface NovaTagged<T> {
   state: T | undefined;
 }
 
-// Generic — factor the structure-fetch + tag-filter + keyed-sub
-// plumbing once; the three flavours below differ only in the topic
-// factory + decoder they hand to the keyed-subscription core.
-function useByTag<F, T>(
-  vesselId: string | (() => string | undefined),
+interface StructureRef {
+  readonly current: NovaVesselStructure | undefined;
+}
+
+// Inner core — given any structure-ref (flight or editor), fan out
+// to per-part keyed subscriptions for the parts whose tag set matches.
+// The three flavours below pair this with a structure source +
+// per-part topic factory + decoder.
+function useByTagWithStructure<F, T>(
+  structureRef: StructureRef,
   tag: SystemTag,
   topicFor: (partId: string) => Topic<F, unknown>,
   decode: (frame: F) => T,
 ): { readonly current: NovaTagged<T>[] } {
-  const structureRef = useNovaVesselStructure(vesselId);
-
   const matching = $derived.by<NovaPartStruct[]>(() => {
     const s = structureRef.current;
     return s ? s.parts.filter((p) => p.tags.includes(tag)) : [];
@@ -76,19 +81,51 @@ export function useNovaPartsByTag(
   vesselId: string | (() => string | undefined),
   tag: SystemTag,
 ): { readonly current: NovaTagged<NovaPart>[] } {
-  return useByTag(vesselId, tag, (id) => NovaPartTopic(id), decodePart);
+  return useByTagWithStructure(
+    useNovaVesselStructure(vesselId),
+    tag,
+    (id) => NovaPartTopic(id),
+    decodePart,
+  );
 }
 
 export function useNovaScienceByTag(
   vesselId: string | (() => string | undefined),
   tag: SystemTag,
 ): { readonly current: NovaTagged<NovaScience>[] } {
-  return useByTag(vesselId, tag, (id) => NovaScienceTopic(id), decodeScience);
+  return useByTagWithStructure(
+    useNovaVesselStructure(vesselId),
+    tag,
+    (id) => NovaScienceTopic(id),
+    decodeScience,
+  );
 }
 
 export function useNovaStorageByTag(
   vesselId: string | (() => string | undefined),
   tag: SystemTag,
 ): { readonly current: NovaTagged<NovaStorage>[] } {
-  return useByTag(vesselId, tag, (id) => NovaStorageTopic(id), decodeStorage);
+  return useByTagWithStructure(
+    useNovaVesselStructure(vesselId),
+    tag,
+    (id) => NovaStorageTopic(id),
+    decodeStorage,
+  );
+}
+
+// Editor-scene parallel of useNovaPartsByTag. The editor topic is
+// single-instance (no vesselId routing) so this hook takes only the
+// tag. Per-part NovaPart/<partId> subscriptions still resolve in the
+// editor scene — NovaSubscriptionManager falls back to the live
+// ShipConstruct, and NovaPartTopic.ResolveComponents reads from
+// NovaPartModule.Components when there's no VirtualVessel.
+export function useNovaEditorPartsByTag(
+  tag: SystemTag,
+): { readonly current: NovaTagged<NovaPart>[] } {
+  return useByTagWithStructure(
+    useNovaEditorShipStructure(),
+    tag,
+    (id) => NovaPartTopic(id),
+    decodePart,
+  );
 }

@@ -7,13 +7,21 @@
   // MASS/ΔV/STAGING/CREW slated). Sharing chrome keeps the visual
   // rhythm; not sharing views keeps each scene's surface honest.
   //
-  // The shell is built now with TANKS as the only enabled tab and the
-  // rest as disabled placeholders so the future surface is locked in
-  // without scaffolding empty views.
+  // TANKS and PWR are wired up; the rest render as disabled placeholders
+  // so the future surface is locked in without scaffolding empty views.
+  // The PWR tab reuses the flight PowerView renderer with an editor
+  // partsByTag factory — the per-part NovaPart/<id> wire works in the
+  // editor (NovaPartTopic.ResolveComponents reads from the live
+  // NovaPartModule.Components when there's no VirtualVessel), so the
+  // same generation/consumption/storage tree shows for the design
+  // under construction.
 
   import { FloatingWindow } from '@dragonglass/windows';
   import { useNovaEditorShipStructure } from '../../telemetry/use-nova-editor-ship-structure.svelte';
+  import { useNovaEditorPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import type { SystemTag } from '../../telemetry/nova-topics';
   import TanksView from './TanksView.svelte';
+  import PowerView from '../power/PowerView.svelte';
 
   interface Props {
     /** Part id of the most recent right-click PAW pulse, used by
@@ -41,7 +49,7 @@
   // panel as a free-floating instrument (mirroring flight, where
   // StagingStack is its own surface separate from VesselPanel). See
   // EditorHud.svelte's bottom-left mount.
-  type TabId = 'tanks' | 'mass' | 'dv' | 'crew';
+  type TabId = 'tanks' | 'pwr' | 'mass' | 'dv' | 'crew';
 
   interface Tab {
     id: TabId;
@@ -52,6 +60,7 @@
 
   const tabs: Tab[] = [
     { id: 'tanks',   short: 'TANKS',   label: 'Tank Volumes',  enabled: true  },
+    { id: 'pwr',     short: 'PWR',     label: 'Power',          enabled: true  },
     { id: 'mass',    short: 'MASS',    label: 'Mass Breakdown', enabled: false },
     { id: 'dv',      short: 'ΔV',      label: 'Delta-V',        enabled: false },
     { id: 'crew',    short: 'CREW',    label: 'Crew',           enabled: false },
@@ -100,6 +109,8 @@
   <div class="evp__scroll">
     {#if activeTab === 'tanks'}
       <TanksView {focusPartId} />
+    {:else if activeTab === 'pwr'}
+      <PowerView mode="editor" partsByTag={(tag: SystemTag) => useNovaEditorPartsByTag(tag)} />
     {/if}
   </div>
 </FloatingWindow>
