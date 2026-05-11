@@ -891,6 +891,8 @@ export type NovaCommsFrame = [
   directSnr: number,
   directRateBps: number,
   directMaxRateBps: number,
+  directSnrFloor: number,
+  peerLabel: string,
   txActive: 0 | 1,
   txRateBps: number,
   txDeliveredBytes: number,
@@ -904,6 +906,8 @@ export interface NovaComms {
   directSnr: number;
   directRateBps: number;
   directMaxRateBps: number;
+  directSnrFloor: number;
+  peerLabel: string;
   txActive: boolean;
   txRateBps: number;
   txDeliveredBytes: number;
@@ -921,10 +925,12 @@ export function decodeComms(f: NovaCommsFrame): NovaComms {
     directSnr:        f[3],
     directRateBps:    f[4],
     directMaxRateBps: f[5],
-    txActive:         f[6] === 1,
-    txRateBps:        f[7],
-    txDeliveredBytes: f[8],
-    txTotalBytes:     f[9],
+    directSnrFloor:   f[6],
+    peerLabel:        f[7],
+    txActive:         f[8] === 1,
+    txRateBps:        f[9],
+    txDeliveredBytes: f[10],
+    txTotalBytes:     f[11],
   };
 }
 

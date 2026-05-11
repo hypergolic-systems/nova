@@ -83,11 +83,21 @@ public class Endpoint {
 // poll without allocating. `Direct*` fields cover the single direct
 // edge (vessel→home) — they're 0 when no direct edge exists (vessel
 // reachable only via relay), in which case `HasPath`/`BottleneckBps`
-// still reflect the relayed path.
+// still reflect the relayed path. `NextHopId` is the Id of the
+// first endpoint along the chosen vessel→home path: equals home.Id
+// when direct, equals a relay vessel's Id otherwise — empty when
+// HasPath is false.
+// `DirectSnrFloor` is the linear SNR threshold below which the
+// direct edge's quantised rate drops to zero — the noise floor for
+// THIS antenna pair, not the model-wide N0 = 1.0. Computed from the
+// chosen TX antenna's reference SNR via the bucket-1 cutoff
+// (1 + SNR_ref)^(1/N) − 1.
 public struct PathSummary {
   public bool HasPath;
   public double BottleneckBps;
   public double DirectSnr;
   public double DirectRateBps;
   public double DirectMaxRateBps;
+  public double DirectSnrFloor;
+  public string NextHopId;
 }

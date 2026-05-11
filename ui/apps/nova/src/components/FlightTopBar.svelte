@@ -86,21 +86,20 @@
   }
 
   // ── Rate fraction → number of lit bars (0..5) ───────────────
-  // Bars track achievable bandwidth as a fraction of the antenna
-  // pair's hardware ceiling. Right next to KSC the rate saturates at
-  // MaxRate, fraction = 1.0, all 5 bars lit, regardless of whether
-  // that's 100 bps or 100 Mbps in the underlying units. Decade steps
-  // below saturation: each 10× rate drop loses one bar.
+  // Linear bucketing on rate/ceiling so the meter agrees with the
+  // SYS panel's CONNECTIVITY bars. The earlier decade scheme was a
+  // mismatch for the C# side, which already quantises the rate into
+  // 10 equal-width buckets (RateBuckets); every non-zero rate
+  // therefore lands at f = k/10 with k ∈ 1..10, and the decade
+  // tiers pinned the meter at 4 right up until the link dropped to
+  // bucket 0 (the user-visible "jumps from 4 to 0" symptom).
+  // Math.round(5·f) maps bucket-k rates to roughly k/2 bars, giving
+  // a smooth 0..5 progression across the quantisation grid.
   function rateBars(rateBps: number, maxRateBps: number): number {
     if (!Number.isFinite(rateBps) || rateBps <= 0) return 0;
     if (!Number.isFinite(maxRateBps) || maxRateBps <= 0) return 0;
-    const f = rateBps / maxRateBps;
-    if (f >= 0.5)    return 5;
-    if (f >= 0.05)   return 4;
-    if (f >= 0.005)  return 3;
-    if (f >= 5e-4)   return 2;
-    if (f >= 5e-5)   return 1;
-    return 0;
+    const lit = Math.round(5 * Math.min(1, rateBps / maxRateBps));
+    return Math.max(0, Math.min(5, lit));
   }
 
   // SNR in dB. 10·log₁₀(linear). Returns "—" when blocked / no link.

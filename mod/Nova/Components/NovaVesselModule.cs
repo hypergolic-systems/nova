@@ -279,23 +279,48 @@ public class NovaVesselModule : VesselModule {
   // is the SAS-modified output and would charge the player for the
   // autopilot's torque commands.
   //
-  // Side effect: writes `probe.CommandConsumeBps` to the live (per-
-  // second) consumption demand BEFORE the spend gate runs, so the SYS
-  // panel's CONTROL view shows the player's intent even when the gate
-  // denies (an empty ledger with a held stick still reads as a heavy
-  // consume rate, just with zero actual deduction).
+  // Display vs deduction:
+  //   - Real deduction this tick = `spendThisTick` bytes via
+  //     TrySpendCommands. That's what actually moves the ledger.
+  //   - Display rate (probe.CommandConsumeBps) = an EMA of
+  //     RecentSpendBytes divided by CommandSmoothingWindowSec. A
+  //     50-byte throttle Δ would otherwise show as 2500 B/s for one
+  //     fixed step (50 ÷ 0.02) and never be sampled by the 10 Hz
+  //     telemetry; smoothed it reads ~50 B/s decaying over ~1s, which
+  //     integrates back to the same 50 bytes. Continuous attitude
+  //     spend converges to the literal attitudeBps in steady state.
+  //
+  // The EMA decays every tick regardless of active-vessel state so a
+  // vessel switch can't strand a frozen rate on the panel.
+  private const double CommandSmoothingWindowSec = 1.0;
   private double lastUserThrottle;
   private bool   lastUserThrottleReady;
 
   private void AuthorizeControlForThisTick() {
     controlAuthorizedThisTick = true;
     var probe = PrimaryProbe;
-    if (probe != null) probe.CommandConsumeBps = 0;
+    var dt = Time.fixedDeltaTime;
 
-    if (vessel == null) return;
-    if (vessel.GetCrewCount() > 0) return;
     if (probe == null) return;
-    if (probe.InputCostBps <= 0) return;
+
+    // EMA decay first — applies whether or not we add new spend below.
+    var decay = System.Math.Max(0.0, 1.0 - dt / CommandSmoothingWindowSec);
+    probe.RecentSpendBytes *= decay;
+
+    double spendThisTick = ComputeSpendThisTick(probe, dt);
+    if (spendThisTick > 0) {
+      probe.RecentSpendBytes += spendThisTick;
+      if (!probe.TrySpendCommands(spendThisTick))
+        controlAuthorizedThisTick = false;
+    }
+
+    probe.CommandConsumeBps = probe.RecentSpendBytes / CommandSmoothingWindowSec;
+  }
+
+  private double ComputeSpendThisTick(Probe probe, double dt) {
+    if (vessel == null) return 0;
+    if (vessel.GetCrewCount() > 0) return 0;
+    if (probe.InputCostBps <= 0) return 0;
 
     // FlightInputHandler.state is static — it reflects whatever the
     // player is doing to the *active* vessel. Background NovaVesselModule
@@ -304,13 +329,12 @@ public class NovaVesselModule : VesselModule {
     // input, full stop.
     if (vessel != FlightGlobals.ActiveVessel) {
       lastUserThrottleReady = false;
-      return;
+      return 0;
     }
 
     var raw = FlightInputHandler.state;
-    if (raw == null) return;
+    if (raw == null) return 0;
 
-    var dt = Time.fixedDeltaTime;
     double attitudeMag = System.Math.Sqrt(
         raw.pitch * raw.pitch + raw.yaw * raw.yaw + raw.roll * raw.roll
       + raw.X     * raw.X     + raw.Y   * raw.Y   + raw.Z    * raw.Z);
@@ -321,15 +345,12 @@ public class NovaVesselModule : VesselModule {
     lastUserThrottle      = raw.mainThrottle;
     lastUserThrottleReady = true;
 
-    // Continuous attitude rate + throttle pulse expressed as a one-tick
-    // rate spike so it's visible in the consume gauge.
-    double attitudeBps = attitudeMag * probe.InputCostBps;
-    double throttleBps = (dt > 0) ? throttleDelta * probe.InputCostBps / dt : 0;
-    probe.CommandConsumeBps = attitudeBps + throttleBps;
-
-    double cost = probe.CommandConsumeBps * dt;
-    if (cost > 0 && !probe.TrySpendCommands(cost))
-      controlAuthorizedThisTick = false;
+    // Attitude: continuous bytes/tick. Throttle: one-tick byte pulse on
+    // |Δthrottle|. Both feed the same accumulator; the smoothing wire
+    // makes the pulse readable on the panel.
+    double attitudeBytes = attitudeMag * probe.InputCostBps * dt;
+    double throttleBytes = throttleDelta * probe.InputCostBps;
+    return attitudeBytes + throttleBytes;
   }
 
   public void InvalidateRcsCache() {

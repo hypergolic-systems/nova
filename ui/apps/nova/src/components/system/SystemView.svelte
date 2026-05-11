@@ -2,19 +2,30 @@
   // Vessel-level subsystem panel for the SYS tab. Two top-level
   // accordions:
   //
-  //   CONTROL         per-probe StoredCommands ledger as a rate-balance
-  //                   readout — buffer fill is the focal element, with
-  //                   three flow lanes (refill / consume / decay) and a
+  //   STORED COMMANDS per-probe ledger as a rate-balance readout —
+  //                   buffer fill is the focal element, with three
+  //                   flow lanes (receive / consume / decay) and a
   //                   signed NET rollup beneath. Lit chevrons in each
   //                   lane communicate magnitude on a decade-log scale
   //                   so a 0.17 B/s decay reads as a thin pulse and a
   //                   50 B/s spend reads as a heavy lane. Built for
   //                   OSR CEF — every value sits on-screen, no tooltip.
   //
+  //                   Zero-sum invariant: at capacity, the displayed
+  //                   RECEIVE rate is clamped to what the buffer can
+  //                   actually absorb (consume + decay), so the three
+  //                   flow lanes always balance NET to zero at cap.
+  //                   The raw comms allocation lives on a separate
+  //                   AVAILABLE info row (gray, no chevrons) so the
+  //                   player can see the spendable headroom without
+  //                   it lying about a net inflow the gauge can't
+  //                   honour.
+  //
   //   COMMUNICATIONS  KSC link state — status lamp + signal bars in a
   //                   strip header, then SNR / direct-rate / bottleneck
   //                   in a tight readout column. Strictly the comms
-  //                   graph view; per-probe activity moved to CONTROL.
+  //                   graph view; per-probe activity moved to STORED
+  //                   COMMANDS.
 
   import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
   import { useComms } from '../../telemetry/use-comms.svelte';
@@ -33,8 +44,8 @@
   const cmdParts = untrack(() => useNovaPartsByTag(() => vesselId, 'command-source'));
   const comms    = useComms(() => vesselId);
 
-  type NodeKey = 'control' | 'comms';
-  let expanded = $state<Record<NodeKey, boolean>>({ control: true, comms: true });
+  type NodeKey = 'storedCommands' | 'comms';
+  let expanded = $state<Record<NodeKey, boolean>>({ storedCommands: true, comms: true });
   function toggleNode(k: NodeKey): void { expanded[k] = !expanded[k]; }
 
   const stageOps = useStageOps();
@@ -42,7 +53,14 @@
   function highlightOff(): void { stageOps.setHighlightParts([]); }
   onDestroy(() => stageOps.setHighlightParts([]));
 
-  // ── CONTROL — per-probe ledger ───────────────────────────────
+  // ── STORED COMMANDS — per-probe ledger ───────────────────────
+  // `receive` here is the *effective* buffer inflow, not the raw comms
+  // allocation: at capacity we clamp it to (consume + decay) so the
+  // ledger arithmetic is zero-sum — what comes in is what gets used,
+  // matching what the byte counter actually does. The raw allocation
+  // is still surfaced as `available` (informational), so the player
+  // can see how much comms-driven receive headroom they would gain
+  // back as soon as the buffer starts to drain.
   const probeEntries = $derived.by(() => {
     const out: {
       key: string;
@@ -50,7 +68,8 @@
       partTitle: string;
       bytes: number;
       capacity: number;
-      refill: number;
+      receive: number;
+      available: number;
       consume: number;
       decay: number;
     }[] = [];
@@ -59,13 +78,23 @@
       for (let i = 0; i < p.state.probe.length; i++) {
         const pr = p.state.probe[i];
         if (pr.commandCapacityBytes <= 0) continue;
+        const fill = pr.commandBytes / pr.commandCapacityBytes;
+        const atCap = fill >= 0.995;
+        // At cap, comms can supply more than the buffer can absorb. The
+        // effective inflow equals what's leaving, so net is 0 and the
+        // bytes counter holds steady. Below cap, comms supplies its
+        // full allocation; the buffer rises by (alloc − consume − decay).
+        const drain   = pr.commandConsumeBps + pr.commandDecayBps;
+        const receive = atCap ? Math.min(pr.commandRefillBps, drain)
+                              : pr.commandRefillBps;
         out.push({
           key:       `${p.struct.id}:${i}`,
           partId:    p.struct.id,
           partTitle: p.struct.title,
           bytes:     pr.commandBytes,
           capacity:  pr.commandCapacityBytes,
-          refill:    pr.commandRefillBps,
+          receive,
+          available: pr.commandRefillBps,
           consume:   pr.commandConsumeBps,
           decay:     pr.commandDecayBps,
         });
@@ -75,10 +104,10 @@
   });
 
   // Vessel-level NET — the at-a-glance "filling vs draining" tell that
-  // also drives the accordion-head summary so a collapsed CONTROL still
-  // shows the player whether they're in the green.
+  // also drives the accordion-head summary so a collapsed STORED COMMANDS
+  // still shows the player whether they're in the green.
   const totalNet = $derived(
-    probeEntries.reduce((a, p) => a + (p.refill - p.consume - p.decay), 0),
+    probeEntries.reduce((a, p) => a + (p.receive - p.consume - p.decay), 0),
   );
 
   // Decade-log magnitude → 0..5 lit chevrons. Caps at 5; the numeric
@@ -127,6 +156,8 @@
   const directMaxRate = $derived(comms.current?.directMaxRateBps ?? 0);
   const bottleneck    = $derived(comms.current?.bottleneckBps ?? 0);
   const directSnr     = $derived(comms.current?.directSnr ?? 0);
+  const directSnrFloor= $derived(comms.current?.directSnrFloor ?? 0);
+  const peerLabel     = $derived(comms.current?.peerLabel ?? '');
   const bars          = $derived(linkUp ? rateBars(directRate, directMaxRate) : 0);
   const linkPct       = $derived(linkUp && directMaxRate > 0
       ? Math.round(100 * Math.min(1, directRate / directMaxRate))
@@ -166,15 +197,31 @@
   </li>
 {/snippet}
 
+<!-- Reference row: same grid as flowLane but no chevrons, no sign,
+     muted styling. Used for AVAILABLE — informational reading of the
+     comms-allocated ceiling so the player can see receive headroom
+     without it pretending to be an in/out flow. -->
+{#snippet infoLane(label: string, rate: number)}
+  {@const r = fmtRateBps(rate)}
+  <li class="ctrl__flow ctrl__flow--info">
+    <span class="ctrl__chevs" aria-hidden="true"></span>
+    <span class="ctrl__flow-label">{label}</span>
+    <span class="ctrl__flow-rate">
+      <span class="ctrl__flow-mag">{r.mag}</span><em
+        class="ctrl__flow-unit">{r.unit}</em>
+    </span>
+  </li>
+{/snippet}
+
 <section class="sys">
 
-  <!-- CONTROL ───────────────────────────────────────────────── -->
+  <!-- STORED COMMANDS ────────────────────────────────────────── -->
   <div class="sys__node">
     <button type="button" class="sys__node-head"
-            aria-expanded={expanded.control}
-            onclick={() => toggleNode('control')}>
-      {@render chev(expanded.control)}
-      <span class="sys__node-title">CONTROL</span>
+            aria-expanded={expanded.storedCommands}
+            onclick={() => toggleNode('storedCommands')}>
+      {@render chev(expanded.storedCommands)}
+      <span class="sys__node-title">STORED COMMANDS</span>
       {#if probeEntries.length === 0}
         <span class="sys__node-summary sys__rate-zero">—</span>
       {:else}
@@ -188,21 +235,13 @@
       {/if}
     </button>
 
-    {#if expanded.control}
+    {#if expanded.storedCommands}
       <div class="sys__sub">
         {#if probeEntries.length === 0}
           <p class="sys__empty">No probe core on this vessel.</p>
         {:else}
           {#each probeEntries as e (e.key)}
             {@const fill = e.capacity > 0 ? e.bytes / e.capacity : 0}
-            {@const net = e.refill - e.consume - e.decay}
-            {@const netFmt = fmtRateBpsSigned(net)}
-            {@const atCap = fill >= 0.995}
-            {@const netState =
-                atCap && net > RATE_EPSILON ? 'MARGIN'
-              : net > RATE_EPSILON ? 'FILLING'
-              : net < -RATE_EPSILON ? 'DRAINING'
-              : 'BALANCED'}
             <div class="ctrl"
                  onmouseenter={() => highlightOn([e.partId])}
                  onmouseleave={highlightOff}
@@ -233,33 +272,19 @@
                 </div>
               </div>
 
-              <!-- Flow lanes — left chevrons for direction + intensity,
-                   centre label, right rate. Inflow is green & rightward;
-                   outflows (consume + decay) are amber & leftward. The
-                   lit chevrons pulse subtly to suggest live motion. -->
+              <!-- Flow lanes — chevrons (intensity), label, rate. All
+                   three lanes anchor their lit chevrons to the same x
+                   so a glance picks out the heaviest lane; direction
+                   is communicated by colour (green in / amber out) and
+                   the ▶/◀ glyph itself. AVAILABLE rides at the top as
+                   an info row (no chevrons, gray) — the comms-allocated
+                   ceiling, distinct from RECEIVE (effective inflow). -->
               <ul class="ctrl__flows">
-                {@render flowLane('REFILL',  e.refill,  'in')}
-                {@render flowLane('CONSUME', e.consume, 'out')}
-                {@render flowLane('DECAY',   e.decay,   'out')}
+                {@render infoLane('AVAILABLE', e.available)}
+                {@render flowLane('RECEIVE',   e.receive,   'in')}
+                {@render flowLane('CONSUME',   e.consume,   'out')}
+                {@render flowLane('DECAY',     e.decay,     'out')}
               </ul>
-
-              <!-- NET rollup — large signed digits with a glow on the
-                   sign. The single number that answers "is this probe
-                   keeping up?". Filled / draining / idle annotations
-                   spell out the answer for slow reads. -->
-              <div class="ctrl__net"
-                   class:ctrl__net--pos={net > RATE_EPSILON && !atCap}
-                   class:ctrl__net--margin={atCap && net > RATE_EPSILON}
-                   class:ctrl__net--neg={net < -RATE_EPSILON}
-                   class:ctrl__net--zero={isZero(net)}>
-                <span class="ctrl__net-label">{atCap && net > RATE_EPSILON ? 'MARGIN' : 'NET'}</span>
-                <span class="ctrl__net-state">{netState}</span>
-                <span class="ctrl__net-rate">
-                  <span class="ctrl__net-sign">{netFmt.sign}</span><span
-                    class="ctrl__net-mag">{netFmt.mag}</span><em
-                    class="ctrl__net-unit">{netFmt.unit}</em>
-                </span>
-              </div>
             </div>
           {/each}
         {/if}
@@ -297,11 +322,20 @@
           <span class="link__pct">{linkUp ? `${linkPct}%` : '—'}</span>
         </div>
 
-        <!-- Spec readout. Three tightly-set numerics; tabular nums and
-             a fixed label gutter line them up like a printed datasheet. -->
+        <!-- Spec readout. PEER sits at the top — "KSC" for direct
+             links, "KSC (via NAME)" when the chosen path's first hop
+             is a relay vessel. SNR drops Noise Floor immediately
+             beneath so the dB above noise reads as the visible
+             difference. Three tightly-set numerics below; tabular
+             nums and a fixed label gutter line them up like a
+             printed datasheet. -->
         <dl class="link__readout">
+          <dt>Peer</dt>
+          <dd>{linkUp ? (peerLabel || '—') : '—'}</dd>
           <dt>SNR</dt>
           <dd>{formatSnrDb(directSnr)}</dd>
+          <dt>Noise Floor</dt>
+          <dd>{formatSnrDb(directSnrFloor)}</dd>
           <dt>Direct</dt>
           <dd>{linkUp ? `${fmtRateBps(directRate).mag} ${fmtRateBps(directRate).unit}` : '—'}</dd>
           <dt>Bottleneck</dt>
@@ -457,17 +491,17 @@
     font-family: var(--font-mono);
     font-size: 11px;
   }
+  /* All three lanes left-anchor their chevrons in the 56px column so
+     the lit-vs-unlit boundary sits at the same x across rows. Direction
+     is read from colour (green in / amber out) and the ▶/◀ glyph; the
+     row's lit count communicates magnitude irrespective of side. */
   .ctrl__chevs {
     display: inline-flex;
+    justify-content: flex-start;
     gap: 1px;
     line-height: 1;
     font-size: 10px;
   }
-  /* Inflow chevrons cluster against the buffer end (right);
-     outflow chevrons cluster against the source end (left). The
-     visual asymmetry communicates direction without needing a label. */
-  .ctrl__flow--in  .ctrl__chevs { justify-content: flex-end; }
-  .ctrl__flow--out .ctrl__chevs { justify-content: flex-start; }
   .ctrl__chevron {
     color: rgba(255, 255, 255, 0.07);
     transition: color 200ms ease, text-shadow 200ms ease;
@@ -531,70 +565,11 @@
   .ctrl__flow--idle .ctrl__flow-sign,
   .ctrl__flow--idle .ctrl__flow-label { color: var(--fg-mute); }
 
-  /* NET rollup: the section's headline. Larger digits, signed glow on
-     the leading character, and a state word ("FILLING" / "DRAINING")
-     in the gutter so a slow read of the panel still parses. The thick
-     accent border at the top separates it visually from the flow lanes. */
-  .ctrl__net {
-    display: grid;
-    grid-template-columns: max-content 1fr max-content;
-    align-items: baseline;
-    column-gap: 12px;
-    margin-top: 2px;
-    padding-top: 8px;
-    border-top: 1px solid var(--line-accent, var(--line));
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-  .ctrl__net-label {
-    color: var(--fg-mute);
-    font-family: var(--font-display);
-    letter-spacing: 0.20em;
-    font-size: 10px;
-  }
-  .ctrl__net-state {
-    color: var(--fg-mute);
-    font-family: var(--font-display);
-    font-size: 9px;
-    letter-spacing: 0.22em;
-    text-align: left;
-  }
-  .ctrl__net-rate {
-    text-align: right;
-    font-size: 14px;
-    letter-spacing: 0.02em;
-  }
-  .ctrl__net-sign {
-    display: inline-block;
-    width: 0.7em;
-    text-align: right;
-    padding-right: 2px;
-  }
-  .ctrl__net-unit {
-    font-style: normal;
-    font-size: 10px;
-    color: var(--fg-mute);
-    padding-left: 4px;
-  }
-  .ctrl__net--pos .ctrl__net-rate,
-  .ctrl__net--pos .ctrl__net-sign { color: var(--accent); }
-  .ctrl__net--pos .ctrl__net-sign { text-shadow: 0 0 6px var(--accent-glow); }
-  .ctrl__net--pos .ctrl__net-state { color: var(--accent); }
-  /* MARGIN — the buffer is full and refill outpaces drain, so the */
-  /* extra rate is headroom for spending, not active accumulation. */
-  /* Quieter than --pos: same hue family but no glow, so the eye  */
-  /* parks on FILLING/DRAINING for transitions and reads MARGIN as  */
-  /* a steady-state advisory. */
-  .ctrl__net--margin .ctrl__net-rate,
-  .ctrl__net--margin .ctrl__net-sign { color: var(--accent); opacity: 0.78; }
-  .ctrl__net--margin .ctrl__net-state { color: var(--accent); opacity: 0.78; letter-spacing: 0.18em; }
-  .ctrl__net--margin .ctrl__net-label { color: var(--accent); opacity: 0.65; }
-  .ctrl__net--neg .ctrl__net-rate,
-  .ctrl__net--neg .ctrl__net-sign { color: var(--warn); }
-  .ctrl__net--neg .ctrl__net-sign { text-shadow: 0 0 6px var(--warn-glow); }
-  .ctrl__net--neg .ctrl__net-state { color: var(--warn); }
-  .ctrl__net--zero .ctrl__net-rate,
-  .ctrl__net--zero .ctrl__net-sign { color: var(--fg-mute); }
+  /* Info row (AVAILABLE) — no chevrons, no sign, fully muted so it
+     reads as a reference value rather than an active flow. Sits in
+     the same grid as the flow rows so labels and rates line up. */
+  .ctrl__flow--info .ctrl__flow-rate,
+  .ctrl__flow--info .ctrl__flow-label { color: var(--fg-mute); }
 
   /* ── COMMUNICATIONS — link readout ────────────────────────── */
   .link__status {

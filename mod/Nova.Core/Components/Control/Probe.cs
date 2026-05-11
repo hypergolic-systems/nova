@@ -59,7 +59,20 @@ public class Probe : VirtualComponent {
   // even when the gate denies (empty buffer + held stick = high
   // consume reading, zero actual deduction). Not folded into the lerp:
   // spending is discrete via TrySpendCommands, not rate-baselined.
+  //
+  // Smoothed over CommandSmoothingWindowSec via the RecentSpendBytes
+  // EMA, not a raw cost/dt division. Discrete spends (throttle Δ) are
+  // single-tick byte costs whose raw B/s would be 50 ÷ 0.02 = 2500 B/s
+  // for one fixed step — invisible at the 10 Hz telemetry rate and
+  // unreadable even if it weren't. The EMA spreads each cost over the
+  // smoothing window so the UI displays a sustained rate that
+  // integrates back to the actual bytes spent.
   public double CommandConsumeBps;
+
+  // EMA accumulator (bytes). Each FixedUpdate decays by (1 − dt/τ) and
+  // gains the tick's actual spend; CommandConsumeBps = this / τ. Pure
+  // runtime smoothing state — not persisted, not part of the lerp.
+  public double RecentSpendBytes;
 
   private double CommandClockUT => Vessel?.Systems?.Clock?.UT ?? CommandBaselineUT;
   private double CommandNetRateBps => CommandRefillBps - CommandDecayBps;
@@ -120,6 +133,7 @@ public class Probe : VirtualComponent {
       CommandBaselineUT = CommandBaselineUT,
       CommandRefillBps = CommandRefillBps,
       CommandConsumeBps = CommandConsumeBps,
+      RecentSpendBytes = RecentSpendBytes,
     };
   }
 

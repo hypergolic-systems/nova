@@ -84,39 +84,42 @@ public class NovaCommunicationsAddon : MonoBehaviour {
     RefreshVesselEndpoint(data.host);
   }
 
-  // KSC position at any UT, in the same absolute frame
-  // `vessel.orbit.getTruePositionAtUT` lives in. Snapshot KSC's
-  // body-relative offset via KSP's authoritative
-  // `GetWorldSurfacePosition` (which threads through BodyFrame +
-  // directRotAngle correctly), then rotate that offset around the
-  // body's spin axis (+Y, KSP convention) by `omega·dt` for future
-  // UTs. Kerbin's centre at UT comes from `getTruePositionAtUT`.
+  // KSC position at any UT, in the same frame KSP's
+  // `vessel.orbit.getTruePositionAtUT` lives in for active vessels.
   //
-  // Bypasses GroundStation's lat/lon/omega formula because that
-  // lives in Nova.Core (no KSP types) and so can't see BodyFrame.
+  // Frame note: at Kerbin in the flight scene `inverseRotation` is
+  // true — the body sits at the world-frame origin and the world
+  // rotates around it. KSC's world position is therefore fixed
+  // (body-fixed in world coords), and we don't rotate the captured
+  // offset over time. KSP's `vessel.orbit.getTruePositionAtUT(ut)`
+  // for an active vessel resolves to `(current world body-offset) +
+  // body.getTruePositionAtUT(ut)` — same hybrid (world-offset +
+  // absolute body centre) frame this closure emits, so distances
+  // between KSC and a stationary vessel stay constant.
+  //
+  // Previously we hand-rolled an `omega·dt` rotation of the captured
+  // offset to "track" Kerbin's spin. That was wrong: the vessel side
+  // doesn't do that, so the two frames drifted apart at the rotation
+  // rate and SNR dropped continuously even with the vessel parked on
+  // the pad. Future-UT predictions through this closure (numerical
+  // horizon bisection for surface↔orbital pairs) lose the body-spin
+  // contribution — accepting that for v1 until SurfaceMotion is wired
+  // into the analytical dispatcher.
+  //
+  // Bypasses GroundStation's lat/lon/omega formula because that lives
+  // in Nova.Core (no KSP types) and so can't see BodyFrame.
   private void BuildKscEndpoint() {
     const double KSC_LAT = -0.0972;
     const double KSC_LON = -74.5577;
     const double KSC_ALT = 75;
 
     var homeBody = FlightGlobals.GetHomeBody();
-    var captureUT = Planetarium.GetUniversalTime();
-    var omega = 2 * Math.PI / homeBody.rotationPeriod;
     var kscWorldNow = homeBody.GetWorldSurfacePosition(KSC_LAT, KSC_LON, KSC_ALT);
     var kerbinCentreNow = homeBody.position;
     var kscOffsetWorldNow = kscWorldNow - kerbinCentreNow;
 
     Vec3d PositionAt(double ut) {
-      var dt = ut - captureUT;
-      var dTheta = omega * dt;
-      var c = Math.Cos(dTheta);
-      var s = Math.Sin(dTheta);
-      // Right-handed rotation around +Y (Kerbin spins eastward; sign verified empirically).
-      var rotated = new Vector3d(
-        kscOffsetWorldNow.x * c - kscOffsetWorldNow.z * s,
-        kscOffsetWorldNow.y,
-        kscOffsetWorldNow.x * s + kscOffsetWorldNow.z * c);
-      return (homeBody.getTruePositionAtUT(ut) + rotated).ToNova();
+      return (kscOffsetWorldNow + homeBody.getTruePositionAtUT(ut)).ToNova();
     }
 
     kscEndpoint = new Endpoint {

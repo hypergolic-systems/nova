@@ -227,6 +227,7 @@ public class CommunicationsNetwork {
           if (l.RateBps < minRate) minRate = l.RateBps;
         }
         summary.BottleneckBps = minRate == double.PositiveInfinity ? 0 : minRate;
+        summary.NextHopId = path[0].To.Id;
       }
 
       foreach (var l in graph.Links) {
@@ -237,9 +238,50 @@ public class CommunicationsNetwork {
         }
       }
       summary.DirectMaxRateBps = LinkMaxCeiling(ep, home);
+      summary.DirectSnrFloor = DirectSnrFloor(ep, home);
 
       ep.PathToHome = summary;
     }
+  }
+
+  // SNR threshold below which the direct ep→home link's quantised
+  // rate falls into bucket 0 — the practical "signal lost" line at
+  // the displayed (symmetric) SNR. Derived from the bucket-1 Shannon
+  // cutoff for each direction's best TX antenna:
+  //
+  //   shannon = 1/N  ⇒  SNR_thresh = (1 + SNR_ref)^(1/N) − 1
+  //
+  // The displayed SNR is the min of the two directions; the link
+  // drops when that min hits the WORSE-SNR direction's threshold.
+  // In typical setups (weak vessel antenna ↔ huge ground station)
+  // the small-TX direction has both lower SNR AND lower threshold
+  // — same antenna sets both — so the binding floor is the LOWER of
+  // the two directions' bucket-1 thresholds. KSC's threshold (~−60
+  // dB for a 1e9·1e3² antenna) never binds because its own SNR is
+  // orders of magnitude higher than the vessel's.
+  private static double DirectSnrFloor(Endpoint a, Endpoint b) {
+    var thA = BestPairFloor(a, b);
+    var thB = BestPairFloor(b, a);
+    if (thA <= 0) return thB;
+    if (thB <= 0) return thA;
+    return thA < thB ? thA : thB;
+  }
+
+  // Lowest bucket-1 SNR threshold across TX-antenna choices on
+  // `from` (RX side doesn't affect the threshold — only the TX's
+  // RefSnr drives the Shannon cutoff). Zero means no usable TX.
+  private static double BestPairFloor(Endpoint from, Endpoint to) {
+    if (to.Antennas.Count == 0) return 0;
+    var n = CommunicationsParameters.BucketCount;
+    var n0 = CommunicationsParameters.NoiseFloor;
+    double best = double.PositiveInfinity;
+    foreach (var tx in from.Antennas) {
+      var snrRef = tx.RefSnr(n0);
+      if (snrRef <= 0) continue;
+      var thresh = Math.Pow(1 + snrRef, 1.0 / n) - 1;
+      if (thresh < best) best = thresh;
+    }
+    return double.IsPositiveInfinity(best) ? 0 : best;
   }
 
   // Per-tick refresh of just the direct-edge live SNR on every
