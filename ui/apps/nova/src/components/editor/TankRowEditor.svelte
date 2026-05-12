@@ -26,6 +26,7 @@
   import SegmentGauge from '../SegmentGauge.svelte';
   import { resourceMeta } from '../resource/resource-codes';
   import { ContextMenu, type MenuItem } from '@dragonglass/instruments';
+  import { InsulationTier } from '../../telemetry/nova-topics';
   import type { TankCustomEntry, TankSlice } from '../../telemetry/nova-topics';
 
   interface Props {
@@ -34,8 +35,16 @@
     volume: number;
     tanks: TankSlice[];
     onApply: (entries: TankCustomEntry[]) => void;
+    /** Fires after `onApply` (in the same debounce window) carrying the
+     *  per-slice insulation tier vector. The parent dispatches this as
+     *  `setTankInsulation` — separate op because setTankCustom resets
+     *  every slice's tier to MLI on the mod side, and the tier vector
+     *  has to be re-applied right after to survive the round-trip. */
+    onApplyTiers: (tiers: InsulationTier[]) => void;
   }
-  const { partId, partTitle, volume, tanks: initialTanks, onApply }: Props = $props();
+  const {
+    partId, partTitle, volume, tanks: initialTanks, onApply, onApplyTiers,
+  }: Props = $props();
 
   // Resource densities (kg / L). Mirrors Nova.Core.Resources/Resource.cs.
   // Hard-coded here because the editor doesn't get density off the wire
@@ -63,6 +72,152 @@
     'Xenon',
   ];
 
+  // Cryogenic resources — the ones with non-zero MliBoiloffFractionPerDay
+  // in Nova.Core.Resources/Resource.cs. Storables (RP-1, Hydrazine,
+  // Xenon) get no thermal hardware regardless of tier setting, so the
+  // tier picker is gated to slices in this set.
+  const CRYO_RESOURCES = new Set<string>([
+    'Liquid Hydrogen',
+    'Liquid Oxygen',
+    'Methane',
+  ]);
+
+  // Per-tier volume penalty — mirrors `InsulationTierTable` in
+  // mod/Nova.Core/Components/Propulsion/InsulationTier.cs. Slice's
+  // physical footprint = capacity × (1 + penalty); the build-time
+  // invariant Σ footprint ≤ Volume is enforced both client-side (for
+  // the picker's "no room" disable) and server-side (the mod rejects
+  // any setTankInsulation op that would violate it).
+  const TIER_VOLUME_PENALTY: Record<InsulationTier, number> = {
+    [InsulationTier.MLI]:      0.00,
+    [InsulationTier.HeavyMLI]: 0.05,
+    [InsulationTier.BAC]:      0.05,
+    [InsulationTier.ZBO]:      0.10,
+  };
+
+  // Tier display metadata — labels, hints, stage-pip counts, and a
+  // compact qualitative descriptor for the readout strip. Pip count
+  // matches the C# tier's cryocooler architecture: passive tiers carry
+  // no stages, BAC has a single broad-area stage, ZBO adds the deeper
+  // cold-finger second stage.
+  interface TierMeta {
+    label: string;
+    name: string;
+    stages: 0 | 1 | 2;
+    isActive: boolean;
+    /** Hover/title hint. */
+    hint: string;
+    /** Compact descriptor shown in the readout strip when no live
+     *  flight telemetry is available (editor scope — wire fields are
+     *  zero because the LP isn't running). In flight, replaced by the
+     *  numeric readout from the slice frame. */
+    descriptor: string;
+  }
+  const TIER_META: Record<InsulationTier, TierMeta> = {
+    [InsulationTier.MLI]: {
+      label: 'MLI', name: 'MULTI-LAYER INSULATION', stages: 0, isActive: false,
+      hint: 'Multi-Layer Insulation — passive, design baseline.',
+      descriptor: 'PASSIVE · BASELINE',
+    },
+    [InsulationTier.HeavyMLI]: {
+      label: 'HVY', name: 'HEAVY MLI', stages: 0, isActive: false,
+      hint: 'Heavy MLI — thicker blanket, ~10% of baseline loss. Surface-area penalty.',
+      descriptor: 'PASSIVE · THICKENED',
+    },
+    [InsulationTier.BAC]: {
+      label: 'BAC', name: 'BROAD-AREA COOLING', stages: 1, isActive: true,
+      hint: 'Broad-Area Cooling — single-stage cryocooler. Draws EC, emits waste heat.',
+      descriptor: 'ACTIVE · 1-STAGE',
+    },
+    [InsulationTier.ZBO]: {
+      label: 'ZBO', name: 'ZERO BOIL-OFF', stages: 2, isActive: true,
+      hint: 'Zero Boil-Off — two-stage with cold finger. Higher EC + heat cost; closed system.',
+      descriptor: 'CLOSED · 2-STAGE',
+    },
+  };
+  // Stable left-to-right order for the blade row. Visual narrative
+  // climbs from passive (lowest cost, highest boiloff) to closed
+  // (highest cost, zero boiloff).
+  const TIER_LIST: InsulationTier[] = [
+    InsulationTier.MLI,
+    InsulationTier.HeavyMLI,
+    InsulationTier.BAC,
+    InsulationTier.ZBO,
+  ];
+
+  // Compact %/day formatter for live boiloff readouts. Three decimals
+  // keeps 3.000, 0.300, 0.030, 0.003 in column alignment.
+  function fmtFracPctPerDay(frac: number): string {
+    return (frac * 100).toFixed(3) + ' %/d';
+  }
+  // Compact watt formatter — single decimal under 100 W, integer above.
+  function fmtW(w: number): string {
+    if (Math.abs(w) < 100) return w.toFixed(1);
+    return w.toFixed(0);
+  }
+
+  // -------- Hover preview physics mirror ---------------------------
+  // Mirror of `Nova.Core.Resources/Resource.cs` (per-resource cryo
+  // params) and `Nova.Core.Components.Propulsion/InsulationTier.cs`
+  // (per-tier passive/active fractions and Carnot efficiency). Kept
+  // inline because the editor needs prospective tier numbers BEFORE
+  // the user commits — wire-derived numbers are only available for
+  // the currently active tier. Update in lockstep with the C# tables.
+  // The mod is the authority at runtime; this mirror exists purely
+  // for the "what would this tier give me" hover preview.
+  const AMBIENT_K = 280.0;
+  const SECONDS_PER_DAY = 86400;
+  interface CryoResourceData {
+    baselineFracPerDay: number;
+    boilingPointK: number;
+    latentHeatJPerKg: number;
+    densityKgPerL: number;
+  }
+  const CRYO_DATA: Record<string, CryoResourceData> = {
+    'Liquid Hydrogen': { baselineFracPerDay: 0.03,  boilingPointK: 20.3,  latentHeatJPerKg: 446_000, densityKgPerL: 0.07 },
+    'Liquid Oxygen':   { baselineFracPerDay: 0.01,  boilingPointK: 90.2,  latentHeatJPerKg: 213_000, densityKgPerL: 1.20 },
+    'Methane':         { baselineFracPerDay: 0.005, boilingPointK: 111.7, latentHeatJPerKg: 510_000, densityKgPerL: 0.42 },
+  };
+  interface TierPhysics {
+    passive: number;
+    active: number;
+    carnotEfficiency: number;
+  }
+  const TIER_PHYSICS: Record<InsulationTier, TierPhysics> = {
+    [InsulationTier.MLI]:      { passive: 1.00, active: 1.00, carnotEfficiency: 0.00 },
+    [InsulationTier.HeavyMLI]: { passive: 0.10, active: 0.10, carnotEfficiency: 0.00 },
+    [InsulationTier.BAC]:      { passive: 0.10, active: 0.01, carnotEfficiency: 0.20 },
+    [InsulationTier.ZBO]:      { passive: 0.10, active: 0.00, carnotEfficiency: 0.10 },
+  };
+
+  // Predicted at-full-Activity numbers for (resource, tier, capacity).
+  // Returns null for non-cryogenic resources. Mirrors the math in
+  // TankVolume.SliceMaxEcW/SliceMaxHeatW/SliceNetBoiloffFractionPerDay
+  // — but evaluated at Activity = 1 (full LP supply assumed) so the
+  // hover preview shows the design rating, not a degraded value.
+  function predictTier(resource: string, tier: InsulationTier, capacity: number):
+      { fracPerDay: number; ecW: number; heatW: number } | null {
+    const r = CRYO_DATA[resource];
+    if (!r) return null;
+    const t = TIER_PHYSICS[tier];
+    const meta = TIER_META[tier];
+    const fracPerDay = r.baselineFracPerDay * (meta.isActive ? t.active : t.passive);
+    if (!meta.isActive) return { fracPerDay, ecW: 0, heatW: 0 };
+    const deltaT = AMBIENT_K - r.boilingPointK;
+    if (deltaT <= 0) return { fracPerDay, ecW: 0, heatW: 0 };
+    const qBaseline = capacity * r.baselineFracPerDay * r.densityKgPerL
+                    * r.latentHeatJPerKg / SECONDS_PER_DAY;
+    const qRemove = qBaseline * (t.passive - t.active);
+    const copReal = t.carnotEfficiency * r.boilingPointK / deltaT;
+    if (copReal <= 0) return { fracPerDay, ecW: 0, heatW: 0 };
+    const ecW = qRemove / copReal;
+    return { fracPerDay, ecW, heatW: ecW * (1 + copReal) };
+  }
+
+  // Which (slice, tier) is currently being hover-previewed. One slot
+  // for the whole panel — only one mouse, one preview at a time.
+  let hovered = $state<{ sliceIdx: number; tier: InsulationTier } | null>(null);
+
   // Per-fuel volumetric LOX demand for engine-typical mass ratios
   // (against Nova's densities — LH2=0.07, LOX=1.20, RP-1=0.80 kg/L).
   // For each fuel volume, the corresponding LOX volume needed in the
@@ -89,54 +244,68 @@
 
   // Single global Balance. Redistributes the fuels and LOX in the tank
   // to engine ratios while:
-  //   • preserving the total capacity sum across balance-relevant
-  //     slices (fuels + LOX), so a balanced 3000 L kerolox+hydrolox
-  //     mix stays at 3000 L total;
+  //   • preserving the total FOOTPRINT (storable + hardware) of the
+  //     balance pool — so a kerolox tank's bar slices keep the same
+  //     overall extent, just rebalanced internally;
   //   • preserving the relative ratio between fuels (RP-1 vs LH2)
   //     when both are present — the user's existing fuel split is
   //     kept, only the per-fuel LOX share is corrected;
-  //   • leaving non-balance slices (Hydrazine, Xenon, …) and the
-  //     FREE pool untouched.
+  //   • leaving non-balance slices (Hydrazine, Xenon, …) untouched.
   //
-  // Math: for each fuel f with normalized share α_f = cap_f / Σcap_f,
-  // a unit of new fuel needs (1 + LOX_PER_FUEL[f]) units of total
-  // budget. Solve scale × Σ_f (α_f × (1 + LOX_PER_FUEL[f])) = budget.
-  // Then new_f = scale × α_f, new_LOX = Σ_f (new_f × LOX_PER_FUEL[f]).
+  // With tier penalties, the math has to account for hardware
+  // overhead on each slice. Engine ratios are over STORABLE
+  // (1 unit of fuel storable wants LOX_PER_FUEL[f] units of LOX
+  // storable), but the volume budget is in FOOTPRINT (storable ×
+  // (1 + penalty)). So for each fuel f and the oxidizer:
+  //
+  //   footprint_f   = storable_f × (1 + p_f)
+  //   storable_LOX  = Σ_f (storable_f × LOX_PER_FUEL[f])
+  //   footprint_LOX = storable_LOX × (1 + p_LOX)
+  //   Σ footprint   = Σ_f footprint_f + footprint_LOX = footprint_pool
+  //
+  // With storable_f = scale × α_f (normalized fuel share), solve:
+  //   scale = footprint_pool /
+  //           [ Σ_f α_f (1 + p_f) + (1 + p_LOX) · Σ_f α_f · LOX_PER_FUEL[f] ]
   function balance(): void {
     const oxSlice = slices.find((s) => s.resource === OXIDIZER_RESOURCE);
     const fuelSlices = slices.filter((s) => s.resource in LOX_PER_FUEL);
     if (!oxSlice || fuelSlices.length === 0) return;
 
-    let budget = oxSlice.capacity;
-    for (const f of fuelSlices) budget += f.capacity;
-    if (budget <= 0) return;
+    const oxPenalty = TIER_VOLUME_PENALTY[oxSlice.tier];
+    const oxFootprint = oxSlice.capacity * (1 + oxPenalty);
+    let footprintPool = oxFootprint;
+    for (const f of fuelSlices) {
+      footprintPool += f.capacity * (1 + TIER_VOLUME_PENALTY[f.tier]);
+    }
+    if (footprintPool <= 0) return;
 
-    const fuelSum = fuelSlices.reduce((a, s) => a + s.capacity, 0);
-    if (fuelSum <= 0) return; // all fuels at zero — no signal for proportions
+    const fuelStorableSum = fuelSlices.reduce((a, s) => a + s.capacity, 0);
+    if (fuelStorableSum <= 0) return; // all fuels at zero — no signal for proportions
 
     let denominator = 0;
     for (const f of fuelSlices) {
-      const share = f.capacity / fuelSum;
-      denominator += share * (1 + LOX_PER_FUEL[f.resource]);
+      const share = f.capacity / fuelStorableSum;
+      denominator += share * (1 + TIER_VOLUME_PENALTY[f.tier]);
+      denominator += share * LOX_PER_FUEL[f.resource] * (1 + oxPenalty);
     }
-    const scale = budget / denominator;
+    if (denominator <= 0) return;
+    const scale = footprintPool / denominator;
 
     // Capture each slice's fill fraction BEFORE mutating capacity, then
     // apply it to the new capacity — same fill-preservation semantics
-    // as the capacity-handle drag. A 100%-full LOX slice that grows
-    // during balance stays 100% full; a half-full one stays half-full.
-    let newOxCap = 0;
+    // as the capacity-handle drag and tier swap.
+    let newOxStorable = 0;
     for (const f of fuelSlices) {
-      const share = f.capacity / fuelSum;
+      const share = f.capacity / fuelStorableSum;
       const newCap = scale * share;
       const fillFrac = f.capacity > 0 ? f.contents / f.capacity : 0;
       f.capacity = newCap;
       f.contents = newCap * fillFrac;
-      newOxCap += newCap * LOX_PER_FUEL[f.resource];
+      newOxStorable += newCap * LOX_PER_FUEL[f.resource];
     }
     const oxFillFrac = oxSlice.capacity > 0 ? oxSlice.contents / oxSlice.capacity : 0;
-    oxSlice.capacity = newOxCap;
-    oxSlice.contents = newOxCap * oxFillFrac;
+    oxSlice.capacity = newOxStorable;
+    oxSlice.contents = newOxStorable * oxFillFrac;
   }
 
   // Local working copy of the slice list. Edits land here; the
@@ -170,9 +339,19 @@
     }
   });
 
-  const sumCap   = $derived(slices.reduce((a, s) => a + s.capacity, 0));
   const sumMass  = $derived(slices.reduce((a, s) => a + s.contents * density(s.resource), 0));
-  const unused   = $derived(Math.max(0, volume - sumCap));
+  // Volume the slices actually occupy in the tank envelope. Storable
+  // capacity plus the tier's hardware overhead, summed across slices.
+  // The bar is filled proportionally to footprint (not capacity) so a
+  // tier swap — which preserves a slice's footprint while shifting the
+  // split between storable and hardware — never carves out FREE.
+  const sumFootprint = $derived(slices.reduce(
+    (a, s) => a + s.capacity * (1 + TIER_VOLUME_PENALTY[s.tier]), 0));
+  const unused   = $derived(Math.max(0, volume - sumFootprint));
+  // Per-slice footprint helper. Same factor the bar's pct math uses.
+  function footprintOf(s: TankSlice): number {
+    return s.capacity * (1 + TIER_VOLUME_PENALTY[s.tier]);
+  }
 
   function setContents(i: number, value: number): void {
     const cap = slices[i].capacity;
@@ -182,6 +361,57 @@
   function removeSlice(i: number): void {
     slices = slices.filter((_, j) => j !== i);
   }
+
+  // Tier mutator. A tier swap is footprint-invariant: the slice keeps
+  // the same chunk of tank volume it had before, but the split between
+  // STORABLE capacity and HARDWARE overhead changes. So upgrading
+  // MLI→BAC on a 2400 L LOX slice keeps the LOX bar segment at the
+  // same width and gives it 2400/1.05 = 2286 L storable + 114 L
+  // hardware. No FREE is carved out; other slices are untouched.
+  // Contents stay constant (clamped to the new capacity if the
+  // upgrade reduced storable below the previously-set starting amount).
+  function setTier(i: number, newTier: InsulationTier): void {
+    if (i < 0 || i >= slices.length) return;
+    if (slices[i].tier === newTier) return;
+    const oldCap = slices[i].capacity;
+    const oldPenalty = TIER_VOLUME_PENALTY[slices[i].tier];
+    const newPenalty = TIER_VOLUME_PENALTY[newTier];
+    const footprint = oldCap * (1 + oldPenalty);
+    const newCapacity = footprint / (1 + newPenalty);
+    // Preserve fill fraction across the swap — same convention the
+    // capacity-handle drag uses. A 100%-full slice stays 100% full
+    // through the tier change (storable changes, but the player's
+    // "how full" reading stays anchored). Without this, an MLI→BAC→MLI
+    // round-trip would leave the slice stuck at 95% full because the
+    // BAC step's content-clamp ate the headroom and MLI didn't grow
+    // contents back.
+    const fillFrac = oldCap > 0 ? slices[i].contents / oldCap : 0;
+    slices[i].tier = newTier;
+    slices[i].capacity = newCapacity;
+    slices[i].contents = newCapacity * fillFrac;
+  }
+
+  // Storable capacity the slice would have if its tier were swapped to
+  // `candidateTier` right now. Used by the hover preview to surface
+  // the storable delta before the user commits.
+  function capacityAfterTier(sliceIdx: number, candidateTier: InsulationTier): number {
+    const oldPenalty = TIER_VOLUME_PENALTY[slices[sliceIdx].tier];
+    const newPenalty = TIER_VOLUME_PENALTY[candidateTier];
+    const footprint = slices[sliceIdx].capacity * (1 + oldPenalty);
+    return footprint / (1 + newPenalty);
+  }
+
+  // The set of cryo slices in wire order, paired with their original
+  // index so the picker can address them back to the slice list. Drives
+  // the THERMAL section's row count — non-cryo slices (RP-1, hydrazine,
+  // etc.) simply don't appear.
+  const cryoSlices = $derived.by<Array<{ idx: number; slice: TankSlice }>>(() => {
+    const out: Array<{ idx: number; slice: TankSlice }> = [];
+    for (let i = 0; i < slices.length; i++) {
+      if (CRYO_RESOURCES.has(slices[i].resource)) out.push({ idx: i, slice: slices[i] });
+    }
+    return out;
+  });
 
   // Append a resource at the current free-space size, full by default
   // — players adding fuel almost always want the tank to launch with
@@ -194,7 +424,13 @@
     if (slices.some(s => s.resource === name)) return;
     const cap = unused;
     if (cap <= 0) return;
-    slices = [...slices, { resource: name, capacity: cap, contents: cap }];
+    slices = [...slices, {
+      resource: name, capacity: cap, contents: cap,
+      tier: InsulationTier.MLI,
+      boiloffFractionPerDay: 0,
+      coolerEcW: 0,
+      coolerHeatW: 0,
+    }];
   }
 
   // Swap the resource of an existing slice in place. Capacity and
@@ -228,8 +464,16 @@
   type CapDrag = {
     sliceIdx: number;
     startX: number;
-    cap0: number;
+    /** Bar units this slice owned at drag start — the slice's footprint
+     *  (storable + hardware), since the bar is rendered footprint-wise.
+     *  The drag moves footprint, capacity is derived from it via the
+     *  tier's penalty. */
+    footprint0: number;
+    /** Bar units available outside this slice (= unused at start). */
     freeAtStart: number;
+    /** Volume penalty for this slice's tier — held constant during the
+     *  drag (tier swap closes the menu). */
+    penalty: number;
     /** Fill fraction (contents/capacity) at drag start. Held constant
      *  during the drag so an 80%-full slice stays 80%-full as it
      *  resizes — the user's notion of "how full" tracks the geometry,
@@ -245,11 +489,13 @@
     e.stopPropagation();
     const cap0 = slices[sliceIdx].capacity;
     const contents0 = slices[sliceIdx].contents;
+    const penalty = TIER_VOLUME_PENALTY[slices[sliceIdx].tier];
     capDrag = {
       sliceIdx,
       startX: e.clientX,
-      cap0,
+      footprint0: cap0 * (1 + penalty),
       freeAtStart: unused,
+      penalty,
       fillFrac0: cap0 > 0 ? contents0 / cap0 : 0,
     };
     document.addEventListener('pointermove', onCapHandlePointerMove);
@@ -261,12 +507,15 @@
     const w = barEl.clientWidth;
     if (w <= 0) return;
     const delta = ((e.clientX - capDrag.startX) / w) * volume;
-    // Allowed range: [0, cap0 + freeAtStart]. Above that means the
-    // user is asking for more than the free pool can give.
-    const next = Math.max(0, Math.min(capDrag.cap0 + capDrag.freeAtStart, capDrag.cap0 + delta));
+    // Drag delta is in bar-units = L of footprint. Clamp to
+    // [0, footprint0 + freeAtStart] so the slice can't eat past the
+    // FREE pool or shrink below zero.
+    const nextFootprint = Math.max(0,
+        Math.min(capDrag.footprint0 + capDrag.freeAtStart, capDrag.footprint0 + delta));
+    const nextCap = nextFootprint / (1 + capDrag.penalty);
     const li = capDrag.sliceIdx;
-    slices[li].capacity = next;
-    slices[li].contents = next * capDrag.fillFrac0;
+    slices[li].capacity = nextCap;
+    slices[li].contents = nextCap * capDrag.fillFrac0;
   }
   function onCapHandlePointerUp(): void {
     if (!capDrag) return;
@@ -423,7 +672,12 @@
       propsKey = fingerprint;
       pendingApply = null;
       saving = false;
+      // setTankCustom replaces the loadout AND resets every slice's
+      // tier to MLI mod-side; setTankInsulation immediately re-applies
+      // the desired tier vector so the round-trip is idempotent. Order
+      // matters — onApplyTiers MUST land after onApply.
       onApply(buildPayload());
+      onApplyTiers(slices.map((s) => s.tier));
     }, 250);
   });
 
@@ -446,8 +700,10 @@
     return t.toFixed(2);
   };
   const fmtL = (l: number): string => {
-    if (l >= 10000) return Math.round(l).toLocaleString();
-    if (l >= 100) return l.toFixed(0);
+    // Thousands separators kick in at 1000 — 4,000 L reads cleanly
+    // both ways. Smaller values keep one decimal for granularity.
+    if (Math.abs(l) >= 1000) return Math.round(l).toLocaleString();
+    if (Math.abs(l) >= 100) return l.toFixed(0);
     return l.toFixed(1);
   };
 
@@ -466,8 +722,15 @@
     <div class="tre__section-head">
       <span class="tre__rule"></span>
       <span class="tre__section-title">CAPACITY</span>
+      <!-- Total committed footprint vs gross volume. The numerator is
+           sumFootprint (storable + hardware), which is invariant under
+           tier swaps — that's the player's promise: "the tank's gross
+           volume is fixed; you can rearrange how it's used, but the
+           total commitment number doesn't move when you flip an
+           insulation tier." Propellant-vs-hardware breakdown lives per
+           slice in the THERMAL sub-line. -->
       <span class="tre__section-meta">
-        {fmtL(sumCap)} / {fmtL(volume)}<em>L</em>
+        {fmtL(sumFootprint)} / {fmtL(volume)}<em>L</em>
       </span>
     </div>
 
@@ -477,7 +740,8 @@
          oncontextmenu={openBarMenu}>
       {#each slices as s, i (i)}
         {@const meta = resourceMeta(s.resource)}
-        {@const pct = volume > 0 ? (s.capacity / volume) * 100 : 0}
+        {@const fp = footprintOf(s)}
+        {@const pct = volume > 0 ? (fp / volume) * 100 : 0}
         <div class="tre__slice"
              class:tre__slice--narrow={pct < 8}
              style:width="{pct}%"
@@ -552,6 +816,136 @@
             <span class="tre__row-mass" class:tre__row-mass--zero={massT < 0.005}>
               {fmtTonnes(s.contents * density(s.resource))}<em>t</em>
             </span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
+  <!-- THERMAL section: one row per cryogenic slice. Lets the player
+       commit a slice to a passive or active insulation tier; mod side
+       enforces the volume-penalty invariant and the cooler LP runs in
+       flight. Hidden entirely on tanks with no cryo slices so the
+       editor stays compact for storables-only parts. -->
+  {#if cryoSlices.length > 0}
+    <div class="tre__section">
+      <div class="tre__section-head">
+        <span class="tre__rule"></span>
+        <span class="tre__section-title">THERMAL</span>
+        <span class="tre__section-sub">insulation · cryocooling</span>
+      </div>
+
+      <ul class="tre__therms">
+        {#each cryoSlices as { idx, slice } (idx)}
+          {@const meta = resourceMeta(slice.resource)}
+          <!-- "live" means the LP is currently solving this cooler — true
+                only when the wire reports a non-zero EC or heat draw.
+                Boiloff isn't a "live" signal because passive tiers (and
+                active tiers in editor scope) always emit a non-zero
+                boiloff fraction; gating on it falsely treats the editor
+                as live and ends up displaying 0 W for EC/heat where
+                the mirror's design-rating values would be correct. -->
+          {@const live = slice.coolerEcW > 0 || slice.coolerHeatW > 0}
+          {@const hov = hovered?.sliceIdx === idx ? hovered.tier : null}
+          {@const previewTier = hov !== null ? hov : slice.tier}
+          {@const previewMeta = TIER_META[previewTier]}
+          {@const isPreview = hov !== null && hov !== slice.tier}
+          {@const previewCap = isPreview ? capacityAfterTier(idx, previewTier) : slice.capacity}
+          {@const previewStats = isPreview ? predictTier(slice.resource, previewTier, previewCap) : null}
+          {@const activeStats = predictTier(slice.resource, slice.tier, slice.capacity)}
+          {@const liveStats = (!isPreview && live)
+              ? { fracPerDay: slice.boiloffFractionPerDay, ecW: slice.coolerEcW, heatW: slice.coolerHeatW }
+              : null}
+          {@const stats = isPreview ? previewStats : (liveStats ?? activeStats)}
+          {@const previewHwL = previewCap * TIER_VOLUME_PENALTY[previewTier]}
+          <li class="tre__therm-row"
+              class:tre__therm-row--previewing={isPreview}>
+            <!-- Primary line: code chip + segmented tier track. -->
+            <div class="tre__therm-head">
+              <span class="tre__row-code"
+                    style:--slice-color={meta.color}
+                    style:--slice-tint={meta.tint}>{meta.code}</span>
+
+              <div class="tre__tier-track"
+                   role="radiogroup"
+                   aria-label={`${meta.code} insulation tier`}
+                   style:--slice-color={meta.color}
+                   style:--slice-glow={meta.glow}
+                   style:--slice-tint={meta.tint}>
+                {#each TIER_LIST as tier (tier)}
+                  {@const tm = TIER_META[tier]}
+                  {@const active = slice.tier === tier}
+                  <button type="button"
+                          class="tre__tier"
+                          class:tre__tier--active={active}
+                          class:tre__tier--passive={!tm.isActive}
+                          role="radio"
+                          aria-checked={active}
+                          aria-label={tm.name}
+                          onpointerenter={() => { hovered = { sliceIdx: idx, tier }; }}
+                          onpointerleave={() => { if (hovered?.sliceIdx === idx && hovered.tier === tier) hovered = null; }}
+                          onfocus={() => { hovered = { sliceIdx: idx, tier }; }}
+                          onblur={() => { if (hovered?.sliceIdx === idx && hovered.tier === tier) hovered = null; }}
+                          onclick={() => setTier(idx, tier)}>
+                    <span class="tre__tier-led" aria-hidden="true"></span>
+                    <span class="tre__tier-label">{tm.label}</span>
+                    <span class="tre__tier-stage" aria-hidden="true">
+                      {#each Array(tm.stages) as _, i (i)}
+                        <i class="tre__tier-pip"></i>
+                      {/each}
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <!-- Stats sub-line. Sits under the track, indented to line
+                 up with the start of the track. Shows the inspection
+                 target's numerical state: committed tier when nothing's
+                 hovered, hovered tier when previewing. Mirrors the
+                 ResourceView ".rsv__sub" pattern for visual consistency.
+                 Stats include:
+                   • tier name (slice color when committed, accent when
+                     previewing — flags "not yet committed")
+                   • boiloff %/day
+                   • EC draw and waste heat (active tiers only)
+                   • volume cost (HW for committed; storable + delta
+                     vs current for hover preview)
+                 All numbers come from the wire when live, otherwise
+                 from the local physics mirror. -->
+            <!-- Sub-line uses a 2-column CSS grid with named areas so
+                 every state lays out identically — only the cell
+                 contents change between tier hovers. Row 1 is the
+                 full-width tier name; rows 2-3 hold the four stat
+                 cells (boiloff, EC, heat, hardware-cost). Grid-area
+                 pinning makes the layout bit-for-bit identical for
+                 MLI / HVY / BAC / ZBO whether committed or hover-
+                 previewed — only the numbers and the tier name change.
+                 Numbers are always positive; direction is encoded by
+                 colour alone (warn-amber on the hardware cost when
+                 non-zero). -->
+            <div class="tre__therm-sub"
+                 class:tre__therm-sub--preview={isPreview}>
+              <span class="tre__sub-tier"
+                    style:--slice-color={meta.color}>{previewMeta.name}</span>
+              <span class="tre__sub-field tre__sub-field--boil">
+                <span class="tre__sub-label">boil</span>
+                <span class="tre__sub-pct">{fmtFracPctPerDay(stats?.fracPerDay ?? 0)}</span>
+              </span>
+              <span class="tre__sub-field tre__sub-field--ec">
+                <span class="tre__sub-label">EC</span>
+                <span class="tre__sub-ec">{fmtW(stats?.ecW ?? 0)}<em>W</em></span>
+              </span>
+              <span class="tre__sub-field tre__sub-field--heat">
+                <span class="tre__sub-label">heat</span>
+                <span class="tre__sub-heat">{fmtW(stats?.heatW ?? 0)}<em>W</em></span>
+              </span>
+              <span class="tre__sub-field tre__sub-field--hw">
+                <span class="tre__sub-label">hw</span>
+                <span class="tre__sub-vol"
+                      class:tre__sub-vol--warn={previewHwL > 0.5}>{fmtL(previewHwL)}<em>L</em></span>
+              </span>
+            </div>
           </li>
         {/each}
       </ul>
@@ -883,6 +1277,320 @@
   .tre__row-mass em {
     font-style: normal; font-size: 9px;
     color: var(--fg-dim); margin-left: 2px; letter-spacing: 0.14em;
+  }
+
+  /* ----- THERMAL section ------------------------------------------
+     Per-cryo-slice row: code-tile · segmented-tier-track · readout.
+     The track reads as one rigid panel-mount control, not four buttons.
+     Active blade lights up in the slice's resource colour; inactive
+     blades are dim outlines; over-volume tiers carry a hatched alert
+     so the gating is visible at a glance without having to click. */
+  .tre__section-sub {
+    margin-left: auto;
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--fg-mute);
+    text-transform: lowercase;
+  }
+  .tre__therms {
+    list-style: none;
+    margin: 0; padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  /* Each cryo slice's thermal row is a flex column: primary line on
+     top (code + track), stats sub-line below. The sub-line carries the
+     numerical readout for the committed or hovered tier — moved out of
+     a right-side column so the numbers have room to label themselves
+     and reads with the visual grammar of ResourceView's boiloff-sub. */
+  .tre__therm-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 2px 0 4px;
+  }
+  .tre__therm-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+  }
+
+  /* The segmented track frame. Single inset bevel, fixed height; the
+     blades inside share a 1 px-line divider to read as one control
+     panel rather than discrete buttons. Minimum width gives the four
+     blades enough breathing room that "BAC" / "HVY" / "MLI" / "ZBO"
+     don't crowd their LEDs or stage pips. */
+  .tre__tier-track {
+    flex: 1 1 auto;
+    min-width: 240px;
+    display: flex;
+    align-items: stretch;
+    height: 34px;
+    border: 1px solid var(--line-bright);
+    background:
+      linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.32) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(0, 0, 0, 0.55),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.025);
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* Individual tier blade. Each carries a top LED telltale (off / dim
+     / lit), the tier label centred, and a stage-pip row at the bottom
+     edge. The LED is positioned absolutely from the top inside the
+     blade's column so its glow doesn't push surrounding layout.
+     Font: var(--font-mono) (Azeret Mono — same font part names use).
+     The display font (Unica One) at this size in CEF renders muddy;
+     mono + uppercase + tracking gives the same caps treatment with
+     much crisper antialiasing. */
+  .tre__tier {
+    position: relative;
+    appearance: none;
+    background: transparent;
+    border: none;
+    border-left: 1px solid var(--line);
+    padding: 4px 4px 3px;
+    flex: 1 1 0;
+    min-width: 56px;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    text-align: center;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0;
+    transition:
+      color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+      background 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+  }
+  .tre__tier:first-of-type { border-left: none; }
+  .tre__tier:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* LED telltale: a small dot at the very top of the blade. Off-state
+     is a dim hollow ring; hover lifts to dim-fill; active fills in the
+     slice colour with a glow. */
+  .tre__tier-led {
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--line-bright);
+    box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.45);
+    transition:
+      background 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      border-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .tre__tier:hover:not(:disabled) .tre__tier-led {
+    border-color: var(--accent-dim);
+  }
+  .tre__tier-label {
+    /* Pin font defensively — flex-column children in CEF have been
+       observed inheriting the parent button's font shorthand in
+       surprising ways. */
+    font-family: var(--font-mono);
+    font-weight: 500;
+    letter-spacing: inherit;
+    text-transform: uppercase;
+    margin-top: 9px;
+    line-height: 1;
+    color: inherit;
+    transition: text-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  /* Stage pips: a tight row at the bottom-right corner. One pip per
+     cryocooler stage — empty for passive tiers, single for BAC, double
+     for ZBO. Inactive pips are dim outlines, active pips light up in
+     the slice colour. */
+  .tre__tier-stage {
+    position: absolute;
+    right: 3px;
+    bottom: 2px;
+    display: inline-flex;
+    gap: 2px;
+  }
+  .tre__tier-pip {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--line-bright);
+    transition: background 220ms cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Hover (available, not active): wash the blade with a faint
+     accent-dim tint and brighten the label. Reads as "this is
+     tappable" without competing with the active highlight. */
+  .tre__tier:hover:not(:disabled):not(.tre__tier--active) {
+    color: var(--fg);
+    background: rgba(126, 245, 184, 0.04);
+  }
+
+  /* Active blade. Fills in the slice's resource colour at low alpha;
+     the LED becomes a lit pip glowing in the same colour. Label
+     intensifies and picks up the resource hue with a soft text-shadow.
+     A 2-px accent rail at the bottom underlines the choice, anchoring
+     it as the committed value (mirrors the contents-row fill-bar
+     convention from ResourceView). */
+  .tre__tier--active {
+    color: var(--slice-color, var(--accent));
+    background:
+      linear-gradient(180deg,
+        color-mix(in srgb, var(--slice-color, var(--accent)) 18%, transparent) 0%,
+        color-mix(in srgb, var(--slice-color, var(--accent)) 6%,  transparent) 100%),
+      var(--slice-tint, transparent);
+    cursor: default;
+  }
+  .tre__tier--active .tre__tier-label {
+    text-shadow: 0 0 6px color-mix(in srgb, var(--slice-color, var(--accent)) 55%, transparent);
+  }
+  .tre__tier--active .tre__tier-led {
+    background:
+      radial-gradient(circle at 32% 30%,
+        color-mix(in srgb, var(--slice-color, var(--accent)) 30%, white 70%) 0%,
+        var(--slice-color, var(--accent)) 60%,
+        color-mix(in srgb, var(--slice-color, var(--accent)) 60%, black 40%) 100%);
+    border-color: color-mix(in srgb, var(--slice-color, var(--accent)) 60%, white 40%);
+    box-shadow:
+      0 0 6px color-mix(in srgb, var(--slice-color, var(--accent)) 65%, transparent),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  }
+  .tre__tier--active .tre__tier-pip {
+    background: var(--slice-color, var(--accent));
+    box-shadow: 0 0 4px color-mix(in srgb, var(--slice-color, var(--accent)) 60%, transparent);
+  }
+  /* Bottom-edge rail anchors the active blade to the track frame —
+     subtle horizontal underline in the slice colour. */
+  .tre__tier--active::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 2px;
+    background: var(--slice-color, var(--accent));
+    box-shadow: 0 0 6px color-mix(in srgb, var(--slice-color, var(--accent)) 55%, transparent);
+    pointer-events: none;
+  }
+
+  /* Stats sub-line under each thermal row. CSS grid with named areas
+     so geometry is structural (not dependent on browser wrap
+     heuristics or font metrics). Row 1 holds the full-width tier
+     name, rows 2-3 hold the four stat cells (boil, EC, heat, hw)
+     in a 2-column layout. Cell positions are pinned by `grid-area`
+     so hover-swapping content can never reflow the layout — only
+     the text inside each cell changes. */
+  .tre__therm-sub {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "tier tier"
+      "boil ec"
+      "heat hw";
+    column-gap: 14px;
+    row-gap: 3px;
+    padding-left: 46px;
+    padding-right: 4px;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    line-height: 1.15;
+    color: var(--fg-dim);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  .tre__sub-tier {
+    grid-area: tier;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: var(--slice-color, var(--fg-dim));
+    text-shadow: 0 0 5px color-mix(in srgb, var(--slice-color, var(--accent)) 22%, transparent);
+    transition: color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+                text-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .tre__sub-field--boil { grid-area: boil; }
+  .tre__sub-field--ec   { grid-area: ec; }
+  .tre__sub-field--heat { grid-area: heat; }
+  .tre__sub-field--hw   { grid-area: hw; }
+  /* Preview state: tier name swings accent so the player sees at-a-
+     glance that this isn't the committed state. */
+  .tre__therm-sub--preview .tre__sub-tier {
+    color: var(--accent);
+    text-shadow: 0 0 6px var(--accent-glow);
+  }
+  /* Each stat is one field: "LABEL value <unit>". Inline-block + a
+     min-width keeps the field's slot constant regardless of which
+     number lives there this tick. Pads accommodate the widest value
+     each field carries:
+       boiloff %/d: "3.000 %/d"     ≈ 60 px
+       EC W      : "150 W"          ≈ 42 px
+       heat W    : "180 W"          ≈ 42 px
+       stores L  : "2,400 L"        ≈ 50 px
+       delta L   : "▲ 219 L"        ≈ 60 px (incl. arrow glyph)
+     Each value spans (.tre__sub-pct etc.) are inline-block too so
+     their internal min-width applies inside the parent field. */
+  /* Each stat cell: "LABEL value <unit>". Cells use display: flex so
+     the label and value sit on the same baseline. Labels are right-
+     aligned in a min-width slot so a hover-swap can't shift the value
+     even if the next tier's label is a different length. Values are
+     right-aligned so digits column-align across the grid's two cells
+     per row. */
+  .tre__sub-field {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+  .tre__sub-label {
+    flex: 0 0 32px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
+    text-transform: uppercase;
+  }
+  .tre__sub-pct,
+  .tre__sub-ec,
+  .tre__sub-heat,
+  .tre__sub-vol {
+    flex: 1 1 auto;
+    text-align: left;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .tre__sub-pct  { color: var(--warn); }
+  .tre__sub-ec   { color: var(--accent); }
+  .tre__sub-heat { color: color-mix(in srgb, var(--alert) 70%, var(--warn) 30%); }
+  .tre__sub-vol  { color: var(--fg); }
+  /* Warn-tint the hardware-cost value when the tier carries a
+     non-zero penalty, so it reads as a cost at a glance. */
+  .tre__sub-vol--warn { color: var(--warn); }
+  .tre__therm-sub em {
+    font-style: normal; font-size: 8px;
+    color: var(--fg-mute); margin-left: 1px; letter-spacing: 0.12em;
   }
 
   /* Footer: cumulative mass on the left, REVERT on the right.

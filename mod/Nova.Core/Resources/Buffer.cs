@@ -62,6 +62,7 @@ public class Buffer {
   internal SimClock Clock;
 
   private double _rate;
+  private double _backgroundDrainRate;
 
   public double Rate {
     get => _rate;
@@ -76,6 +77,29 @@ public class Buffer {
       _rate = value;
     }
   }
+
+  // Continuous outflow (negative) / inflow (positive) that is NOT
+  // engine demand. Today: cryogenic tank boiloff. Lives separately
+  // from Rate so DV-sim termination checks (which read Rate to detect
+  // "engines stopped firing on this tier") aren't polluted by slow
+  // background processes that never go to zero on their own. The lerp
+  // in ContentsAt integrates Rate + BackgroundDrainRate together, so
+  // displayed Contents and MaxTickDt forecasts stay accurate.
+  public double BackgroundDrainRate {
+    get => _backgroundDrainRate;
+    set {
+      var t = Clock?.UT ?? BaselineUT;
+      BaselineContents = ContentsAt(t);
+      BaselineUT = t;
+      _backgroundDrainRate = value;
+    }
+  }
+
+  // Engine flow + background drain together — the rate the lerp
+  // integrates. Solver code reads `Rate` directly when it wants
+  // engine-only flow (e.g. tier-spent checks); horizon code reads
+  // `EffectiveRate` for accurate empty/fill forecasts.
+  public double EffectiveRate => _rate + _backgroundDrainRate;
 
   // Current Contents, lerped from baseline to the shared clock's UT
   // and clamped to [0, Capacity]. Setter rebaselines: new
@@ -92,7 +116,7 @@ public class Buffer {
   // Contents at an arbitrary UT — useful when callers want to
   // forecast or read a different time than "now".
   public double ContentsAt(double ut) {
-    var projected = BaselineContents + _rate * (ut - BaselineUT);
+    var projected = BaselineContents + (_rate + _backgroundDrainRate) * (ut - BaselineUT);
     if (projected < 0) return 0;
     if (projected > Capacity) return Capacity;
     return projected;

@@ -31,6 +31,28 @@ public class Resource {
   public double Density; // kg/U
   public ResourceDomain Domain;
 
+  // Cryogenic boiloff baseline — fraction of slice capacity lost per
+  // Earth day under stock MLI insulation. Anchored to real spacecraft
+  // cryo data (LH₂ ~3%/day, LOX ~1%/day, CH₄ ~0.5%/day at typical
+  // tank surface-to-volume ratios). Storable / non-cryogenic resources
+  // are 0 — no boiloff, no tier hardware needed. Used by TankVolume
+  // together with InsulationTierTable to compute net boiloff per slice.
+  public double MliBoiloffFractionPerDay;
+
+  // Operating temperature (Kelvin) of the fluid in a tank — its boiling
+  // point at the storage pressure. Drives the cryocooler's required
+  // ΔT (against AmbientK) and Carnot COP, so LH₂ at 20 K costs
+  // dramatically more EC per watt of cooling than LOX at 90 K under
+  // the same insulation tier. 0 for storables / non-cryogenic.
+  public double BoilingPointK;
+
+  // Latent heat of vaporization in J/kg at the storage temperature.
+  // Closes the loop between "fraction of tank lost per day" and the
+  // actual heat-leak wattage the cooler must remove:
+  //   Q_leak (W) = capacity × frac/day × density × Lv / 86400
+  // 0 for storables / non-cryogenic.
+  public double LatentHeatJPerKg;
+
   private static Dictionary<string, Resource> registry = new();
 
   public class UnitDefinition {
@@ -80,6 +102,9 @@ public class Resource {
       Unit = UnitDefinition.Liter,
       Density = 0.07,
       Domain = ResourceDomain.Topological,
+      MliBoiloffFractionPerDay = 0.03,
+      BoilingPointK = 20.3,
+      LatentHeatJPerKg = 446_000,
     };
 
     registry["Liquid Oxygen"] = new Resource {
@@ -88,6 +113,9 @@ public class Resource {
       Unit = UnitDefinition.Liter,
       Density = 1.2,
       Domain = ResourceDomain.Topological,
+      MliBoiloffFractionPerDay = 0.01,
+      BoilingPointK = 90.2,
+      LatentHeatJPerKg = 213_000,
     };
 
     registry["RP-1"] = new Resource {
@@ -122,6 +150,9 @@ public class Resource {
       Unit = UnitDefinition.Liter,
       Density = 0.42,
       Domain = ResourceDomain.Topological,
+      MliBoiloffFractionPerDay = 0.005,
+      BoilingPointK = 111.7,
+      LatentHeatJPerKg = 510_000,
     };
 
     // Nitrogen tetroxide. Hypergolic oxidizer for Hydrazine.

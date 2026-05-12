@@ -45,13 +45,36 @@ export type NovaSolarFrame    = ['S', currentEcRate: number, maxEcRate: number, 
 export type NovaBatteryFrame  = ['B', soc: number, capacity: number, rate: number];
 export type NovaWheelFrame    = ['W', motorRate: number, busRate: number, bufferFraction: number, refillActive: 0 | 1, motorRated: number, busRated: number];
 export type NovaLightFrame    = ['L', rate: number, ratedRate: number];
-// Per-buffer slice on a TankVolume — `[resource, capacity, contents]`,
-// litres. The tank carries its own buffers on this frame so consumers
-// (e.g. the editor's Tanks view) don't have to disambiguate which
-// entries in the part's flat `resources` list are tank slices vs.
-// unrelated buffers (Battery's Electric Charge, etc.).
-export type NovaTankSliceFrame = [resource: string, capacity: number, contents: number];
+// Per-buffer slice on a TankVolume. The tank carries its own buffers
+// on this frame so consumers (e.g. the editor's Tanks view) don't
+// have to disambiguate which entries in the part's flat `resources`
+// list are tank slices vs. unrelated buffers (Battery's Electric
+// Charge, etc.).
+//
+// Slot 3 is the insulation tier as int (see InsulationTier below);
+// slot 4 is the realised boiloff fraction per Earth day (pre-blended
+// with cooler Activity — never raw LP activity); slots 5/6 are the
+// realised cooler EC draw and waste-heat output (W) for active tiers,
+// 0 for passive tiers and non-cryogenic slices.
+export type NovaTankSliceFrame = [
+  resource: string,
+  capacity: number,
+  contents: number,
+  tier: number,
+  boiloffFractionPerDay: number,
+  coolerEcW: number,
+  coolerHeatW: number,
+];
 export type NovaTankFrame     = ['T', volume: number, slices: NovaTankSliceFrame[]];
+
+// Per-slice insulation tier. Int values match
+// `Nova.Core.Persistence.Protos.InsulationTier` exactly.
+export enum InsulationTier {
+  MLI       = 0,
+  HeavyMLI  = 1,
+  BAC       = 2,
+  ZBO       = 3,
+}
 export type NovaCommandFrame  = [
   'C',
   idleRate: number,
@@ -349,6 +372,23 @@ export interface TankSlice {
   capacity: number;
   /** Currently filled litres. 0 ≤ contents ≤ capacity. */
   contents: number;
+  /** Insulation / cooling tier for this slice. MLI is the design
+   *  baseline (no volume penalty); HeavyMLI / BAC pay a surface-area
+   *  penalty; ZBO additionally pays a cold-finger penalty. */
+  tier: InsulationTier;
+  /** Realised boiloff fraction per Earth day at the current cooler
+   *  Activity — 0 for non-cryogenic resources and for ZBO at full
+   *  supply, larger when an active tier degrades to its passive
+   *  fallback (EC starvation or saturated heat bus). */
+  boiloffFractionPerDay: number;
+  /** Live EC draw (W) of this slice's cryocooler — 0 for passive
+   *  tiers (MLI / HeavyMLI) and for non-cryogenic resources. */
+  coolerEcW: number;
+  /** Live waste heat (W) emitted to the vessel heat bus by this
+   *  slice's cryocooler. 0 for passive tiers. Radiators have to
+   *  reject this; if they can't, LP drops the cooler's Activity and
+   *  boiloffFractionPerDay rises accordingly. */
+  coolerHeatW: number;
 }
 
 export interface TankState {
@@ -742,9 +782,20 @@ export interface NovaPartOps {
    * resource/capacity/contents triples. Rejected outside the editor;
    * also rejected when the summed capacity exceeds the part's
    * `TankVolume.Volume`, when a resource name doesn't resolve, or
-   * when contents fall outside [0, capacity].
+   * when contents fall outside [0, capacity]. Every slice's insulation
+   * tier is reset to MLI as part of the swap — follow with
+   * `setTankInsulation` if the preset wants HeavyMLI / BAC / ZBO.
    */
   setTankCustom(tanks: TankCustomEntry[]): void;
+
+  /**
+   * Editor-only. Replace this tank's per-slice insulation tier vector,
+   * one entry per existing slice in slice order. Rejected when the
+   * length mismatches the slice count, an entry is out of range, or
+   * the resulting Σ capacity × (1 + tierVolumePenalty) exceeds the
+   * part's `TankVolume.Volume`. Tiers persist via `TankStructure.insulation`.
+   */
+  setTankInsulation(tiers: InsulationTier[]): void;
 
   /**
    * Toggle the debug "test load" on this part's command pod (a
@@ -1172,8 +1223,14 @@ export function decodePart(f: NovaPartFrame): NovaPart {
       case 'T':
         out.tank.push({
           volume: c[1],
-          slices: c[2].map(([resource, capacity, contents]) => ({
+          slices: c[2].map(([
             resource, capacity, contents,
+            tier, boiloffFractionPerDay, coolerEcW, coolerHeatW,
+          ]) => ({
+            resource, capacity, contents,
+            tier: tier as InsulationTier,
+            boiloffFractionPerDay,
+            coolerEcW, coolerHeatW,
           })),
         });
         break;

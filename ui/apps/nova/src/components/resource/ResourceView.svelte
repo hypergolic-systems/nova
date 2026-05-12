@@ -137,6 +137,73 @@
     return { mag: fmtMag(Math.abs(value) / p.div), unit: p.letter + baseUnit };
   }
 
+  // Aggregate this part's boiloff for a resource across every tank
+  // slice it owns. Returns L/d (absolute drain — capacity-weighted) and
+  // %/d (capacity-weighted average fraction). The two are independent
+  // observables: a small tank with bad insulation can have a high %/d
+  // but low absolute L/d, and the user wants both — %/d says "how
+  // quickly", L/d says "how much you'll miss".
+  function partBoiloff(p: NovaTaggedPart, resourceId: string):
+      { litresPerDay: number; fractionPerDay: number } {
+    let litresPerDay = 0;
+    let weightedSum = 0;
+    let totalCap = 0;
+    for (const tank of p.state?.tank ?? []) {
+      for (const slice of tank.slices) {
+        if (slice.resource !== resourceId) continue;
+        if (slice.boiloffFractionPerDay <= 0) continue;
+        const drain = slice.capacity * slice.boiloffFractionPerDay;
+        litresPerDay += drain;
+        weightedSum += slice.boiloffFractionPerDay * slice.capacity;
+        totalCap += slice.capacity;
+      }
+    }
+    return {
+      litresPerDay,
+      fractionPerDay: totalCap > 0 ? weightedSum / totalCap : 0,
+    };
+  }
+
+  function groupBoiloff(g: ResourceGroup): { litresPerDay: number; fractionPerDay: number } {
+    let litresPerDay = 0;
+    let weightedSum = 0;
+    let totalCap = 0;
+    for (const e of g.entries) {
+      const b = partBoiloff(e.part, g.resourceId);
+      litresPerDay += b.litresPerDay;
+      // Re-weight by the parts' aggregated capacity so the group %/d
+      // tracks the actual mass-weighted average across tanks of
+      // different sizes.
+      for (const tank of e.part.state?.tank ?? []) {
+        for (const slice of tank.slices) {
+          if (slice.resource !== g.resourceId) continue;
+          if (slice.boiloffFractionPerDay <= 0) continue;
+          weightedSum += slice.boiloffFractionPerDay * slice.capacity;
+          totalCap += slice.capacity;
+        }
+      }
+    }
+    return {
+      litresPerDay,
+      fractionPerDay: totalCap > 0 ? weightedSum / totalCap : 0,
+    };
+  }
+
+  // Boiloff formatting. The L/d magnitude uses the same SI-prefix
+  // ladder as everything else (mL/d for slow drains, L/d for typical
+  // cryo, kL/d for cartoonishly large tanks). The %/d is rounded to
+  // three decimals so 3 %/d, 0.300 %/d, and 0.030 %/d sit on the same
+  // visual column.
+  function fmtBoiloff(litresPerDay: number, fractionPerDay: number, baseUnit: string):
+      { mag: string; unit: string; pct: string } {
+    const p = siPrefix(litresPerDay);
+    return {
+      mag: fmtMag(litresPerDay / p.div),
+      unit: p.letter + baseUnit + '/d',
+      pct: (fractionPerDay * 100).toFixed(3) + ' %/d',
+    };
+  }
+
   const fillFraction = (amount: number, capacity: number): number =>
     capacity > 0 ? amount / capacity : 0;
 
@@ -245,6 +312,7 @@
                 {@const frac = fillFraction(r.amount, r.capacity)}
                 {@const ap = fmtAmountPair(r.amount, r.capacity, m.unit)}
                 {@const rp = fmtRate(r.rate, m.rateUnit)}
+                {@const bo = partBoiloff(p, r.resourceId)}
                 <li class="rsv__row"
                     style:--rsv-fill={frac}
                     style:--rsv-fill-color={fillColor(frac, m.color)}>
@@ -265,6 +333,16 @@
                     </span>
                   </span>
                 </li>
+                {#if bo.litresPerDay > 0}
+                  {@const bp = fmtBoiloff(bo.litresPerDay, bo.fractionPerDay, m.unit)}
+                  <li class="rsv__sub" aria-label="boil-off rate">
+                    <span class="rsv__sub-label">boil-off</span>
+                    <span class="rsv__sub-sep">·</span>
+                    <span class="rsv__sub-val">{bp.mag}<em class="rsv__sub-unit">{bp.unit}</em></span>
+                    <span class="rsv__sub-sep">·</span>
+                    <span class="rsv__sub-pct">{bp.pct}</span>
+                  </li>
+                {/if}
               {/each}
             </ul>
           {/if}
@@ -282,6 +360,7 @@
         {@const frac = fillFraction(g.totalAmount, g.totalCapacity)}
         {@const groupIds = g.entries.map((e) => e.part.struct.id)}
         {@const grp = fmtRate(g.totalRate, m.rateUnit)}
+        {@const gbo = groupBoiloff(g)}
         <div class="rsv__node">
           <button
             type="button"
@@ -314,12 +393,23 @@
               {grp.mag}<em>{grp.unit}</em>
             </span>
           </div>
+          {#if gbo.litresPerDay > 0}
+            {@const gbp = fmtBoiloff(gbo.litresPerDay, gbo.fractionPerDay, m.unit)}
+            <div class="rsv__sub rsv__sub--group" aria-label="boil-off rate">
+              <span class="rsv__sub-label">boil-off</span>
+              <span class="rsv__sub-sep">·</span>
+              <span class="rsv__sub-val">{gbp.mag}<em class="rsv__sub-unit">{gbp.unit}</em></span>
+              <span class="rsv__sub-sep">·</span>
+              <span class="rsv__sub-pct">{gbp.pct}</span>
+            </div>
+          {/if}
           {#if open}
             <ul class="rsv__rows rsv__rows--nested">
               {#each g.entries as e (e.part.struct.id)}
                 {@const efrac = fillFraction(e.flow.amount, e.flow.capacity)}
                 {@const eap = fmtAmountPair(e.flow.amount, e.flow.capacity, m.unit)}
                 {@const erp = fmtRate(e.flow.rate, m.rateUnit)}
+                {@const ebo = partBoiloff(e.part, g.resourceId)}
                 <li class="rsv__row rsv__row--nested"
                     style:--rsv-fill={efrac}
                     style:--rsv-fill-color={fillColor(efrac, m.color)}
@@ -342,6 +432,16 @@
                     </span>
                   </span>
                 </li>
+                {#if ebo.litresPerDay > 0}
+                  {@const ebp = fmtBoiloff(ebo.litresPerDay, ebo.fractionPerDay, m.unit)}
+                  <li class="rsv__sub rsv__sub--nested" aria-label="boil-off rate">
+                    <span class="rsv__sub-label">boil-off</span>
+                    <span class="rsv__sub-sep">·</span>
+                    <span class="rsv__sub-val">{ebp.mag}<em class="rsv__sub-unit">{ebp.unit}</em></span>
+                    <span class="rsv__sub-sep">·</span>
+                    <span class="rsv__sub-pct">{ebp.pct}</span>
+                  </li>
+                {/if}
               {/each}
             </ul>
           {/if}
@@ -820,6 +920,48 @@
     color: var(--fg-dim);
     letter-spacing: 0.10em;
   }
+
+  /* Boil-off sub-line. Tucked under the relevant resource row (or
+     group head); intentionally calm — small, dim, no fill underline,
+     no hover affordance — so it reads as a diagnostic annotation
+     rather than a tappable row. Only renders when the slice has a
+     non-zero boiloffFractionPerDay. */
+  .rsv__sub {
+    list-style: none;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 1px 6px 3px 44px;       /* 44 px = code-tile (36) + gap (8) — lines the label up under the readout column */
+    margin: 0 -6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .rsv__sub--nested {
+    padding-left: 26px;              /* matches `.rsv__row-icon` indent under the BY-RESOURCE nested rows */
+  }
+  .rsv__sub--group {
+    padding: 0 6px 4px 50px;         /* under the chevron + code-tile head, just below the gauge line */
+  }
+  .rsv__sub-label {
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--warn);
+    opacity: 0.85;
+  }
+  .rsv__sub-val { color: var(--fg); opacity: 0.78; }
+  .rsv__sub-unit {
+    font-style: normal;
+    margin-left: 3px;
+    font-size: 9px;
+    color: var(--fg-dim);
+    letter-spacing: 0.10em;
+  }
+  .rsv__sub-sep { color: var(--fg-dim); opacity: 0.5; margin: 0 2px; }
+  .rsv__sub-pct { color: var(--fg-dim); font-size: 10px; }
 
   /* Empty-state line — verbatim Power's pattern for visual rhyme. */
   .rsv__empty {

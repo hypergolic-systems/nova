@@ -130,15 +130,28 @@ public static class ComponentFactory {
       Volume = double.Parse(node.GetValue("volume")),
       MaxRate = double.Parse(maxRateValue),
     };
+    double footprintSum = 0;
     foreach (var tankNode in node.GetNodes("TANK")) {
       var capacity = double.Parse(tankNode.GetValue("capacity"));
+      var insulationValue = tankNode.GetValue("insulation");
+      var tier = InsulationTier.MLI;
+      if (insulationValue != null
+          && !System.Enum.TryParse(insulationValue, ignoreCase: true, out tier))
+        throw new System.ArgumentException(
+            $"NovaTankModule: unknown insulation tier '{insulationValue}' (expected one of MLI, HeavyMLI, BAC, ZBO).");
       tank.Tanks.Add(new Buffer {
         Resource = Resource.Get(tankNode.GetValue("resource")),
         Capacity = capacity,
         Contents = tankNode.GetValue("value") != null
           ? double.Parse(tankNode.GetValue("value")) : capacity,
       });
+      tank.Tiers.Add(tier);
+      footprintSum += capacity * (1.0 + InsulationTierTable.VolumePenalty(tier));
     }
+    if (footprintSum > tank.Volume + 1e-6)
+      throw new System.ArgumentException(
+          $"NovaTankModule: TANK capacities + tier volume penalties ({footprintSum:F2} L) " +
+          $"exceed declared Volume ({tank.Volume:F2} L). Reduce capacities or pick a lower tier.");
     return tank;
   }
 

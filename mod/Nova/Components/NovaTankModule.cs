@@ -24,8 +24,13 @@ public class NovaTankModule : NovaPartModule, IPartMassModifier {
 
   public ModifierChangeWhen GetModuleMassChangeWhen() {
     if (tankVolume != null) {
+      // EffectiveRate, not Rate — boiloff lives on Buffer.BackgroundDrainRate
+      // and an idle cryo tank under MLI is still losing mass continuously.
+      // Tank wet mass scales with Contents × Density, so FIXED would freeze
+      // KSP's cached mass at the launch value while real Contents drifts
+      // down via the lerp.
       foreach (var tank in tankVolume.Tanks) {
-        if (tank.Rate != 0) return ModifierChangeWhen.CONSTANTLY;
+        if (tank.EffectiveRate != 0) return ModifierChangeWhen.CONSTANTLY;
       }
     }
     return ModifierChangeWhen.FIXED;

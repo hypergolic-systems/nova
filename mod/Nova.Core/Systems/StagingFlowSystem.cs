@@ -602,11 +602,14 @@ public class StagingFlowSystem : BackgroundSystem {
       if (n.Jettisoned) continue;
       foreach (var b in n.Buffers) {
         if (b.Resource.Domain != ResourceDomain.Topological) continue;
-        if (b.Rate < -Epsilon && IsAlive(b)) {
-          var t = b.Contents / -b.Rate;
+        // EffectiveRate folds in BackgroundDrainRate (boiloff) so the
+        // forecast matches what the lerp will actually integrate.
+        var rate = b.EffectiveRate;
+        if (rate < -Epsilon && IsAlive(b)) {
+          var t = b.Contents / -rate;
           if (t < earliest) earliest = t;
-        } else if (b.Rate > Epsilon && HasFillHeadroom(b)) {
-          var t = (b.Capacity - b.Contents) / b.Rate;
+        } else if (rate > Epsilon && HasFillHeadroom(b)) {
+          var t = (b.Capacity - b.Contents) / rate;
           if (t < earliest) earliest = t;
         }
       }

@@ -127,8 +127,23 @@ message TankVolumeStructure {
 }
 
 message TankStructure {
-  string resource = 1;
-  double capacity = 2;
+  string         resource   = 1;
+  double         capacity   = 2;
+  InsulationTier insulation = 3;
+}
+
+// Per-slice thermal hardware. MLI is the design baseline (parts are
+// already sized for it — no extra volume cost). HeavyMLI / BAC pay a
+// surface-area MLI-thickness penalty; ZBO pays that plus a cold-finger
+// penalty. BAC and ZBO additionally register a ProcessFlowSystem
+// device that consumes ElectricCharge and emits waste Heat to the bus
+// — radiators must reject it or LP drops Activity and boiloff returns.
+// Per-tier numbers live in InsulationTierTable.cs (not in this proto).
+enum InsulationTier {
+  TIER_MLI       = 0;
+  TIER_HEAVY_MLI = 1;
+  TIER_BAC       = 2;
+  TIER_ZBO       = 3;
 }
 
 message BatteryStructure {

@@ -62,7 +62,8 @@ namespace Nova.Telemetry;
 //   ["W", motorRate, busRate, bufferFraction, refillActive, motorRated, busRated] ReactionWheel
 //   ["L", currentRate, ratedRate]                                                 Light
 //   ["T", volume,
-//          [[resource, capacity, contents], ...]]                                  TankVolume
+//          [[resource, capacity, contents,
+//            tier:int, boiloffFracPerDay, coolerEcW, coolerHeatW], ...]]            TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
 //          manifoldFraction, refillActive]                                         FuelCell
 //   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive, idleRated]    Command
@@ -112,9 +113,23 @@ namespace Nova.Telemetry;
 //                                when the summed capacity exceeds the
 //                                part's TankVolume.Volume, when a name
 //                                doesn't resolve, or when contents fall
-//                                outside [0, capacity]. Presets live
-//                                UI-side (editor/tank-presets.ts) and
-//                                resolve to this op before dispatch.
+//                                outside [0, capacity]. Resets every
+//                                slice's insulation tier to MLI; the UI
+//                                follows with setTankInsulation when a
+//                                cryo preset wants HeavyMLI/BAC/ZBO.
+//                                Presets live UI-side (editor/tank-
+//                                presets.ts) and resolve to this op
+//                                before dispatch.
+//   "setTankInsulation" [tier:int, tier:int, ...]
+//                              — replace the per-slice insulation tier
+//                                vector (0=MLI, 1=HeavyMLI, 2=BAC,
+//                                3=ZBO), one entry per existing slice
+//                                in slice order. Editor-only. Rejected
+//                                when length mismatches the slice
+//                                count, an entry is out of range, or
+//                                the resulting Σ capacity × (1 +
+//                                tierVolumePenalty) exceeds the part's
+//                                TankVolume.Volume.
 //   "setFullSeparation" [bool]  — toggle the per-decoupler "release every
 //                                neighbour" mode (stock separator
 //                                semantics). Editor-only. Rejected on
@@ -301,6 +316,49 @@ public sealed class NovaPartTopic : Topic {
         MarkDirty();
         return;
       }
+      case "setTankInsulation": {
+        if (args == null || args.Count < 1 || !(args[0] is List<object> rawTiers)) {
+          Debug.LogWarning(LogPrefix + Name + " setTankInsulation: expected [[tier:int, ...]]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          Debug.Log(LogPrefix + Name + " setTankInsulation rejected outside editor");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaTankModule>();
+        if (module?.TankVolume == null) return;
+        if (rawTiers.Count != module.TankVolume.Tanks.Count) {
+          Debug.LogWarning(LogPrefix + Name + " setTankInsulation: tier count "
+              + rawTiers.Count + " != slice count " + module.TankVolume.Tanks.Count);
+          return;
+        }
+        var tiers = new List<InsulationTier>(rawTiers.Count);
+        double footprint = 0;
+        for (int i = 0; i < rawTiers.Count; i++) {
+          // Decoded JSON numbers land as double; cast to int and range-check.
+          if (!(rawTiers[i] is double d)) {
+            Debug.LogWarning(LogPrefix + Name + " setTankInsulation: entry " + i + " not a number");
+            return;
+          }
+          var tierInt = (int)d;
+          if (tierInt < 0 || tierInt > (int)InsulationTier.ZBO) {
+            Debug.LogWarning(LogPrefix + Name + " setTankInsulation: tier " + tierInt + " out of range");
+            return;
+          }
+          var tier = (InsulationTier)tierInt;
+          tiers.Add(tier);
+          footprint += module.TankVolume.Tanks[i].Capacity
+                     * (1.0 + InsulationTierTable.VolumePenalty(tier));
+        }
+        if (footprint > module.TankVolume.Volume + 1e-6) {
+          Debug.LogWarning(LogPrefix + Name + " setTankInsulation: tier penalties push footprint "
+              + footprint.ToString("F2") + " over Volume " + module.TankVolume.Volume.ToString("F2"));
+          return;
+        }
+        module.TankVolume.SetTiers(tiers);
+        MarkDirty();
+        return;
+      }
       default:
         base.HandleOp(op, args);
         return;
@@ -466,15 +524,18 @@ public sealed class NovaPartTopic : Topic {
         bool f = true;
         WriteKind(sb, "T", ref f);
         WriteNum(sb, tank.Volume, ref f);
-        // Per-tank buffers: [[resource, capacity, contents], ...]. Lets
-        // the editor's Tanks view read its slices directly off the
-        // TankVolume component frame instead of guessing which entries
-        // in the part's resource list belong to this tank vs other
-        // unrelated buffers (e.g. a Battery's Electric Charge).
+        // Per-tank slices:
+        //   [resource, capacity, contents, tier, boiloffFracPerDay,
+        //    coolerEcW, coolerHeatW]
+        // tier/boiloff/ec/heat are physical observables — boiloff is
+        // pre-blended with cooler Activity, ec/heat are realised draws
+        // (Activity × max). Passive tiers and non-cryogenic resources
+        // emit 0 for ec/heat.
         JsonWriter.Sep(sb, ref f);
         JsonWriter.Begin(sb, '[');
         bool fb = true;
-        foreach (var buf in tank.Tanks) {
+        for (int i = 0; i < tank.Tanks.Count; i++) {
+          var buf = tank.Tanks[i];
           JsonWriter.Sep(sb, ref fb);
           JsonWriter.Begin(sb, '[');
           bool fbi = true;
@@ -484,6 +545,14 @@ public sealed class NovaPartTopic : Topic {
           JsonWriter.WriteDouble(sb, buf.Capacity);
           JsonWriter.Sep(sb, ref fbi);
           JsonWriter.WriteDouble(sb, buf.Contents);
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, (int)tank.SliceTier(i));
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, tank.SliceNetBoiloffFractionPerDay(i));
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, tank.SliceCurrentEcW(i));
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, tank.SliceCurrentHeatW(i));
           JsonWriter.End(sb, ']');
         }
         JsonWriter.End(sb, ']');

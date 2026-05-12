@@ -362,7 +362,7 @@ interface EditorTankFixture {
   title: string;
   parentId: string | null;
   volume: number;
-  tanks: { resource: string; capacity: number; contents: number }[];
+  tanks: { resource: string; capacity: number; contents: number; tier: number }[];
 }
 
 const EDITOR_TANK_FIXTURES: EditorTankFixture[] = [
@@ -373,8 +373,8 @@ const EDITOR_TANK_FIXTURES: EditorTankFixture[] = [
     parentId: null,
     volume: 4000,
     tanks: [
-      { resource: 'RP-1',          capacity: 1600, contents: 1600 },
-      { resource: 'Liquid Oxygen', capacity: 2400, contents: 2400 },
+      { resource: 'RP-1',          capacity: 1600, contents: 1600, tier: 0 },
+      { resource: 'Liquid Oxygen', capacity: 2400, contents: 2400, tier: 0 },
     ],
   },
   {
@@ -386,7 +386,7 @@ const EDITOR_TANK_FIXTURES: EditorTankFixture[] = [
     // Partial fill so the contents-slider visualization has a non-trivial
     // starting state to demo against.
     tanks: [
-      { resource: 'Hydrazine', capacity: 1000, contents: 600 },
+      { resource: 'Hydrazine', capacity: 1000, contents: 600, tier: 0 },
     ],
   },
   {
@@ -396,8 +396,8 @@ const EDITOR_TANK_FIXTURES: EditorTankFixture[] = [
     parentId: '7001',
     volume: 10000,
     tanks: [
-      { resource: 'Liquid Hydrogen', capacity: 7400, contents: 7400 },
-      { resource: 'Liquid Oxygen',   capacity: 2600, contents: 2600 },
+      { resource: 'Liquid Hydrogen', capacity: 7400, contents: 7400, tier: 0 },
+      { resource: 'Liquid Oxygen',   capacity: 2600, contents: 2600, tier: 0 },
     ],
   },
   {
@@ -409,7 +409,7 @@ const EDITOR_TANK_FIXTURES: EditorTankFixture[] = [
     // Empty by default — exercises the FREE/unused trailing tile after
     // the user pulls a slice down via drag handle.
     tanks: [
-      { resource: 'Xenon', capacity: 700, contents: 0 },
+      { resource: 'Xenon', capacity: 700, contents: 0, tier: 0 },
     ],
   },
 ];
@@ -524,17 +524,41 @@ export class NovaSimulatedKsp implements Ksp {
       if (fixture && Array.isArray(entries)) {
         const sumCap = entries.reduce((a, [, c]) => a + (c ?? 0), 0);
         if (sumCap <= fixture.volume + 1e-6) {
+          // Mirror C# Reconfigure: every slice's tier resets to MLI on
+          // a setTankCustom — the editor TankRowEditor follows up with
+          // setTankInsulation in the same debounce burst to re-apply
+          // the desired tier vector.
           fixture.tanks = entries
             .filter(([, c]) => (c ?? 0) > 0)
             .map(([resource, capacity, contents]) => ({
               resource,
               capacity,
               contents: Math.min(capacity, Math.max(0, contents)),
+              tier: 0,
             }));
           this.tickEmit();
         }
         // Reject silently when the payload exceeds volume — mirrors
         // the C# handler's no-op-and-log behaviour.
+      }
+      return;
+    }
+
+    // Intercept setTankInsulation — fires right after setTankCustom in
+    // the same burst, carrying the per-slice tier vector. Without this
+    // handler the dev sim emits tier=0 every frame and the seed effect
+    // overwrites the user's freshly-clicked tier back to MLI.
+    if (topic.name.startsWith(PART_PREFIX) && op === 'setTankInsulation') {
+      const partId = topic.name.slice(PART_PREFIX.length);
+      const fixture = findEditorTank(partId);
+      const [tiers] = args as unknown as [number[]];
+      if (fixture && Array.isArray(tiers) && tiers.length === fixture.tanks.length) {
+        // Client already validated the volume-penalty invariant; trust
+        // the payload (mirrors the C# handler's contract).
+        for (let i = 0; i < tiers.length; i++) {
+          fixture.tanks[i].tier = tiers[i] | 0;
+        }
+        this.tickEmit();
       }
       return;
     }
@@ -652,7 +676,17 @@ export class NovaSimulatedKsp implements Ksp {
         t.resource, t.contents, t.capacity, 0,
       ]);
       const components: NovaComponentFrame[] = [
-        ['T', tank.volume, tank.tanks.map((t) => [t.resource, t.capacity, t.contents])],
+        // Tier echoed from the fixture state so click-set tiers
+        // survive the round-trip. Boiloff/EC/heat stay zero — the
+        // editor sim doesn't run the LP, so TankRowEditor uses its
+        // physics mirror for the prospective and committed readouts.
+        ['T', tank.volume, tank.tanks.map((t) => [
+          t.resource, t.capacity, t.contents,
+          t.tier,
+          0, // boiloffFractionPerDay
+          0, // coolerEcW
+          0, // coolerHeatW
+        ])],
       ];
       return [partId, resources, components];
     }

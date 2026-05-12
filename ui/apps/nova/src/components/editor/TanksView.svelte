@@ -28,6 +28,7 @@
     type NovaPartStruct,
     type TankCustomEntry,
     type TankSlice,
+    type InsulationTier,
   } from '../../telemetry/nova-topics';
   import { resourceMeta } from '../resource/resource-codes';
   import TankRowEditor from './TankRowEditor.svelte';
@@ -110,6 +111,13 @@
   function applyTankCustom(partId: string, entries: TankCustomEntry[]): void {
     ksp.send(NovaPartTopic(partId), 'setTankCustom', entries);
   }
+  // Tier vector fires right after setTankCustom — the mod-side
+  // `Reconfigure(buffers)` resets every slice's tier to MLI as part of
+  // the loadout swap, so we re-apply the desired tiers in the same
+  // burst. Order is enforced by TankRowEditor's single $effect.
+  function applyTankInsulation(partId: string, tiers: InsulationTier[]): void {
+    ksp.send(NovaPartTopic(partId), 'setTankInsulation', tiers);
+  }
 
   // Highlight tracking — placeholder. The editor scene's stage-highlight
   // hook isn't wired through Dragonglass yet; logging here lets us trace
@@ -164,6 +172,7 @@
               {volume}
               tanks={slices}
               onApply={(entries) => applyTankCustom(p.id, entries)}
+              onApplyTiers={(tiers) => applyTankInsulation(p.id, tiers)}
             />
           {/if}
         </li>
