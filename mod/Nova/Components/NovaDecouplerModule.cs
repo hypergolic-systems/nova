@@ -1,5 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
+using Nova.Core.Components.Structural;
 using UnityEngine;
 
 namespace Nova.Components;
@@ -9,20 +11,42 @@ public class NovaDecouplerModule : NovaPartModule, IStageSeparator, IStageSepara
   [KSPField]
   public float ejectionForce = 10f;
 
-  [KSPField(isPersistant = true)]
-  public bool isDecoupled;
-
   [KSPField]
   public bool staged = true;
 
   [KSPField]
   public string explosiveNodeID = "top";
 
+  // Session-local fire latch — guards against double-fire within one
+  // session, no need to persist. After staging the part is on a
+  // different vessel and won't re-enter OnActive on this instance.
+  private bool isDecoupled;
+
+  // Editor-time "release every neighbour at once" toggle lives on the
+  // Decoupler virtual component (proto-persisted via DecouplerState),
+  // not on a KSPField. KSP's ConfigNode save path is not in the loop —
+  // Nova owns persistence end-to-end. The module reads through to its
+  // Decoupler component so OnActive sees the same source of truth the
+  // UI and the save file do.
+  //
+  // Radial decouplers (explosiveNodeID == "srf") have a single attach
+  // face; omni mode collapses to single-node mode. We surface that as
+  // CanFullSeparate=false so the UI greys the toggle out, and we
+  // re-gate at fire time in case the field is set anyway.
+  public bool CanFullSeparate => explosiveNodeID != "srf";
+
+  public bool FullSeparation {
+    get => decoupler?.FullSeparation ?? false;
+    set { if (decoupler != null) decoupler.FullSeparation = value; }
+  }
+
+  private Decoupler decoupler;
   private AttachNode explosiveNode;
   private FXGroup fx;
 
   public override void OnStart(StartState state) {
     base.OnStart(state);
+    decoupler = Components.OfType<Decoupler>().FirstOrDefault();
     if (explosiveNodeID == "srf")
       explosiveNode = part.srfAttachNode;
     else
@@ -43,17 +67,10 @@ public class NovaDecouplerModule : NovaPartModule, IStageSeparator, IStageSepara
 
     fx?.Burst();
 
-    if (explosiveNode?.attachedPart != null) {
-      var target = explosiveNode.attachedPart;
-      if (target == part.parent)
-        part.decouple();
-      else
-        target.decouple();
-
-      var force = ejectionForce * 0.5f;
-      var dir = Vector3.Normalize(part.transform.position - target.transform.position);
-      StartCoroutine(ApplyEjectionForce(2, part, dir * force, target, -dir * force));
-    }
+    if (FullSeparation && CanFullSeparate)
+      DecoupleOmni();
+    else
+      DecoupleSingle();
 
     GameEvents.onStageSeparation.Fire(
       new EventReport(FlightEvents.STAGESEPARATION, part, null, null, 0));
@@ -61,11 +78,56 @@ public class NovaDecouplerModule : NovaPartModule, IStageSeparator, IStageSepara
     stagingEnabled = false;
   }
 
-  private IEnumerator ApplyEjectionForce(int frameDelay, Part a, Vector3 forceA, Part b, Vector3 forceB) {
+  // Default: cut one attach face, push the two halves apart 50/50.
+  private void DecoupleSingle() {
+    if (explosiveNode?.attachedPart == null) return;
+    var target = explosiveNode.attachedPart;
+    if (target == part.parent)
+      part.decouple();
+    else
+      target.decouple();
+
+    var force = ejectionForce * 0.5f;
+    var dir = Vector3.Normalize(part.transform.position - target.transform.position);
+    StartCoroutine(ApplyForces(2,
+      (part, dir * force),
+      (target, -dir * force)));
+  }
+
+  // Omni: detach every neighbour (children + parent), leaving the
+  // decoupler as its own debris fragment between the released halves.
+  // Each neighbour gets ejectionForce/2 of impulse; the decoupler eats
+  // the equal-and-opposite from each, summed.
+  private void DecoupleOmni() {
+    var neighbours = part.children.ToList();
+    var parent = part.parent;
+
+    var perNeighbour = ejectionForce * 0.5f;
+    var forces = new List<(Part, Vector3)>();
+    var selfImpulse = Vector3.zero;
+
+    foreach (var child in neighbours) {
+      child.decouple();
+      var dir = Vector3.Normalize(part.transform.position - child.transform.position);
+      forces.Add((child, -dir * perNeighbour));
+      selfImpulse += dir * perNeighbour;
+    }
+    if (parent != null) {
+      part.decouple();
+      var dir = Vector3.Normalize(part.transform.position - parent.transform.position);
+      forces.Add((parent, -dir * perNeighbour));
+      selfImpulse += dir * perNeighbour;
+    }
+    forces.Add((part, selfImpulse));
+
+    StartCoroutine(ApplyForces(2, forces.ToArray()));
+  }
+
+  private IEnumerator ApplyForces(int frameDelay, params (Part part, Vector3 force)[] entries) {
     for (int i = 0; i < frameDelay; i++)
       yield return null;
-    if (a != null) a.AddForce(forceA);
-    if (b != null) b.AddForce(forceB);
+    foreach (var (p, f) in entries)
+      if (p != null) p.AddForce(f);
   }
 
   public override bool IsStageable() => staged;
@@ -82,8 +144,12 @@ public class NovaDecouplerModule : NovaPartModule, IStageSeparator, IStageSepara
   // IStageSeparatorChild
   public bool PartDetaches(out List<Part> decoupledParts) {
     decoupledParts = new List<Part>();
-    if (explosiveNode?.attachedPart != null)
+    if (FullSeparation && CanFullSeparate) {
+      decoupledParts.AddRange(part.children);
+      if (part.parent != null) decoupledParts.Add(part.parent);
+    } else if (explosiveNode?.attachedPart != null) {
       decoupledParts.Add(explosiveNode.attachedPart);
+    }
     return true;
   }
 

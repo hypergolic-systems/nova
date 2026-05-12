@@ -171,6 +171,7 @@ message PartState {
   RtgState            rtg            = 11;
   RadiatorState       radiator       = 12;
   ProbeState          probe          = 13;
+  DecouplerState      decoupler      = 14;
 }
 
 message TankVolumeState {
@@ -218,6 +219,14 @@ message RtgState {
 // deployable folding rads round-trip the player's toggle.
 message RadiatorState {
   bool is_deployed = 1;
+}
+
+// Per-decoupler editor-tunable state. Resource crossfeed lists (allowed
+// resources, up-only) live on the structure side (they shape the
+// topology graph and are static once the vessel is built); this proto
+// carries only the per-instance toggles the player flips.
+message DecouplerState {
+  bool full_separation = 1;
 }
 
 // Probe StoredCommands ledger — see Nova.Core/Components/Control/Probe.cs.

@@ -105,6 +105,20 @@ export type NovaRadiatorFrame = [
   isDeployable: 0 | 1,
 ];
 
+// Per-decoupler state. `fullSeparation` is the editor-time toggle —
+// when on, the decoupler releases every attached neighbour at once
+// (stock "separator" semantics). `canFullSeparate` is the capability
+// bit (false for radial decouplers, where there's only one attach
+// face); the UI greys the checkbox out when false rather than hiding
+// it so the player still sees the affordance and learns the rule.
+// `ejectionForce` is the design-rated impulse, useful for context.
+export type NovaDecouplerFrame = [
+  'D',
+  fullSeparation: 0 | 1,
+  canFullSeparate: 0 | 1,
+  ejectionForce: number,
+];
+
 // One progressive observation record on disk. The wire shape mirrors
 // the proto fields. Direct vs interpolated is determined by which set
 // of trailing fields is populated:
@@ -210,7 +224,8 @@ export type NovaComponentFrame =
   | NovaCommandFrame
   | NovaProbeFrame
   | NovaFuelCellFrame
-  | NovaRtgFrame;
+  | NovaRtgFrame
+  | NovaDecouplerFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -609,6 +624,18 @@ export interface RadiatorState {
   isDeployable: boolean;
 }
 
+export interface DecouplerState {
+  /** Player-set toggle: when true, firing releases every attached
+   *  neighbour (children + parent) at once instead of just the
+   *  explosive-node side. */
+  fullSeparation: boolean;
+  /** Capability bit: false for radial decouplers (single attach face)
+   *  where the toggle has no meaning. UI greys the control out. */
+  canFullSeparate: boolean;
+  /** Design-rated ejection impulse, kN. */
+  ejectionForce: number;
+}
+
 export interface NovaPart {
   id: string;
   resources: NovaResourceFlow[];
@@ -622,6 +649,7 @@ export interface NovaPart {
   fuelCell: FuelCellState[];
   rtg: RtgState[];
   radiator: RadiatorState[];
+  decoupler: DecouplerState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -734,6 +762,17 @@ export interface NovaPartOps {
    * effect is immediate.
    */
   setRadiatorDeployed(deployed: boolean): void;
+
+  /**
+   * Editor-only. Toggle this decoupler's "Full Separation" mode —
+   * when on, firing releases every attached neighbour (children +
+   * parent) at once instead of just the explosive-node side (stock
+   * "separator" semantics). Rejected on radial decouplers
+   * (`canFullSeparate=false`); the wire frame surfaces that bit so
+   * the UI can grey the control out. State round-trips on save via
+   * `DecouplerState.full_separation`.
+   */
+  setFullSeparation(fullSeparation: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -1100,6 +1139,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     fuelCell: [],
     rtg: [],
     radiator: [],
+    decoupler: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -1191,6 +1231,13 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           maxCoolingW:     c[2],
           isDeployed:      c[3] === 1,
           isDeployable:    c[4] === 1,
+        });
+        break;
+      case 'D':
+        out.decoupler.push({
+          fullSeparation:  c[1] === 1,
+          canFullSeparate: c[2] === 1,
+          ejectionForce:   c[3],
         });
         break;
     }

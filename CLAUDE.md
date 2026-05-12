@@ -10,6 +10,18 @@ Nova was previously named "Hypergolic Systems" — HGS now refers to the umbrell
 - **Dragonglass** (`~/dev/dragonglass`) — CEF + web UI for KSP. Owns all custom UI; Nova does not ship UI plumbing.
 - **kspcli** (`~/dev/hgs/kspcli`) — agentic bridge: protobuf wire format, Rust CLI + KSPAddon listener. Replaces the old HGS Bridge/BridgeCLI.
 
+## What Nova replaces
+
+Nova is a **core mod**. It replaces — not augments — stock KSP's simulation, persistence, and UI surfaces. When reaching for a stock idiom, first check that the corresponding Nova surface isn't the canonical one. The big ones:
+
+- **Persistence — proto, not ConfigNode.** Nova writes its own `.nvs` (save) and `.nvc` (craft) files defined by `proto/nova.proto`. Stock KSP's `ConfigNode` save tree is bypassed. `[KSPField(isPersistant = true)]` on a `NovaXxxModule` field writes into a tree Nova never reads — it's dead weight for simulation state. Mutable runtime state lives on the `VirtualComponent`, persists via `Save(PartState)` / `Load(PartState)` into a per-component `XxxState` proto message (`Nova.Core/Components/Thermal/Radiator.cs` is the canonical example). Reserve `isPersistant = true` for the narrow cases where KSP *itself* still reads the value (e.g. an animation flag stock code paths reference).
+
+- **UI — Dragonglass + topics, not PAW.** Player-facing controls do not use stock's Part Action Window. That means no `UI_Toggle`, no `UI_FloatRange`, no `[KSPEvent]` buttons, no `[KSPField]` with `guiActive*` / `guiName` for player-editable values. Per-part state is published via `Nova.Telemetry.NovaPartTopic` (positional JSON frames, single-char kind prefix); player actions come back through the same topic's `HandleOp` dispatcher (`ksp.send(NovaPartTopic(id), 'setXxx', args)` from Svelte). UI lives in `ui/apps/nova/`, mounted by `NovaUiOverrideAddon` overriding Dragonglass's boot specifier.
+
+- **Resource flow, attitude, RCS, ΔV, staging.** Nova's solvers in `Nova.Core/Systems/` and `Nova.Core/Flight/` own these. Stock `ResourceManager`, `ModuleReactionWheel`'s built-in EC draw, the stock RCS solver, stock ΔV display — all replaced. See the Architecture section below.
+
+A practical heuristic: if a sentence about Nova starts with "the stock KSP way is…", the answer is almost always "Nova doesn't go through that path." Trace to the Nova surface (`NovaPartTopic`, the relevant `VirtualComponent`, the proto message) before suggesting a stock-idiom solution.
+
 ## Build & run
 
 ```
@@ -129,6 +141,21 @@ Conventions:
 - **No backwards compatibility.** Old proto bytes, old `.nvc`/`.nvs` files, old sidecar instances are all fair game to break. Field numbers can be reused freely; retired fields don't need to be `reserved`. Active-development mod, single user — re-saves and reinstalls are cheap, fallback/migration code in loaders is permanent overhead. If a schema change breaks an existing save, the right answer is "rebuild the craft," not a defensive load.
 - **Generated property names** follow protogen's pluralization (`repeated Kerbal crew` → `Crews`) and casing (`launch_id` → `LaunchId`). When a field name surprises you, check the generated file.
 - **Repeated message types** become get-only `List<T>` (use collection-initializer `Foo = { … }` or `.AddRange(…)`); **repeated primitive types** become `T[]` (writable).
+
+Per-component state flow (when adding a new mutable field that needs to survive save/load):
+1. Add a field to the appropriate `XxxState` message in `proto/nova.proto` (or add a new state message and reference it from `PartState`).
+2. `just proto` (regenerates the C# bindings; Rust regenerates on next `cargo build`).
+3. Override `Save(PartState)` / `Load(PartState)` on the `VirtualComponent` to round-trip the field. The Radiator (`Nova.Core/Components/Thermal/Radiator.cs`) and ReactionWheel (`Nova.Core/Components/Propulsion/ReactionWheel.cs`) are the templates.
+4. The `NovaXxxModule` PartModule reads/writes the field through its `Components` reference, not through a `KSPField`. KSP's `ConfigNode` save path is not in the loop.
+
+### Telemetry & UI ops (`Nova.Telemetry/NovaPartTopic.cs`)
+
+Player-facing controls flow through the topic, not the PAW. Two halves:
+
+- **Outbound (mod → UI):** every part publishes a `NovaPart/<persistentId>` topic. The wire is a positional `[partId, [resourceFrames], [componentFrames]]` JSON array. Each component kind has a single-char prefix (`"S"` solar, `"B"` battery, `"W"` reaction wheel, `"L"` light, `"T"` tank, `"F"` fuel cell, `"C"` command, `"P"` probe, `"R"` rtg, `"X"` radiator…) and a fixed positional tuple — see the file header for the catalogue. New kind = new case in `TryWriteComponent` + matching tuple in `ui/.../nova-topics.ts`. Numbers are physical observables (watts, fractions, absolutes); never expose solver-internal `Activity`.
+- **Inbound (UI → mod):** `HandleOp(op, args)` dispatches `ksp.send(NovaPartTopic(id), 'setXxx', value)` calls from the UI. Op names live alongside the wire-frame docs in the file header. Inside the handler: look up the relevant `NovaPartModule` on `_part`, validate, mutate the virtual component, `MarkDirty()`. Editor-only ops gate on `HighLogic.LoadedScene == GameScenes.EDITOR`. See `setRadiatorDeployed`, `setTankCustom` for the shape.
+
+When wiring a new player control, the answer is *always* a topic op + a Svelte view. Reach for `[UI_Toggle]` / `[KSPEvent]` / `guiActiveEditor` only when targeting a non-player audience (e.g. debug-only fields).
 
 ### Configs (`configs/overrides/`)
 

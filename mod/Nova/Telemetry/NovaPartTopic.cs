@@ -7,6 +7,7 @@ using Nova.Core.Components;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Structural;
 using Nova.Core.Components.Thermal;
 using Nova.Core.Resources;
 using UnityEngine;
@@ -74,6 +75,7 @@ namespace Nova.Telemetry;
 //          wasteHeatW, exportW, rejectionW,
 //          currentTempC, maxOperatingTempC, dTdtCps]                               Rtg
 //   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable]                  Radiator
+//   ["D", fullSeparation, canFullSeparate, ejectionForce]                           Decoupler
 //
 // Solar's `maxEcRate` stays orientation-and-sunlit gated (live "what
 // this panel could give right now"); `ratedEcRate` is the always-on
@@ -113,6 +115,12 @@ namespace Nova.Telemetry;
 //                                outside [0, capacity]. Presets live
 //                                UI-side (editor/tank-presets.ts) and
 //                                resolve to this op before dispatch.
+//   "setFullSeparation" [bool]  — toggle the per-decoupler "release every
+//                                neighbour" mode (stock separator
+//                                semantics). Editor-only. Rejected on
+//                                radial decouplers (CanFullSeparate=false)
+//                                — the wire frame reports that bit so
+//                                the UI greys the toggle.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -223,6 +231,28 @@ public sealed class NovaPartTopic : Topic {
         if (module == null) return;
         if (deployed) module.Extend();
         else module.Retract();
+        return;
+      }
+      case "setFullSeparation": {
+        if (args == null || args.Count < 1 || !(args[0] is bool fullSep)) {
+          Debug.LogWarning(LogPrefix + Name + " setFullSeparation: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          Debug.Log(LogPrefix + Name + " setFullSeparation rejected outside editor");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaDecouplerModule>();
+        if (module == null) return;
+        if (fullSep && !module.CanFullSeparate) {
+          // Radial decoupler — toggle is meaningless. Don't silently
+          // accept; surface so the UI can be fixed if it's offering the
+          // checkbox at all.
+          Debug.LogWarning(LogPrefix + Name + " setFullSeparation rejected: radial decoupler");
+          return;
+        }
+        module.FullSeparation = fullSep;
+        MarkDirty();
         return;
       }
       case "setTankCustom": {
@@ -360,7 +390,7 @@ public sealed class NovaPartTopic : Topic {
     bool first = true;
     var kspVessel = _part?.vessel;
     foreach (var c in components) {
-      if (!TryWriteComponent(sb, c, kspVessel, ref first)) {
+      if (!TryWriteComponent(sb, c, _part, kspVessel, ref first)) {
         // Unhandled kind — silently skip rather than emit an
         // un-decodable frame. New kinds get a case here + a TS
         // tuple in nova-topics.ts.
@@ -369,7 +399,7 @@ public sealed class NovaPartTopic : Topic {
     JsonWriter.End(sb, ']');
   }
 
-  private static bool TryWriteComponent(StringBuilder sb, VirtualComponent c, Vessel kspVessel, ref bool first) {
+  private static bool TryWriteComponent(StringBuilder sb, VirtualComponent c, Part part, Vessel kspVessel, ref bool first) {
     switch (c) {
       case SolarPanel solar: {
         JsonWriter.Sep(sb, ref first);
@@ -545,6 +575,23 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, radiator.CurrentMaxCoolingW, ref f);
         WriteBit(sb, radiator.IsDeployed, ref f);
         WriteBit(sb, radiator.IsDeployable, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case Decoupler decoupler: {
+        // CanFullSeparate is a property of the KSP-side PartModule
+        // (derived from explosiveNodeID) rather than the virtual
+        // component, so reach through to the module here. ejectionForce
+        // is design-rated and lives on the module too.
+        var module = part?.FindModuleImplementing<NovaDecouplerModule>();
+        if (module == null) return false;
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "D", ref f);
+        WriteBit(sb, decoupler.FullSeparation, ref f);
+        WriteBit(sb, module.CanFullSeparate, ref f);
+        WriteNum(sb, module.ejectionForce, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
