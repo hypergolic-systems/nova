@@ -87,41 +87,51 @@ public sealed class SimTelemetryServer : IDisposable {
   private void HandleClientMessage(IWebSocketConnection socket, string msg) {
     if (!_connections.TryGetValue(socket.ConnectionInfo.Id, out var conn)) return;
 
-    var (op, topic) = ParseEnvelope(msg);
-    if (string.IsNullOrEmpty(topic)) return;
+    if (!TryParseEnvelope(msg, out var env)) return;
 
-    if (op == "subscribe") {
-      lock (conn.Subscriptions) conn.Subscriptions.Add(topic);
+    if (env.Op == "subscribe") {
+      lock (conn.Subscriptions) conn.Subscriptions.Add(env.Topic);
       // Snapshot-on-subscribe: deliver one frame immediately so late
       // subscribers don't stare at defaults.
-      PublishOneTo(conn, topic);
-    } else if (op == "unsubscribe") {
-      lock (conn.Subscriptions) conn.Subscriptions.Remove(topic);
+      PublishOneTo(conn, env.Topic);
+      return;
     }
-    // Other custom ops not yet handled by the sim (would dispatch to a
-    // per-topic handler analogous to NovaPartTopic.HandleOp).
+    if (env.Op == "unsubscribe") {
+      lock (conn.Subscriptions) conn.Subscriptions.Remove(env.Topic);
+      return;
+    }
+    // Custom op — route to the sim-side op dispatcher. Mirrors the
+    // mod's NovaPartTopic.HandleOp surface but mutates VirtualComponents
+    // directly (no PartModule layer). See SimOpDispatcher.
+    SimOpDispatcher.Handle(env.Topic, env.Op, env.Args, _runner);
   }
 
-  // Minimal envelope parser. Avoids pulling in a JSON dependency for
-  // just three known fields; falls back to (null,null) on shape
-  // mismatch.
-  private static (string op, string topic) ParseEnvelope(string s) {
-    if (string.IsNullOrEmpty(s)) return (null, null);
-    string op = ExtractString(s, "\"op\"");
-    string topic = ExtractString(s, "\"topic\"");
-    return (op, topic);
+  private struct Envelope {
+    public string Topic;
+    public string Op;
+    public List<object> Args;
   }
 
-  private static string ExtractString(string s, string key) {
-    int idx = s.IndexOf(key, StringComparison.Ordinal);
-    if (idx < 0) return null;
-    idx = s.IndexOf(':', idx);
-    if (idx < 0) return null;
-    int q1 = s.IndexOf('"', idx);
-    if (q1 < 0) return null;
-    int q2 = s.IndexOf('"', q1 + 1);
-    if (q2 < 0) return null;
-    return s.Substring(q1 + 1, q2 - q1 - 1);
+  // Full JSON envelope decode. Needed because custom ops carry an
+  // `args` array of arbitrary structure (booleans, numbers, nested
+  // arrays — see SimOpDispatcher); the previous string-scan parser
+  // only worked for `topic` and `op`. Mirrors Dragonglass's
+  // TryParseEnvelope so the sim consumes the exact tree shape
+  // HandleOp expects.
+  private static bool TryParseEnvelope(string text, out Envelope env) {
+    env = default;
+    if (!(JsonReader.Parse(text) is Dictionary<string, object> root)) return false;
+    if (!(root.TryGetValue("topic", out object t) && t is string topic)) return false;
+    if (!(root.TryGetValue("op", out object o) && o is string op)) return false;
+    List<object> args = null;
+    if (root.TryGetValue("args", out object a)) {
+      args = a as List<object>;
+      if (args == null) return false;
+    }
+    env.Topic = topic;
+    env.Op = op;
+    env.Args = args ?? new List<object>();
+    return true;
   }
 
   private void PublishOnce() {
