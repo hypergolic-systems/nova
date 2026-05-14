@@ -14,7 +14,7 @@
   import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
   import { useNovaParts } from '../telemetry/use-nova-parts.svelte';
   import PowerView from './power/PowerView.svelte';
-  import ResourceView from './resource/ResourceView.svelte';
+  import TanksView from './tanks/TanksView.svelte';
   import ScienceView from './science/ScienceView.svelte';
   import SystemView from './system/SystemView.svelte';
   import ThermalView from './thermal/ThermalView.svelte';
@@ -32,7 +32,7 @@
   const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'system' | 'power' | 'thermal' | 'resource' | 'science';
+  type TabId = 'system' | 'power' | 'thermal' | 'tank' | 'science';
 
   interface Tab {
     id: TabId;
@@ -48,7 +48,7 @@
     { id: 'system',     short: 'SYS', label: 'Systems'   },
     { id: 'power',      short: 'PWR', label: 'Power'     },
     { id: 'thermal',    short: 'THM', label: 'Thermal'   },
-    { id: 'resource',   short: 'RES', label: 'Resources' },
+    { id: 'tank',       short: 'TNK', label: 'Tanks'     },
     { id: 'science',    short: 'SCI', label: 'Science'   },
   ];
 
@@ -100,8 +100,8 @@
       <PowerView parts={() => useNovaParts(() => flight.vesselId)} />
     {:else if activeTab === 'thermal' && flight.vesselId}
       <ThermalView vesselId={flight.vesselId} />
-    {:else if activeTab === 'resource' && flight.vesselId}
-      <ResourceView vesselId={flight.vesselId} />
+    {:else if activeTab === 'tank' && flight.vesselId}
+      <TanksView vesselId={flight.vesselId} />
     {:else if activeTab === 'science' && flight.vesselId}
       <ScienceView vesselId={flight.vesselId} />
     {/if}

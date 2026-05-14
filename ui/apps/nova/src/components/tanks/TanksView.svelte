@@ -1,37 +1,40 @@
 <script lang="ts">
-  // Resource panel — sibling to the Power view, scoped to "what the
-  // vessel is carrying" rather than "how the vessel uses it". Two
-  // modes share the same visual rhythm:
+  // Tanks panel — what the vessel is physically carrying in TankVolume
+  // hardware. Scoped to tank slices only; Battery EC, FuelCell I/O
+  // buffers, and other part-level Buffers live on the panels that own
+  // them (PWR / THM). Two modes share the same visual rhythm:
   //
-  //   BY PART (default): each part is a collapsible node with a
-  //     leading kind icon (battery / tank). Rows under it list the
-  //     resources the part holds: code-tile · gauge · amount/cap·unit.
+  //   BY PART (default): each tank-bearing part is a collapsible node
+  //     with a leading tank icon. Rows beneath aggregate the part's
+  //     tank slices per resource: code-tile · stored/cap·unit · rate.
   //
   //   BY RESOURCE: each resource is a collapsible node with a leading
-  //     code tile and a full-width aggregate gauge. The aggregate
-  //     rate sits on the gauge line so the title row stays calm. Per-
-  //     part rows beneath show kind-icon · part name · gauge · amount.
+  //     code tile and a full-width aggregate gauge. The aggregate rate
+  //     sits on the gauge line so the title row stays calm. Per-part
+  //     rows beneath show tank icon · part name · gauge · stored/cap.
   //
   // Per-resource tinting: each resource has a curated hue (LF amber,
-  // OX cyan, EC green, MP magenta, etc.) applied to the code tile and
-  // the gauge's OK colour via CSS custom properties. Severity (low
-  // fill) still flips to warn/alert across all resources — identity
-  // hues never override safety tints.
+  // OX cyan, LH2 ice-blue, N2H4 magenta, etc.) applied to the code
+  // tile and the gauge's OK colour via CSS custom properties. Severity
+  // (low fill) flips to warn/alert across all resources — identity hues
+  // never override safety tints.
   //
-  // Per-part rate is intentionally omitted: the LP solves at node
-  // level via crossfeed, so attributing a rate to any single tank is
-  // misleading. Aggregate rate appears once at the resource level
-  // where it physically maps to the LP solution.
+  // Per-part rate is the LP's per-resource result on that part — there
+  // can be multiple slices of the same resource on a part (mixed
+  // loadouts), but the LP solves at node level via crossfeed, so the
+  // rate is attached at the resource level, not the slice. We aggregate
+  // slices of the same resource within a part and show one row per
+  // resource per part with the LP's rate.
 
   import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
   import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
-  import type { NovaResourceFlow, TankSlice } from '../../telemetry/nova-topics';
+  import type { TankSlice } from '../../telemetry/nova-topics';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
   import { useStageOps, getKsp } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
-  import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
-  import { resourceMeta, resourceSortKey } from './resource-codes';
+  import ComponentIcon from '../ComponentIcon.svelte';
+  import { resourceMeta, resourceSortKey } from '../resource/resource-codes';
   import { siPrefix, fmtMag } from '../../util/units';
 
   const ksp = getKsp();
@@ -48,11 +51,11 @@
     return 'S' + stage;
   }
 
-  // Find the slice on a part that holds the given resource. Returns
-  // the first match — a part can technically have multiple tanks with
-  // the same resource (mixed loadouts) but in practice resource codes
-  // are uniqued per tank. Returns the tank index too so the cycle
-  // handler can rebuild the right stage vector.
+  // Find the first slice on a part holding the given resource. Returns
+  // the tank index too so the cycle handler can rebuild the right
+  // stage vector. With multiple tanks holding the same resource (rare
+  // — mixed loadouts), the first one wins; the cooling sub-line and
+  // its toggle only reflect that slice.
   function partSlice(p: NovaPartHandle, resourceId: string):
       { tankIdx: number; sliceIdx: number; slice: TankSlice } | undefined {
     if (!p.state) return undefined;
@@ -105,53 +108,89 @@
     resCollapsed[id] = !resCollapsed[id];
   };
 
-  const partsWithResources = $derived.by<NovaPartHandle[]>(() =>
-    parts.current.filter((p) => (p.state?.resources?.length ?? 0) > 0),
+  const partsWithTanks = $derived.by<NovaPartHandle[]>(() =>
+    parts.current.filter((p) => (p.state?.tank.length ?? 0) > 0),
   );
 
-  // Pick a kind icon for the part. Battery if its only resource is
-  // electric charge (Z-100s, the EC slot of a probe core); tank for
-  // anything else (fuel tanks, monoprop pods, command pods that hold
-  // fuel as well as EC). Falls back to tank during the brief window
-  // where state hasn't loaded — better than no icon, and correct for
-  // the common "has fuel" case.
-  function partKind(p: NovaPartHandle): ComponentKind {
-    const rs = p.state?.resources;
-    if (!rs || rs.length === 0) return 'tank';
-    for (const r of rs) {
-      if (r.resourceId !== 'Electric Charge' && r.resourceId !== 'ElectricCharge') {
-        return 'tank';
-      }
-    }
-    return 'battery';
+  // Per-part rate lookup. The wire's `resources` array carries the
+  // LP's per-resource rate at part level; we cross-reference by
+  // resource id rather than re-deriving the rate from slice deltas
+  // (which would lose the LP's node-level crossfeed semantics).
+  function partResourceRate(p: NovaPartHandle, resourceId: string): number {
+    const flow = p.state?.resources.find((r) => r.resourceId === resourceId);
+    return flow?.rate ?? 0;
   }
 
+  interface PartTankResource {
+    resourceId: string;
+    contents: number;
+    capacity: number;
+    rate: number;
+  }
+
+  // Aggregate a part's tank slices by resource. A part with two LH2
+  // tanks shows one LH2 row whose stored/cap sums both, and whose rate
+  // is the LP's per-resource rate (one rate per resource per part).
+  function partTankResources(p: NovaPartHandle): PartTankResource[] {
+    const map = new Map<string, PartTankResource>();
+    for (const tank of p.state?.tank ?? []) {
+      for (const slice of tank.slices) {
+        let agg = map.get(slice.resource);
+        if (!agg) {
+          agg = { resourceId: slice.resource, contents: 0, capacity: 0, rate: 0 };
+          map.set(slice.resource, agg);
+        }
+        agg.contents += slice.contents;
+        agg.capacity += slice.capacity;
+      }
+    }
+    for (const agg of map.values()) {
+      agg.rate = partResourceRate(p, agg.resourceId);
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const [ka, na] = resourceSortKey(a.resourceId);
+      const [kb, nb] = resourceSortKey(b.resourceId);
+      return ka !== kb ? ka - kb : na.localeCompare(nb);
+    });
+  }
+
+  interface ResourceGroupEntry {
+    part: NovaPartHandle;
+    contents: number;
+    capacity: number;
+    rate: number;
+  }
   interface ResourceGroup {
     resourceId: string;
-    entries: { part: NovaPartHandle; flow: NovaResourceFlow }[];
+    entries: ResourceGroupEntry[];
     totalAmount: number;
     totalCapacity: number;
     totalRate: number;
   }
   const resourceGroups = $derived.by<ResourceGroup[]>(() => {
     const groups = new Map<string, ResourceGroup>();
-    for (const p of partsWithResources) {
-      for (const flow of p.state!.resources) {
-        let g = groups.get(flow.resourceId);
+    for (const p of partsWithTanks) {
+      for (const agg of partTankResources(p)) {
+        let g = groups.get(agg.resourceId);
         if (!g) {
           g = {
-            resourceId: flow.resourceId,
+            resourceId: agg.resourceId,
             entries: [],
             totalAmount: 0,
             totalCapacity: 0,
             totalRate: 0,
           };
-          groups.set(flow.resourceId, g);
+          groups.set(agg.resourceId, g);
         }
-        g.entries.push({ part: p, flow });
-        g.totalAmount += flow.amount;
-        g.totalCapacity += flow.capacity;
-        g.totalRate += flow.rate;
+        g.entries.push({
+          part: p,
+          contents: agg.contents,
+          capacity: agg.capacity,
+          rate: agg.rate,
+        });
+        g.totalAmount += agg.contents;
+        g.totalCapacity += agg.capacity;
+        g.totalRate += agg.rate;
       }
     }
     return Array.from(groups.values()).sort((a, b) => {
@@ -272,7 +311,7 @@
 </script>
 
 {#snippet chev(open: boolean)}
-  <svg class="rsv__chev" class:rsv__chev--open={open}
+  <svg class="tnk__chev" class:tnk__chev--open={open}
        viewBox="0 0 8 8" aria-hidden="true">
     <path d="M2.2 1.4 L5.8 4 L2.2 6.6" fill="none" stroke="currentColor"
           stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
@@ -288,14 +327,14 @@
   {@const hit = partSlice(p, resourceId)}
   {#if hit && hit.slice.tier > 0}
     {@const slice = hit.slice}
-    <li class="rsv__sub" class:rsv__sub--nested={nested}
+    <li class="tnk__sub" class:tnk__sub--nested={nested}
         aria-label="cryocooler stage">
-      <span class="rsv__sub-label">cooling</span>
-      <span class="rsv__sub-sep">·</span>
-      <span class="rsv__cool-tier">{tierLabel(slice.tier)}</span>
+      <span class="tnk__sub-label">cooling</span>
+      <span class="tnk__sub-sep">·</span>
+      <span class="tnk__cool-tier">{tierLabel(slice.tier)}</span>
       {#if slice.maxStage > 0}
-        <button type="button" class="rsv__cool-btn"
-                class:rsv__cool-btn--on={slice.stage > 0}
+        <button type="button" class="tnk__cool-btn"
+                class:tnk__cool-btn--on={slice.stage > 0}
                 aria-label="Cycle cryocooler stage"
                 title={slice.maxStage === 1
                   ? 'Toggle cryocooler (OFF / ON)'
@@ -309,114 +348,115 @@
 {/snippet}
 
 {#snippet emptyMsg(text: string)}
-  <p class="rsv__empty">
-    <span class="rsv__empty-rule"></span>
-    <span class="rsv__empty-text">{text}</span>
-    <span class="rsv__empty-rule"></span>
+  <p class="tnk__empty">
+    <span class="tnk__empty-rule"></span>
+    <span class="tnk__empty-text">{text}</span>
+    <span class="tnk__empty-rule"></span>
   </p>
 {/snippet}
 
 {#snippet codeTile(name: string, lead: boolean = false)}
   {@const m = resourceMeta(name)}
   <span
-    class="rsv__code"
-    class:rsv__code--lead={lead}
-    style:--rsv-tile-color={m.color}
-    style:--rsv-tile-tint={m.tint}
+    class="tnk__code"
+    class:tnk__code--lead={lead}
+    style:--tnk-tile-color={m.color}
+    style:--tnk-tile-tint={m.tint}
   >{m.code}</span>
 {/snippet}
 
 {#snippet amountReadout(amount: number, capacity: number, baseUnit: string)}
   {@const ap = fmtAmountPair(amount, capacity, baseUnit)}
-  <span class="rsv__amount">
-    <span class="rsv__amount-val">{ap.sMag}</span><span
-      class="rsv__amount-cap">/{ap.cMag}</span><span
-      class="rsv__amount-unit">{ap.unit}</span>
+  <span class="tnk__amount">
+    <span class="tnk__amount-val">{ap.sMag}</span><span
+      class="tnk__amount-cap">/{ap.cMag}</span><span
+      class="tnk__amount-unit">{ap.unit}</span>
   </span>
 {/snippet}
 
-<section class="rsv">
+<section class="tnk">
   <!-- Mode toggle. A single click target — the LED indicator and the
        label both flip together. -->
   <button
     type="button"
-    class="rsv__opt"
-    class:rsv__opt--on={byResource}
+    class="tnk__opt"
+    class:tnk__opt--on={byResource}
     aria-pressed={byResource}
     onclick={() => (byResource = !byResource)}
   >
-    <span class="rsv__opt-led"></span>
-    <span class="rsv__opt-label">BY RESOURCE</span>
+    <span class="tnk__opt-led"></span>
+    <span class="tnk__opt-label">BY RESOURCE</span>
   </button>
 
   {#if !byResource}
     <!-- ===== BY PART ============================================== -->
-    {#if partsWithResources.length === 0}
-      {@render emptyMsg('NO STORAGE')}
+    {#if partsWithTanks.length === 0}
+      {@render emptyMsg('NO TANKS')}
     {:else}
-      {#each partsWithResources as p (p.struct.id)}
+      {#each partsWithTanks as p (p.struct.id)}
         {@const open = isPartExpanded(p.struct.id)}
-        <div class="rsv__node">
+        {@const aggs = partTankResources(p)}
+        <div class="tnk__node">
           <button
             type="button"
-            class="rsv__node-head"
+            class="tnk__node-head"
             aria-expanded={open}
             onclick={() => togglePart(p.struct.id)}
             onmouseenter={() => highlightOn([p.struct.id])}
             onmouseleave={highlightOff}
           >
             {@render chev(open)}
-            <span class="rsv__node-icon">
-              <ComponentIcon kind={partKind(p)} />
+            <span class="tnk__node-icon">
+              <ComponentIcon kind="tank" />
             </span>
-            <span class="rsv__node-title">{p.struct.title}</span>
-            <span class="rsv__node-summary">
-              {#each p.state!.resources as r, i (r.resourceId)}
-                {#if i > 0}<span class="rsv__node-summary-sep">·</span>{/if}
+            <span class="tnk__node-title">{p.struct.title}</span>
+            <span class="tnk__node-summary">
+              {#each aggs as a, i (a.resourceId)}
+                {#if i > 0}<span class="tnk__node-summary-sep">·</span>{/if}
                 <span
-                  class="rsv__node-summary-code"
-                  style:color={resourceMeta(r.resourceId).color}
-                >{resourceMeta(r.resourceId).code}</span>
+                  class="tnk__node-summary-code"
+                  style:color={resourceMeta(a.resourceId).color}
+                >{resourceMeta(a.resourceId).code}</span>
               {/each}
             </span>
           </button>
           {#if open}
-            <ul class="rsv__rows">
-              {#each p.state!.resources as r (r.resourceId)}
-                {@const m = resourceMeta(r.resourceId)}
-                {@const frac = fillFraction(r.amount, r.capacity)}
-                {@const ap = fmtAmountPair(r.amount, r.capacity, m.unit)}
-                {@const rp = fmtRate(r.rate, m.rateUnit)}
-                {@const bo = partBoiloff(p, r.resourceId)}
-                <li class="rsv__row"
-                    style:--rsv-fill={frac}
-                    style:--rsv-fill-color={fillColor(frac, m.color)}>
-                  {@render codeTile(r.resourceId)}
-                  <span class="rsv__row-spacer"></span>
+            <ul class="tnk__rows">
+              {#each aggs as a (a.resourceId)}
+                {@const m = resourceMeta(a.resourceId)}
+                {@const frac = fillFraction(a.contents, a.capacity)}
+                {@const ap = fmtAmountPair(a.contents, a.capacity, m.unit)}
+                {@const rp = fmtRate(a.rate, m.rateUnit)}
+                {@const bo = partBoiloff(p, a.resourceId)}
+                <li class="tnk__row"
+                    style:--tnk-fill={frac}
+                    style:--tnk-fill-color={fillColor(frac, m.color)}>
+                  {@render codeTile(a.resourceId)}
+                  <span class="tnk__row-spacer"></span>
                   <!-- Self-contained readout: each BY-PART row is its
                        own resource, so units stay attached to amount
                        and rate. -->
-                  <span class="rsv__row-readout">
-                    <span class="rsv__row-readout-val">{ap.sMag}</span><span
-                      class="rsv__row-readout-cap">/{ap.cMag}</span><span
-                      class="rsv__row-readout-unit">{ap.unit}</span>
-                    <span class="rsv__row-readout-rate"
-                          class:rsv__row-readout-rate--neg={r.rate < -RATE_EPSILON}
-                          class:rsv__row-readout-rate--zero={isZero(r.rate)}>
-                      <span class="rsv__row-readout-sep">·</span>{rp.mag}<em
-                        class="rsv__row-readout-rate-unit">{rp.unit}</em>
+                  <span class="tnk__row-readout">
+                    <span class="tnk__row-readout-val">{ap.sMag}</span><span
+                      class="tnk__row-readout-cap">/{ap.cMag}</span><span
+                      class="tnk__row-readout-unit">{ap.unit}</span>
+                    <span class="tnk__row-readout-rate"
+                          class:tnk__row-readout-rate--neg={a.rate < -RATE_EPSILON}
+                          class:tnk__row-readout-rate--zero={isZero(a.rate)}>
+                      <span class="tnk__row-readout-sep">·</span>{rp.mag}<em
+                        class="tnk__row-readout-rate-unit">{rp.unit}</em>
                     </span>
                   </span>
                 </li>
-                {@render coolingSubLine(p, r.resourceId, false)}
+                {@render coolingSubLine(p, a.resourceId, false)}
                 {#if bo.litresPerDay > 0}
                   {@const bp = fmtBoiloff(bo.litresPerDay, bo.fractionPerDay, m.unit)}
-                  <li class="rsv__sub" aria-label="boil-off rate">
-                    <span class="rsv__sub-label">boil-off</span>
-                    <span class="rsv__sub-sep">·</span>
-                    <span class="rsv__sub-val">{bp.mag}<em class="rsv__sub-unit">{bp.unit}</em></span>
-                    <span class="rsv__sub-sep">·</span>
-                    <span class="rsv__sub-pct">{bp.pct}</span>
+                  <li class="tnk__sub" aria-label="boil-off rate">
+                    <span class="tnk__sub-label">boil-off</span>
+                    <span class="tnk__sub-sep">·</span>
+                    <span class="tnk__sub-val">{bp.mag}<em class="tnk__sub-unit">{bp.unit}</em></span>
+                    <span class="tnk__sub-sep">·</span>
+                    <span class="tnk__sub-pct">{bp.pct}</span>
                   </li>
                 {/if}
               {/each}
@@ -428,7 +468,7 @@
   {:else}
     <!-- ===== BY RESOURCE ========================================== -->
     {#if resourceGroups.length === 0}
-      {@render emptyMsg('NO RESOURCES')}
+      {@render emptyMsg('NO TANKS')}
     {:else}
       {#each resourceGroups as g (g.resourceId)}
         {@const open = isResExpanded(g.resourceId)}
@@ -437,10 +477,10 @@
         {@const groupIds = g.entries.map((e) => e.part.struct.id)}
         {@const grp = fmtRate(g.totalRate, m.rateUnit)}
         {@const gbo = groupBoiloff(g)}
-        <div class="rsv__node">
+        <div class="tnk__node">
           <button
             type="button"
-            class="rsv__node-head rsv__node-head--res"
+            class="tnk__node-head tnk__node-head--res"
             aria-expanded={open}
             onclick={() => toggleRes(g.resourceId)}
             onmouseenter={() => highlightOn(groupIds)}
@@ -448,75 +488,75 @@
           >
             {@render chev(open)}
             {@render codeTile(g.resourceId, true)}
-            <span class="rsv__node-title">{g.resourceId}</span>
+            <span class="tnk__node-title">{g.resourceId}</span>
             {@render amountReadout(g.totalAmount, g.totalCapacity, m.unit)}
           </button>
           <!-- Aggregate gauge gets its own line with the rate readout
                beside it. Keeps the head row's title from competing
                with the rate; pairs the gauge (which IS the live-flow
                visualisation) directly with the rate it shows. -->
-          <div class="rsv__node-gauge-line">
+          <div class="tnk__node-gauge-line">
             <div
-              class="rsv__node-gauge"
+              class="tnk__node-gauge"
               style:--sg-color-tint={m.color}
               style:--sg-glow-tint={m.glow}
             >
               <SegmentGauge fraction={frac} />
             </div>
-            <span class="rsv__rate"
-                  class:rsv__rate--neg={g.totalRate < -RATE_EPSILON}
-                  class:rsv__rate--zero={isZero(g.totalRate)}>
+            <span class="tnk__rate"
+                  class:tnk__rate--neg={g.totalRate < -RATE_EPSILON}
+                  class:tnk__rate--zero={isZero(g.totalRate)}>
               {grp.mag}<em>{grp.unit}</em>
             </span>
           </div>
           {#if gbo.litresPerDay > 0}
             {@const gbp = fmtBoiloff(gbo.litresPerDay, gbo.fractionPerDay, m.unit)}
-            <div class="rsv__sub rsv__sub--group" aria-label="boil-off rate">
-              <span class="rsv__sub-label">boil-off</span>
-              <span class="rsv__sub-sep">·</span>
-              <span class="rsv__sub-val">{gbp.mag}<em class="rsv__sub-unit">{gbp.unit}</em></span>
-              <span class="rsv__sub-sep">·</span>
-              <span class="rsv__sub-pct">{gbp.pct}</span>
+            <div class="tnk__sub tnk__sub--group" aria-label="boil-off rate">
+              <span class="tnk__sub-label">boil-off</span>
+              <span class="tnk__sub-sep">·</span>
+              <span class="tnk__sub-val">{gbp.mag}<em class="tnk__sub-unit">{gbp.unit}</em></span>
+              <span class="tnk__sub-sep">·</span>
+              <span class="tnk__sub-pct">{gbp.pct}</span>
             </div>
           {/if}
           {#if open}
-            <ul class="rsv__rows rsv__rows--nested">
+            <ul class="tnk__rows tnk__rows--nested">
               {#each g.entries as e (e.part.struct.id)}
-                {@const efrac = fillFraction(e.flow.amount, e.flow.capacity)}
-                {@const eap = fmtAmountPair(e.flow.amount, e.flow.capacity, m.unit)}
-                {@const erp = fmtRate(e.flow.rate, m.rateUnit)}
+                {@const efrac = fillFraction(e.contents, e.capacity)}
+                {@const eap = fmtAmountPair(e.contents, e.capacity, m.unit)}
+                {@const erp = fmtRate(e.rate, m.rateUnit)}
                 {@const ebo = partBoiloff(e.part, g.resourceId)}
-                <li class="rsv__row rsv__row--nested"
-                    style:--rsv-fill={efrac}
-                    style:--rsv-fill-color={fillColor(efrac, m.color)}
+                <li class="tnk__row tnk__row--nested"
+                    style:--tnk-fill={efrac}
+                    style:--tnk-fill-color={fillColor(efrac, m.color)}
                     onmouseenter={() => highlightOn([e.part.struct.id])}
                     onmouseleave={highlightOff}>
-                  <span class="rsv__row-icon">
-                    <ComponentIcon kind={partKind(e.part)} />
+                  <span class="tnk__row-icon">
+                    <ComponentIcon kind="tank" />
                   </span>
-                  <span class="rsv__row-name">{e.part.struct.title}</span>
+                  <span class="tnk__row-name">{e.part.struct.title}</span>
                   <!-- Unit is implicit from the parent resource header
-                       (already shows "ELECTRIC CHARGE 250/250 J · 0.00 W")
+                       (already shows "LIQUID HYDROGEN 250/250 L · 0.00 L/s")
                        so per-part rows omit it. -->
-                  <span class="rsv__row-readout">
-                    <span class="rsv__row-readout-val">{eap.sMag}</span><span
-                      class="rsv__row-readout-cap">/{eap.cMag}</span>
-                    <span class="rsv__row-readout-rate"
-                          class:rsv__row-readout-rate--neg={e.flow.rate < -RATE_EPSILON}
-                          class:rsv__row-readout-rate--zero={isZero(e.flow.rate)}>
-                      <span class="rsv__row-readout-sep">·</span>{erp.mag}
+                  <span class="tnk__row-readout">
+                    <span class="tnk__row-readout-val">{eap.sMag}</span><span
+                      class="tnk__row-readout-cap">/{eap.cMag}</span>
+                    <span class="tnk__row-readout-rate"
+                          class:tnk__row-readout-rate--neg={e.rate < -RATE_EPSILON}
+                          class:tnk__row-readout-rate--zero={isZero(e.rate)}>
+                      <span class="tnk__row-readout-sep">·</span>{erp.mag}
                     </span>
                   </span>
                 </li>
                 {@render coolingSubLine(e.part, g.resourceId, true)}
                 {#if ebo.litresPerDay > 0}
                   {@const ebp = fmtBoiloff(ebo.litresPerDay, ebo.fractionPerDay, m.unit)}
-                  <li class="rsv__sub rsv__sub--nested" aria-label="boil-off rate">
-                    <span class="rsv__sub-label">boil-off</span>
-                    <span class="rsv__sub-sep">·</span>
-                    <span class="rsv__sub-val">{ebp.mag}<em class="rsv__sub-unit">{ebp.unit}</em></span>
-                    <span class="rsv__sub-sep">·</span>
-                    <span class="rsv__sub-pct">{ebp.pct}</span>
+                  <li class="tnk__sub tnk__sub--nested" aria-label="boil-off rate">
+                    <span class="tnk__sub-label">boil-off</span>
+                    <span class="tnk__sub-sep">·</span>
+                    <span class="tnk__sub-val">{ebp.mag}<em class="tnk__sub-unit">{ebp.unit}</em></span>
+                    <span class="tnk__sub-sep">·</span>
+                    <span class="tnk__sub-pct">{ebp.pct}</span>
                   </li>
                 {/if}
               {/each}
@@ -529,7 +569,7 @@
 </section>
 
 <style>
-  .rsv {
+  .tnk {
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -538,7 +578,7 @@
   }
 
   /* ----- Toggle ---------------------------------------------------- */
-  .rsv__opt {
+  .tnk__opt {
     appearance: none;
     background: transparent;
     border: none;
@@ -559,19 +599,19 @@
       color 220ms cubic-bezier(0.4, 0, 0.2, 1),
       border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__opt:hover {
+  .tnk__opt:hover {
     color: var(--accent);
     border-bottom-color: var(--accent-dim);
   }
-  .rsv__opt:focus-visible {
+  .tnk__opt:focus-visible {
     outline: none;
     border-bottom-color: var(--accent);
   }
-  .rsv__opt--on {
+  .tnk__opt--on {
     color: var(--accent);
     text-shadow: 0 0 6px var(--accent-glow);
   }
-  .rsv__opt-led {
+  .tnk__opt-led {
     flex: 0 0 8px;
     width: 8px;
     height: 8px;
@@ -586,8 +626,8 @@
       border-color 240ms cubic-bezier(0.4, 0, 0.2, 1),
       box-shadow 240ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__opt:hover .rsv__opt-led { border-color: var(--accent-dim); }
-  .rsv__opt--on .rsv__opt-led {
+  .tnk__opt:hover .tnk__opt-led { border-color: var(--accent-dim); }
+  .tnk__opt--on .tnk__opt-led {
     background:
       radial-gradient(circle at 35% 30%,
         color-mix(in srgb, var(--accent) 40%, white 60%) 0%,
@@ -598,18 +638,18 @@
       0 0 8px var(--accent-glow),
       inset 0 0 0 1px rgba(255, 255, 255, 0.15);
   }
-  .rsv__opt-label {
+  .tnk__opt-label {
     flex: 1 1 auto;
     text-align: left;
   }
 
   /* ----- Tree node ------------------------------------------------- */
-  .rsv__node {
+  .tnk__node {
     margin-top: 12px;
   }
-  .rsv__node:first-of-type { margin-top: 0; }
+  .tnk__node:first-of-type { margin-top: 0; }
 
-  .rsv__node-head {
+  .tnk__node-head {
     appearance: none;
     background: transparent;
     border: none;
@@ -629,16 +669,16 @@
     border-bottom: 1px solid var(--line);
     transition: border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__node-head:not(.rsv__node-head--res) .rsv__node-title {
+  .tnk__node-head:not(.tnk__node-head--res) .tnk__node-title {
     font-family: var(--font-mono);
     letter-spacing: 0.04em;
     text-transform: none;
   }
-  .rsv__node-head--res .rsv__node-title {
+  .tnk__node-head--res .tnk__node-title {
     text-transform: uppercase;
   }
 
-  .rsv__node-head::after {
+  .tnk__node-head::after {
     content: '';
     position: absolute;
     left: 0;
@@ -652,8 +692,8 @@
       transparent 100%);
     transition: background 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__node-head:hover::after,
-  .rsv__node-head:focus-visible::after {
+  .tnk__node-head:hover::after,
+  .tnk__node-head:focus-visible::after {
     background: linear-gradient(90deg,
       transparent 0%,
       rgba(126, 245, 184, 0.22) 18%,
@@ -661,7 +701,7 @@
       transparent 100%);
   }
 
-  .rsv__node-head::before {
+  .tnk__node-head::before {
     content: '';
     position: absolute;
     left: -4px;
@@ -677,37 +717,37 @@
       transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
       box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__node-head[aria-expanded='true']::before {
+  .tnk__node-head[aria-expanded='true']::before {
     opacity: 0.45;
     transform: translateY(-50%) scaleY(1);
     background: var(--accent-dim);
   }
-  .rsv__node-head:hover::before,
-  .rsv__node-head:focus-visible::before {
+  .tnk__node-head:hover::before,
+  .tnk__node-head:focus-visible::before {
     opacity: 1;
     transform: translateY(-50%) scaleY(1);
     background: var(--accent);
     box-shadow: 0 0 6px var(--accent-glow);
   }
-  .rsv__node-head:focus-visible { outline: none; }
-  .rsv__node-head:hover { border-bottom-color: var(--accent-dim); }
-  .rsv__node-head:hover .rsv__node-title,
-  .rsv__node-head:focus-visible .rsv__node-title {
+  .tnk__node-head:focus-visible { outline: none; }
+  .tnk__node-head:hover { border-bottom-color: var(--accent-dim); }
+  .tnk__node-head:hover .tnk__node-title,
+  .tnk__node-head:focus-visible .tnk__node-title {
     color: var(--accent-soft);
     text-shadow: 0 0 6px var(--accent-glow);
   }
 
   /* Leading kind-icon column on BY-PART node-heads. */
-  .rsv__node-icon {
+  .tnk__node-icon {
     flex: 0 0 12px;
     display: inline-flex;
     align-items: center;
     color: var(--fg-mute);
     transition: color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__node-head:hover .rsv__node-icon { color: var(--fg-dim); }
+  .tnk__node-head:hover .tnk__node-icon { color: var(--fg-dim); }
 
-  .rsv__node-title {
+  .tnk__node-title {
     flex: 1 1 auto;
     min-width: 0;
     font-size: 11px;
@@ -723,7 +763,7 @@
   /* Trailing summary on BY-PART heads — the part's resource codes,
      each tinted with its resource hue. Reads as a faint metadata
      stamp so collapsed parts still tell you what's inside. */
-  .rsv__node-summary {
+  .tnk__node-summary {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
@@ -732,16 +772,16 @@
     font-size: 9px;
     letter-spacing: 0.10em;
   }
-  .rsv__node-summary-code {
+  .tnk__node-summary-code {
     padding: 0 3px;
     opacity: 0.85;
   }
-  .rsv__node-summary-sep {
+  .tnk__node-summary-sep {
     color: var(--line);
     margin: 0 1px;
   }
 
-  .rsv__chev {
+  .tnk__chev {
     flex: 0 0 8px;
     width: 8px;
     height: 8px;
@@ -751,15 +791,15 @@
       color 220ms cubic-bezier(0.4, 0, 0.2, 1),
       filter 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__chev--open { transform: rotate(90deg); }
-  .rsv__node-head:hover .rsv__chev {
+  .tnk__chev--open { transform: rotate(90deg); }
+  .tnk__node-head:hover .tnk__chev {
     color: var(--accent);
     filter: drop-shadow(0 0 3px var(--accent-glow));
   }
-  .rsv__node-head:hover .rsv__chev--open {
+  .tnk__node-head:hover .tnk__chev--open {
     transform: rotate(90deg) scale(1.18);
   }
-  .rsv__node-head:hover .rsv__chev:not(.rsv__chev--open) {
+  .tnk__node-head:hover .tnk__chev:not(.tnk__chev--open) {
     transform: scale(1.18);
   }
 
@@ -767,21 +807,21 @@
   /* Flow-rate readout sits right of the gauge. The gauge stretches to
      fill remaining width; the rate column has a fixed slot so the
      gauge ends at the same x across resources. */
-  .rsv__node-gauge-line {
+  .tnk__node-gauge-line {
     display: flex;
     align-items: center;
     gap: 8px;
     margin: 4px 0 8px;
     padding: 0 2px;
   }
-  .rsv__node-gauge {
+  .tnk__node-gauge {
     flex: 1 1 auto;
     min-width: 0;
   }
-  .rsv__node-gauge :global(.sg) {
+  .tnk__node-gauge :global(.sg) {
     height: 12px;
   }
-  .rsv__rate {
+  .tnk__rate {
     flex: 0 0 76px;
     text-align: right;
     color: var(--accent);
@@ -790,9 +830,9 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .rsv__rate--neg  { color: var(--warn); }
-  .rsv__rate--zero { color: var(--fg-dim); }
-  .rsv__rate em {
+  .tnk__rate--neg  { color: var(--warn); }
+  .tnk__rate--zero { color: var(--fg-dim); }
+  .tnk__rate em {
     font-style: normal;
     font-size: 9px;
     color: var(--fg-dim);
@@ -801,14 +841,14 @@
   }
 
   /* ----- Rows ------------------------------------------------------ */
-  .rsv__rows {
+  .tnk__rows {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
   }
-  .rsv__row {
+  .tnk__row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -818,8 +858,8 @@
     border-bottom: 1px solid rgba(26, 35, 53, 0.55);
     transition: background 200ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__row:last-child { border-bottom: 0; }
-  .rsv__row::before {
+  .tnk__row:last-child { border-bottom: 0; }
+  .tnk__row::before {
     content: '';
     position: absolute;
     left: 0;
@@ -834,50 +874,50 @@
       opacity 220ms cubic-bezier(0.4, 0, 0.2, 1),
       transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .rsv__row:hover { background: rgba(126, 245, 184, 0.04); }
-  .rsv__row:hover::before { opacity: 0.7; transform: scaleY(1); }
+  .tnk__row:hover { background: rgba(126, 245, 184, 0.04); }
+  .tnk__row:hover::before { opacity: 0.7; transform: scaleY(1); }
 
   /* Fill underline: a 2 px bar at the row's bottom edge whose width
-     scales with `--rsv-fill` (0..1) and whose colour comes from
-     `--rsv-fill-color` (per-resource hue, with severity overrides for
+     scales with `--tnk-fill` (0..1) and whose colour comes from
+     `--tnk-fill-color` (per-resource hue, with severity overrides for
      low-fill rows). Replaces the per-row segment gauge — the row IS
      the gauge now. Width transitions smoothly so a draining tank
      animates rather than steps. */
-  .rsv__row::after {
+  .tnk__row::after {
     content: '';
     position: absolute;
     left: 0;
     bottom: -1px;
     height: 2px;
-    width: calc(var(--rsv-fill, 0) * 100%);
+    width: calc(var(--tnk-fill, 0) * 100%);
     max-width: 100%;
-    background: var(--rsv-fill-color, var(--accent));
+    background: var(--tnk-fill-color, var(--accent));
     opacity: 0.85;
     pointer-events: none;
     transition:
       width 360ms cubic-bezier(0.16, 1, 0.3, 1),
       background 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__row:hover::after { opacity: 1; }
+  .tnk__row:hover::after { opacity: 1; }
 
   /* Pushes the readout to the right edge of BY-PART rows (no name
      column, just code + readout). */
-  .rsv__row-spacer {
+  .tnk__row-spacer {
     flex: 1 1 auto;
     min-width: 0;
   }
 
   /* Code tile. Locked to a uniform 36 px width so 2-char (EC) and
      4-char (N2H4) codes align across rows. The fill colour and
-     subtle background tint come from --rsv-tile-color /
-     --rsv-tile-tint custom props the parent sets per resource. */
-  .rsv__code {
+     subtle background tint come from --tnk-tile-color /
+     --tnk-tile-tint custom props the parent sets per resource. */
+  .tnk__code {
     flex: 0 0 36px;
     width: 36px;
     padding: 1px 0;
     text-align: center;
-    color: var(--rsv-tile-color, var(--accent));
-    background: var(--rsv-tile-tint, rgba(126, 245, 184, 0.04));
+    color: var(--tnk-tile-color, var(--accent));
+    background: var(--tnk-tile-tint, rgba(126, 245, 184, 0.04));
     font-family: var(--font-display);
     font-size: 9px;
     letter-spacing: 0.12em;
@@ -888,27 +928,27 @@
     font-variant-numeric: tabular-nums;
     transition: border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__row:hover .rsv__code,
-  .rsv__node-head:hover .rsv__code {
-    border-color: color-mix(in srgb, var(--rsv-tile-color, var(--accent)) 40%, transparent);
+  .tnk__row:hover .tnk__code,
+  .tnk__node-head:hover .tnk__code {
+    border-color: color-mix(in srgb, var(--tnk-tile-color, var(--accent)) 40%, transparent);
   }
   /* Lead variant: a touch more presence at rest, since it's headlining
      a section rather than riding inside a row. */
-  .rsv__code--lead {
-    border-color: color-mix(in srgb, var(--rsv-tile-color, var(--accent)) 35%, transparent);
+  .tnk__code--lead {
+    border-color: color-mix(in srgb, var(--tnk-tile-color, var(--accent)) 35%, transparent);
   }
 
   /* Leading icon column for BY-RESOURCE part rows. */
-  .rsv__row-icon {
+  .tnk__row-icon {
     flex: 0 0 12px;
     display: inline-flex;
     align-items: center;
     color: var(--fg-mute);
     transition: color 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rsv__row:hover .rsv__row-icon { color: var(--fg-dim); }
+  .tnk__row:hover .tnk__row-icon { color: var(--fg-dim); }
 
-  .rsv__row-name {
+  .tnk__row-name {
     flex: 1 1 auto;
     min-width: 0;
     color: var(--fg);
@@ -921,9 +961,9 @@
 
   /* Amount readout (used by the BY-RESOURCE node-head aggregate row).
      Locked to 96 px right-aligned so totals across resources line up
-     to the same edge. Per-part rows use `.rsv__row-readout` instead,
+     to the same edge. Per-part rows use `.tnk__row-readout` instead,
      which can split rate from amount. */
-  .rsv__amount {
+  .tnk__amount {
     flex: 0 0 96px;
     text-align: right;
     font-family: var(--font-mono);
@@ -931,13 +971,13 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .rsv__amount-val {
+  .tnk__amount-val {
     color: var(--accent);
   }
-  .rsv__amount-cap {
+  .tnk__amount-cap {
     color: var(--fg-dim);
   }
-  .rsv__amount-unit {
+  .tnk__amount-unit {
     margin-left: 4px;
     font-size: 9px;
     color: var(--fg-dim);
@@ -947,15 +987,15 @@
   /* Nested rows under BY-RESOURCE node-heads. Same indentation as
      Power's solar sub-group, so the tree hierarchy reads identically
      across panels. */
-  .rsv__rows--nested {
+  .tnk__rows--nested {
     padding-left: 14px;
     border-left: 1px solid rgba(126, 245, 184, 0.10);
     margin: 0 0 2px 7px;
   }
-  .rsv__row--nested {
+  .tnk__row--nested {
     padding-left: 4px;
   }
-  .rsv__row--nested .rsv__row-name {
+  .tnk__row--nested .tnk__row-name {
     color: var(--fg-dim);
   }
 
@@ -963,7 +1003,7 @@
      each carrying its own colour: stored value (accent), capacity
      (dim), rate (signed — accent when filling, warn when draining,
      dim at zero). Mirrors Power's storage-row rate splits. */
-  .rsv__row-readout {
+  .tnk__row-readout {
     flex: 0 0 auto;
     color: var(--accent);
     font-family: var(--font-mono);
@@ -971,26 +1011,26 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .rsv__row-readout-val { color: var(--accent); }
-  .rsv__row-readout-cap { color: var(--fg-dim); }
-  .rsv__row-readout-sep {
+  .tnk__row-readout-val { color: var(--accent); }
+  .tnk__row-readout-cap { color: var(--fg-dim); }
+  .tnk__row-readout-sep {
     color: var(--fg-dim);
     margin: 0 4px 0 6px;
     letter-spacing: 0;
   }
-  .rsv__row-readout-rate { color: var(--accent); }
-  .rsv__row-readout-rate--neg { color: var(--warn); }
-  .rsv__row-readout-rate--zero { color: var(--fg-dim); }
+  .tnk__row-readout-rate { color: var(--accent); }
+  .tnk__row-readout-rate--neg { color: var(--warn); }
+  .tnk__row-readout-rate--zero { color: var(--fg-dim); }
   /* Unit subordinates inside the readout. Used by BY-PART rows where
      the row stands alone; BY-RESOURCE per-part rows omit unit because
      the parent header already declares it. */
-  .rsv__row-readout-unit {
+  .tnk__row-readout-unit {
     margin-left: 4px;
     font-size: 9px;
     color: var(--fg-dim);
     letter-spacing: 0.10em;
   }
-  .rsv__row-readout-rate-unit {
+  .tnk__row-readout-rate-unit {
     font-style: normal;
     margin-left: 3px;
     font-size: 9px;
@@ -1003,7 +1043,7 @@
      no hover affordance — so it reads as a diagnostic annotation
      rather than a tappable row. Only renders when the slice has a
      non-zero boiloffFractionPerDay. */
-  .rsv__sub {
+  .tnk__sub {
     list-style: none;
     display: flex;
     align-items: baseline;
@@ -1015,13 +1055,13 @@
     color: var(--fg-dim);
     font-variant-numeric: tabular-nums;
   }
-  .rsv__sub--nested {
-    padding-left: 26px;              /* matches `.rsv__row-icon` indent under the BY-RESOURCE nested rows */
+  .tnk__sub--nested {
+    padding-left: 26px;              /* matches `.tnk__row-icon` indent under the BY-RESOURCE nested rows */
   }
-  .rsv__sub--group {
+  .tnk__sub--group {
     padding: 0 6px 4px 50px;         /* under the chevron + code-tile head, just below the gauge line */
   }
-  .rsv__sub-label {
+  .tnk__sub-label {
     font-family: var(--font-display);
     font-size: 9px;
     letter-spacing: 0.16em;
@@ -1029,20 +1069,20 @@
     color: var(--warn);
     opacity: 0.85;
   }
-  .rsv__sub-val { color: var(--fg); opacity: 0.78; }
-  .rsv__sub-unit {
+  .tnk__sub-val { color: var(--fg); opacity: 0.78; }
+  .tnk__sub-unit {
     font-style: normal;
     margin-left: 3px;
     font-size: 9px;
     color: var(--fg-dim);
     letter-spacing: 0.10em;
   }
-  .rsv__sub-sep { color: var(--fg-dim); opacity: 0.5; margin: 0 2px; }
-  .rsv__sub-pct { color: var(--fg-dim); font-size: 10px; }
+  .tnk__sub-sep { color: var(--fg-dim); opacity: 0.5; margin: 0 2px; }
+  .tnk__sub-pct { color: var(--fg-dim); font-size: 10px; }
 
   /* Cooling-tier label — installed hardware identifier (HVY/BAC/ZBO).
      Always-on (not a hot signal), so neutral fg + display font. */
-  .rsv__cool-tier {
+  .tnk__cool-tier {
     font-family: var(--font-display);
     font-size: 10px;
     letter-spacing: 0.14em;
@@ -1051,7 +1091,7 @@
   /* Inline stage toggle — same chip language as PWR/THM cooler-btn,
      dropped into a sub-line so it sits flush with the cooling label.
      Fixed width keeps OFF / ON / S1 / S2 the same footprint. */
-  .rsv__cool-btn {
+  .tnk__cool-btn {
     margin-left: 6px;
     padding: 0 6px;
     width: 38px;
@@ -1065,31 +1105,31 @@
     cursor: pointer;
     transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
   }
-  .rsv__cool-btn:hover {
+  .tnk__cool-btn:hover {
     color: var(--accent);
     border-color: var(--accent-dim);
     background: rgba(126, 245, 184, 0.06);
   }
-  .rsv__cool-btn--on {
+  .tnk__cool-btn--on {
     color: var(--accent);
     border-color: var(--accent-dim);
     background: rgba(126, 245, 184, 0.08);
   }
-  .rsv__cool-btn--on:hover {
+  .tnk__cool-btn--on:hover {
     background: rgba(126, 245, 184, 0.16);
     border-color: var(--accent);
     box-shadow: 0 0 4px var(--accent-glow);
   }
 
   /* Empty-state line — verbatim Power's pattern for visual rhyme. */
-  .rsv__empty {
+  .tnk__empty {
     display: flex;
     align-items: center;
     gap: 10px;
     margin: 6px 0;
     padding: 0 4px;
   }
-  .rsv__empty-rule {
+  .tnk__empty-rule {
     flex: 1 1 auto;
     height: 1px;
     background: linear-gradient(90deg,
@@ -1097,7 +1137,7 @@
       rgba(126, 245, 184, 0.10) 50%,
       transparent 100%);
   }
-  .rsv__empty-text {
+  .tnk__empty-text {
     flex: 0 0 auto;
     font-family: var(--font-display);
     font-size: 9px;
