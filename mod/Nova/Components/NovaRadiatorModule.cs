@@ -64,8 +64,6 @@ public class NovaRadiatorModule : NovaPartModule {
       radiator.IsDeployed = false;
     }
 
-    UpdateEvents();
-
     if (state != StartState.Editor) {
       var vesselModule = vessel.FindVesselModuleImplementing<NovaVesselModule>();
       if (vesselModule?.Virtual != null)
@@ -73,8 +71,9 @@ public class NovaRadiatorModule : NovaPartModule {
     }
   }
 
-  [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
-    unfocusedRange = 4f, guiName = "Extend Radiator")]
+  // Deploy methods are called from NovaPartTopic.HandleOp on a
+  // `setRadiatorDeployed` op — never exposed in the stock PAW. Player-
+  // facing deploy lives in the Nova UI (ThermalView).
   public void Extend() {
     if (!IsDeployable) return;
     if (animating || isExtended) return;
@@ -86,11 +85,8 @@ public class NovaRadiatorModule : NovaPartModule {
     anim[animationName].weight = 1f;
     anim.Play(animationName);
     animating = true;
-    UpdateEvents();
   }
 
-  [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
-    unfocusedRange = 4f, guiName = "Retract Radiator")]
   public void Retract() {
     if (!IsDeployable) return;
     if (animating || !isExtended) return;
@@ -103,7 +99,6 @@ public class NovaRadiatorModule : NovaPartModule {
     anim[animationName].weight = 1f;
     anim.Play(animationName);
     animating = true;
-    UpdateEvents();
   }
 
   public void FixedUpdate() {
@@ -128,19 +123,11 @@ public class NovaRadiatorModule : NovaPartModule {
   }
 
   private void OnDeployStateChanged() {
-    UpdateEvents();
     if (vessel != null) {
       var vesselModule = vessel.FindVesselModuleImplementing<NovaVesselModule>();
       if (vesselModule?.Virtual != null)
         vesselModule.Virtual.Invalidate();
     }
-  }
-
-  private void UpdateEvents() {
-    if (!IsDeployable) return;
-    Events["Extend"].active = !isExtended && !animating;
-    Events["Retract"].active = isExtended && !animating
-      && (retractable || HighLogic.LoadedSceneIsEditor);
   }
 
   private void SetAnimationPosition(float time) {

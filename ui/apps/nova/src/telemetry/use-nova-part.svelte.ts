@@ -1,5 +1,5 @@
 // Subscribe to a single NovaPart topic. Cheaper variant of
-// useNovaPartsByTag for callers that already know the partId they
+// useNovaParts for callers that already know the partId they
 // want (e.g. an inspector pinned to a specific part).
 
 import { getKsp } from '@dragonglass/telemetry/svelte';

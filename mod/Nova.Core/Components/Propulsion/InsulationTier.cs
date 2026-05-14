@@ -103,4 +103,30 @@ public static class InsulationTierTable {
   };
 
   public static double VolumePenalty(InsulationTier tier) => Get(tier).VolumePenalty;
+
+  // Maximum runtime cooler stage the tier supports.
+  //   MLI / HeavyMLI: 0 — passive only.
+  //   BAC:            1 — single-stage cryocooler, on/off.
+  //   ZBO:            2 — stage 1 runs BAC-equivalent, stage 2 runs full ZBO.
+  public static int MaxStage(InsulationTier tier) => tier switch {
+    InsulationTier.BAC => 1,
+    InsulationTier.ZBO => 2,
+    _ => 0,
+  };
+
+  // Cryocooler profile in effect for (tier, stage). Returns the BAC
+  // profile for the "1st-stage" ZBO mode so the in-game tradeoff lines
+  // up with the in-fiction picture: ZBO's first cooling stage IS a BAC
+  // — cheaper EC, more residual boiloff than full ZBO.
+  //   (BAC, 1)        → BAC
+  //   (ZBO, 1)        → BAC
+  //   (ZBO, 2)        → ZBO
+  //   anything else   → null (no cooler active)
+  public static InsulationTierData? ActiveProfile(InsulationTier tier, int stage) {
+    if (stage <= 0) return null;
+    if (stage > MaxStage(tier)) return null;
+    if (tier == InsulationTier.BAC) return BAC;
+    if (tier == InsulationTier.ZBO) return stage == 1 ? BAC : ZBO;
+    return null;
+  }
 }

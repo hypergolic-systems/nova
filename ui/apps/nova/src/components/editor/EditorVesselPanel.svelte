@@ -18,8 +18,7 @@
 
   import { FloatingWindow } from '@dragonglass/windows';
   import { useNovaEditorShipStructure } from '../../telemetry/use-nova-editor-ship-structure.svelte';
-  import { useNovaEditorPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { SystemTag } from '../../telemetry/nova-topics';
+  import { useNovaEditorParts } from '../../telemetry/use-nova-parts.svelte';
   import TanksView from './TanksView.svelte';
   import PowerView from '../power/PowerView.svelte';
 
@@ -110,7 +109,7 @@
     {#if activeTab === 'tanks'}
       <TanksView {focusPartId} />
     {:else if activeTab === 'pwr'}
-      <PowerView mode="editor" partsByTag={(tag: SystemTag) => useNovaEditorPartsByTag(tag)} />
+      <PowerView mode="editor" parts={() => useNovaEditorParts()} />
     {/if}
   </div>
 </FloatingWindow>

@@ -8,11 +8,13 @@ using UnityEngine;
 namespace Nova.Telemetry;
 
 // Per-vessel structure topic: vessel id, name, and the list of parts
-// with their parent links and Nova system tags. Low-frequency — dirty
-// only on topology change (NovaVesselModule signals via
-// MarkVesselDirty). The UI uses tags as a coarse filter so views like
-// PowerView only subscribe to NovaPart/<id> for parts that actually
-// participate in their subsystem.
+// with their parent links. Low-frequency — dirty only on topology
+// change (NovaVesselModule signals via MarkVesselDirty).
+//
+// Each view (PowerView, ThermalView, ResourceView, …) subscribes to
+// NovaPart/<id> for every part on the vessel and switches on the
+// components present in the frame to decide what to render — there's
+// no per-part filter here. The structure topic just lists who exists.
 //
 // MonoBehaviour attached to the Vessel's GameObject by
 // NovaSubscriptionManager when a `NovaVesselStructure/<id>` subscribe
@@ -21,7 +23,7 @@ namespace Nova.Telemetry;
 //
 // Wire format (positional array):
 //   [vesselId, vesselName, [
-//     [partId, partName, parentId|null, [tag, ...]],
+//     [partId, partName, displayTitle, parentId|null],
 //     ...
 //   ]]
 public sealed class NovaVesselStructureTopic : Topic {
@@ -121,9 +123,6 @@ public sealed class NovaVesselStructureTopic : Topic {
     JsonWriter.Sep(sb, ref first);
     JsonWriter.WriteNullableUintAsString(sb, virt.GetPartParent(partId));
 
-    JsonWriter.Sep(sb, ref first);
-    WriteTags(sb, SystemTags.For(virt.GetComponents(partId)));
-
     JsonWriter.End(sb, ']');
   }
 
@@ -140,15 +139,5 @@ public sealed class NovaVesselStructureTopic : Topic {
       return part.partInfo.title;
     }
     return fallback;
-  }
-
-  private static void WriteTags(StringBuilder sb, List<string> tags) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-    foreach (var tag in tags) {
-      JsonWriter.Sep(sb, ref first);
-      JsonWriter.WriteString(sb, tag);
-    }
-    JsonWriter.End(sb, ']');
   }
 }

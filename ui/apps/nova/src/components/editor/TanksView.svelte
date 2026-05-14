@@ -19,13 +19,10 @@
 
   import { getKsp } from '@dragonglass/telemetry/svelte';
   import { onDestroy, tick } from 'svelte';
-  import { useNovaEditorShipStructure } from '../../telemetry/use-nova-editor-ship-structure.svelte';
-  import { useKeyedSubscriptions } from '../../telemetry/use-keyed-subscriptions.svelte';
+  import { useNovaEditorParts } from '../../telemetry/use-nova-parts.svelte';
   import {
     NovaPartTopic,
-    decodePart,
     type NovaPart,
-    type NovaPartStruct,
     type TankCustomEntry,
     type TankSlice,
     type InsulationTier,
@@ -41,22 +38,13 @@
   const { focusPartId }: Props = $props();
 
   const ksp = getKsp();
-  const structureRef = useNovaEditorShipStructure();
+  const editorParts = useNovaEditorParts();
 
-  // Tank parts only — anything tagged 'tank' (set by SystemTags.cs for
-  // parts carrying a TankVolume virtual component).
-  const tankParts = $derived.by<NovaPartStruct[]>(() => {
-    const s = structureRef.current;
-    return s ? s.parts.filter((p) => p.tags.includes('tank')) : [];
-  });
-
-  // Per-tank-part NovaPart subscription. Provides resource frames
-  // (one per Buffer = one per slice) and a TankVolume "T" component
-  // frame carrying the part's geometric volume.
-  const partStates = useKeyedSubscriptions<string, ReturnType<typeof decodePart> extends NovaPart ? unknown : never, NovaPart>(
-    () => tankParts.map((p) => p.id),
-    (id) => NovaPartTopic(id),
-    (frame) => decodePart(frame as Parameters<typeof decodePart>[0]),
+  // Tank parts only — filter by NovaPart frame's tank[] component
+  // presence. Tank parts pop into the list once their first frame
+  // arrives; ordering matches structure publish order (= ship-tree order).
+  const tankParts = $derived(
+    editorParts.current.filter((p) => (p.state?.tank.length ?? 0) > 0),
   );
 
   // Slice list comes directly from the TankVolume component frame
@@ -145,20 +133,19 @@
     </p>
   {:else}
     <ul class="tv__rows">
-      {#each tankParts as p (p.id)}
-        {@const state = partStates.get(p.id)}
-        {@const slices = slicesOf(state)}
-        {@const volume = volumeOf(state)}
-        {@const isOpen = expanded[p.id] ?? false}
+      {#each tankParts as p (p.struct.id)}
+        {@const slices = slicesOf(p.state)}
+        {@const volume = volumeOf(p.state)}
+        {@const isOpen = expanded[p.struct.id] ?? false}
         <li class="tv__row"
-            bind:this={rowEls[p.id]}
-            onmouseenter={() => highlightOn(p.id)}
+            bind:this={rowEls[p.struct.id]}
+            onmouseenter={() => highlightOn(p.struct.id)}
             onmouseleave={highlightOff}>
           <button type="button" class="tv__row-head"
                   aria-expanded={isOpen}
-                  onclick={() => toggle(p.id)}>
+                  onclick={() => toggle(p.struct.id)}>
             {@render chev(isOpen)}
-            <span class="tv__row-name">{p.title}</span>
+            <span class="tv__row-name">{p.struct.title}</span>
             <span class="tv__row-mix">{mixSummary(slices)}</span>
             <span class="tv__row-fill"
                   class:tv__row-fill--low={fillFraction(slices) < 0.05}>
@@ -167,12 +154,12 @@
           </button>
           {#if isOpen && volume > 0}
             <TankRowEditor
-              partId={p.id}
-              partTitle={p.title}
+              partId={p.struct.id}
+              partTitle={p.struct.title}
               {volume}
               tanks={slices}
-              onApply={(entries) => applyTankCustom(p.id, entries)}
-              onApplyTiers={(tiers) => applyTankInsulation(p.id, tiers)}
+              onApply={(entries) => applyTankCustom(p.struct.id, entries)}
+              onApplyTiers={(tiers) => applyTankInsulation(p.struct.id, tiers)}
             />
           {/if}
         </li>

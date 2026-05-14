@@ -47,11 +47,14 @@ public class CraftFileTests {
       State = new VesselState {
         Parts = {
           new PartState { Id = 0, TankVolume = new TankVolumeState {
-            Amounts = new double[] { 40 },
+            Tanks = { new TankState { Amount = 40 } },
           }},
           new PartState { Id = 1 },
           new PartState { Id = 2, TankVolume = new TankVolumeState {
-            Amounts = new double[] { 1560, 520 },
+            Tanks = {
+              new TankState { Amount = 1560 },
+              new TankState { Amount = 520 },
+            },
           }},
           new PartState { Id = 3 },
         },
@@ -89,8 +92,8 @@ public class CraftFileTests {
     Assert.IsNull(parts[3].TankVolume); // engine: prefab-only
 
     // State
-    Assert.AreEqual(1560, loaded.State.Parts[2].TankVolume.Amounts[0]);
-    Assert.AreEqual(520, loaded.State.Parts[2].TankVolume.Amounts[1]);
+    Assert.AreEqual(1560, loaded.State.Parts[2].TankVolume.Tanks[0].Amount);
+    Assert.AreEqual(520, loaded.State.Parts[2].TankVolume.Tanks[1].Amount);
   }
 
   [TestMethod]
@@ -114,7 +117,12 @@ public class CraftFileTests {
       State = new VesselState {
         Parts = {
           new PartState { Id = 0, TankVolume = new TankVolumeState {
-            Amounts = new double[] { 200, 0, 150 },  // full, empty, partial
+            // full, empty, partial.
+            Tanks = {
+              new TankState { Amount = 200 },
+              new TankState { Amount = 0 },
+              new TankState { Amount = 150 },
+            },
           }},
         },
       },
@@ -131,10 +139,10 @@ public class CraftFileTests {
       loaded = Serializer.Deserialize<Vessel>(ms);
     }
 
-    var amounts = loaded.State.Parts[0].TankVolume.Amounts;
-    Assert.AreEqual(200, amounts[0]);
-    Assert.AreEqual(0, amounts[1]);
-    Assert.AreEqual(150, amounts[2]);
+    var tanks = loaded.State.Parts[0].TankVolume.Tanks;
+    Assert.AreEqual(200, tanks[0].Amount);
+    Assert.AreEqual(0,   tanks[1].Amount);
+    Assert.AreEqual(150, tanks[2].Amount);
   }
 
   [TestMethod]
@@ -152,7 +160,9 @@ public class CraftFileTests {
     vessel.State.Parts[3].Id = 1004;
 
     // Drain the main tank mid-flight
-    vessel.State.Parts[2].TankVolume.Amounts = new double[] { 800, 260 };
+    vessel.State.Parts[2].TankVolume.Tanks.Clear();
+    vessel.State.Parts[2].TankVolume.Tanks.Add(new TankState { Amount = 800 });
+    vessel.State.Parts[2].TankVolume.Tanks.Add(new TankState { Amount = 260 });
 
     // Vessel identity (structure) and state
     vessel.Structure.VesselId = "abc-123";
@@ -204,8 +214,8 @@ public class CraftFileTests {
     Assert.AreEqual(1003u, v.Structure.Parts[2].Id);
 
     // Drained tanks
-    Assert.AreEqual(800, v.State.Parts[2].TankVolume.Amounts[0]);
-    Assert.AreEqual(260, v.State.Parts[2].TankVolume.Amounts[1]);
+    Assert.AreEqual(800, v.State.Parts[2].TankVolume.Tanks[0].Amount);
+    Assert.AreEqual(260, v.State.Parts[2].TankVolume.Tanks[1].Amount);
   }
 
   [TestMethod]

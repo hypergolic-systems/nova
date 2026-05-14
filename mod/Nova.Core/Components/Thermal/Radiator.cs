@@ -36,6 +36,15 @@ public class Radiator : VirtualComponent {
   public double CurrentCoolingW =>
     device == null ? 0.0 : device.Activity * MaxCoolingW;
 
+  // Live EC draw from the bus — Activity × max EC. Independent of the
+  // cooling rate (some folding rads have a non-zero pump cost even
+  // when convection in atm covers most of the radiative load); we
+  // surface it so the PWR view can show the radiator as a real
+  // consumer alongside reaction wheels and avionics.
+  public double MaxEcW => MaxCoolingW * EcPerWattCooling;
+  public double CurrentEcW =>
+    device == null ? 0.0 : device.Activity * MaxEcW;
+
   public override VirtualComponent Clone() {
     return (Radiator)MemberwiseClone();
   }

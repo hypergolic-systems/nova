@@ -64,8 +64,8 @@ public class ComponentMappingTests {
     var state = new PartState();
     tank.Save(state);
 
-    Assert.AreEqual(180, state.TankVolume.Amounts[0]);
-    Assert.AreEqual(42.5, state.TankVolume.Amounts[1]);
+    Assert.AreEqual(180, state.TankVolume.Tanks[0].Amount);
+    Assert.AreEqual(42.5, state.TankVolume.Tanks[1].Amount);
 
     // Construct fresh from structure, then load state
     var ps = new PartStructure();
@@ -164,7 +164,7 @@ public class ComponentMappingTests {
     // Save state.
     var state = new PartState();
     tank.Save(state);
-    var savedAmount = state.TankVolume.Amounts[0];
+    var savedAmount = state.TankVolume.Tanks[0].Amount;
     Assert.AreEqual(liveContents, savedAmount, 1e-9,
         "Saved amount must equal live (lerped) Contents at save UT");
 
@@ -287,7 +287,7 @@ public class ComponentMappingTests {
     Assert.IsNotNull(ps.Battery);
     Assert.AreEqual(40, ps.TankVolume.Volume);
     Assert.AreEqual(100, ps.Battery.Capacity);
-    Assert.AreEqual(30, state.TankVolume.Amounts[0]);
+    Assert.AreEqual(30, state.TankVolume.Tanks[0].Amount);
     Assert.AreEqual(80, state.Battery.Value);
   }
 }

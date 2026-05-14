@@ -63,7 +63,8 @@ namespace Nova.Telemetry;
 //   ["L", currentRate, ratedRate]                                                 Light
 //   ["T", volume,
 //          [[resource, capacity, contents,
-//            tier:int, boiloffFracPerDay, coolerEcW, coolerHeatW], ...]]            TankVolume
+//            tier:int, stage:int, maxStage:int,
+//            boiloffFracPerDay, coolerEcW, coolerHeatW], ...]]              TankVolume
 //   ["F", currentEcOutput, maxEcOutput, isActive, validUntilSec,
 //          manifoldFraction, refillActive]                                         FuelCell
 //   ["C", idleRate, testLoadRate, testLoadMaxRate, testLoadActive, idleRated]    Command
@@ -75,7 +76,8 @@ namespace Nova.Telemetry;
 //          declineWattsPerKerbinYear,
 //          wasteHeatW, exportW, rejectionW,
 //          currentTempC, maxOperatingTempC, dTdtCps]                               Rtg
-//   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable]                  Radiator
+//   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable,
+//          currentEcW, maxEcW]                                                     Radiator
 //   ["D", fullSeparation, canFullSeparate, ejectionForce]                           Decoupler
 //
 // Solar's `maxEcRate` stays orientation-and-sunlit gated (live "what
@@ -136,6 +138,19 @@ namespace Nova.Telemetry;
 //                                radial decouplers (CanFullSeparate=false)
 //                                — the wire frame reports that bit so
 //                                the UI greys the toggle.
+//   "setTankCooler" [stage:int, stage:int, ...]
+//                              — replace the per-slice runtime cooler-
+//                                stage vector (0=off, 1=stage 1 (BAC-
+//                                class), 2=stage 2 (ZBO-class — only
+//                                valid on ZBO tier)). Length must
+//                                match slice count; each entry must
+//                                be in [0, MaxStage(slice.tier)] or
+//                                the op is rejected wholesale. Stage
+//                                changes are rare (player click), so
+//                                we Invalidate the vessel on change
+//                                rather than over-engineer dynamic
+//                                Demand scaling — the LP rebuilds with
+//                                the new max EC / heat rates.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -313,6 +328,45 @@ public sealed class NovaPartTopic : Topic {
           return;
         }
         module.TankVolume.Reconfigure(buffers);
+        MarkDirty();
+        return;
+      }
+      case "setTankCooler": {
+        if (args == null || args.Count < 1 || !(args[0] is List<object> rawStages)) {
+          Debug.LogWarning(LogPrefix + Name + " setTankCooler: expected [[stage:int, ...]]");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaTankModule>();
+        if (module?.TankVolume == null) return;
+        if (rawStages.Count != module.TankVolume.Tanks.Count) {
+          Debug.LogWarning(LogPrefix + Name + " setTankCooler: stage count "
+              + rawStages.Count + " != slice count " + module.TankVolume.Tanks.Count);
+          return;
+        }
+        var stages = new List<int>(rawStages.Count);
+        for (int i = 0; i < rawStages.Count; i++) {
+          if (!(rawStages[i] is double d)) {
+            Debug.LogWarning(LogPrefix + Name + " setTankCooler: entry " + i + " not a number");
+            return;
+          }
+          var stage = (int)d;
+          var max = InsulationTierTable.MaxStage(module.TankVolume.SliceTier(i));
+          if (stage < 0 || stage > max) {
+            Debug.LogWarning(LogPrefix + Name + " setTankCooler: slice " + i
+                + " stage " + stage + " out of range [0," + max + "] for tier "
+                + module.TankVolume.SliceTier(i));
+            return;
+          }
+          stages.Add(stage);
+        }
+        if (!module.TankVolume.SetCoolerStages(stages)) return;
+        // Device max-rates are baked at OnBuildSystems time, so the
+        // LP must rebuild to see the new cooler power envelope. No-op
+        // outside flight scope (editor sim has no VirtualVessel).
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+          vesselModule?.Virtual?.Invalidate();
+        }
         MarkDirty();
         return;
       }
@@ -525,17 +579,21 @@ public sealed class NovaPartTopic : Topic {
         WriteKind(sb, "T", ref f);
         WriteNum(sb, tank.Volume, ref f);
         // Per-tank slices:
-        //   [resource, capacity, contents, tier, boiloffFracPerDay,
-        //    coolerEcW, coolerHeatW]
-        // tier/boiloff/ec/heat are physical observables — boiloff is
-        // pre-blended with cooler Activity, ec/heat are realised draws
-        // (Activity × max). Passive tiers and non-cryogenic resources
-        // emit 0 for ec/heat.
+        //   [resource, capacity, contents, tier, stage, maxStage,
+        //    boiloffFracPerDay, coolerEcW, coolerHeatW]
+        // tier/stage/maxStage are structural + runtime; boiloff/ec/heat
+        // are physical observables — boiloff is pre-blended with cooler
+        // Activity, ec/heat are realised draws (Activity × max).
+        // Stage-0 slices (and passive tiers / non-cryo resources) emit
+        // 0 for ec/heat. `maxStage` lets the UI shape the toggle (0 =
+        // hidden, 1 = on/off, 2 = off/s1/s2) without hard-coding tier
+        // semantics client-side.
         JsonWriter.Sep(sb, ref f);
         JsonWriter.Begin(sb, '[');
         bool fb = true;
         for (int i = 0; i < tank.Tanks.Count; i++) {
           var buf = tank.Tanks[i];
+          var tier = tank.SliceTier(i);
           JsonWriter.Sep(sb, ref fb);
           JsonWriter.Begin(sb, '[');
           bool fbi = true;
@@ -546,7 +604,11 @@ public sealed class NovaPartTopic : Topic {
           JsonWriter.Sep(sb, ref fbi);
           JsonWriter.WriteDouble(sb, buf.Contents);
           JsonWriter.Sep(sb, ref fbi);
-          JsonWriter.WriteDouble(sb, (int)tank.SliceTier(i));
+          JsonWriter.WriteDouble(sb, (int)tier);
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, tank.SliceStage(i));
+          JsonWriter.Sep(sb, ref fbi);
+          JsonWriter.WriteDouble(sb, InsulationTierTable.MaxStage(tier));
           JsonWriter.Sep(sb, ref fbi);
           JsonWriter.WriteDouble(sb, tank.SliceNetBoiloffFractionPerDay(i));
           JsonWriter.Sep(sb, ref fbi);
@@ -644,6 +706,8 @@ public sealed class NovaPartTopic : Topic {
         WriteNum(sb, radiator.CurrentMaxCoolingW, ref f);
         WriteBit(sb, radiator.IsDeployed, ref f);
         WriteBit(sb, radiator.IsDeployable, ref f);
+        WriteNum(sb, radiator.CurrentEcW, ref f);
+        WriteNum(sb, radiator.MaxEcW, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

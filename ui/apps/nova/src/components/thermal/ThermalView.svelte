@@ -12,14 +12,15 @@
   // animation yet) — sends `setRadiatorDeployed [bool]` op to
   // NovaPartTopic. Effect is immediate; no pending state needed.
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import { siPrefix, fmtMag } from '../../util/units';
+  import { resourceMeta } from '../resource/resource-codes';
 
   const RATE_EPSILON = 0.005;
   const TEMP_RATE_EPSILON = 0.001;
@@ -31,28 +32,29 @@
   }
   const { vesselId }: Props = $props();
 
-  const thermalParts = useNovaPartsByTag(() => vesselId, 'thermal');
+  const vesselParts = useNovaParts(() => vesselId);
   const ksp = getKsp();
 
-  type NodeKey = 'producers' | 'radiators';
+  type NodeKey = 'producers' | 'coolers' | 'radiators';
   let expanded = $state<Record<NodeKey, boolean>>({
     producers: true,
+    coolers: true,
     radiators: true,
   });
   function toggle(k: NodeKey): void {
     expanded[k] = !expanded[k];
   }
 
-  function isRtgPart(p: NovaTaggedPart): boolean {
+  function isRtgPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.rtg.length > 0;
   }
-  function isRadiatorPart(p: NovaTaggedPart): boolean {
+  function isRadiatorPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.radiator.length > 0;
   }
 
   // Aggregate across all RTG components on a part. Stock has one per
   // part; the sum stays correct for hypothetical multi-RTG parts.
-  function rtgThermal(p: NovaTaggedPart): {
+  function rtgThermal(p: NovaPartHandle): {
     heatIn: number; cooling: number; rejection: number;
     tempC: number; maxTempC: number; dTdt: number;
   } {
@@ -78,12 +80,12 @@
     return { heatIn, cooling, rejection, tempC, maxTempC, dTdt };
   }
 
-  function rtgTempFraction(p: NovaTaggedPart): number {
+  function rtgTempFraction(p: NovaPartHandle): number {
     const t = rtgThermal(p);
     return t.maxTempC > 0 ? t.tempC / t.maxTempC : 0;
   }
 
-  function radiatorOf(p: NovaTaggedPart): {
+  function radiatorOf(p: NovaPartHandle): {
     current: number; max: number; deployed: boolean; deployable: boolean;
   } {
     let current = 0, max = 0, deployed = true, deployable = false;
@@ -102,10 +104,69 @@
     ksp.send(NovaPartTopic(partId), 'setRadiatorDeployed', deployed);
   }
 
+  // One row per cryocooler-bearing slice across all tanks on the vessel.
+  // Each row carries its own stage toggle + live heat draw; aggregate
+  // heat is added to the cooling-system load alongside RTG waste heat.
+  interface CoolerRow {
+    key: string;
+    partId: string;
+    partTitle: string;
+    resourceCode: string;
+    sliceIndex: number;
+    stage: number;
+    maxStage: number;
+    coolerEcW: number;
+    coolerHeatW: number;
+    boiloffFractionPerDay: number;
+    stageVector: number[];
+  }
+  const coolerRows = $derived.by((): CoolerRow[] => {
+    const rows: CoolerRow[] = [];
+    for (const p of vesselParts.current) {
+      if (!p.state) continue;
+      for (const tank of p.state.tank) {
+        const stageVector = tank.slices.map((s) => s.stage);
+        for (let i = 0; i < tank.slices.length; i++) {
+          const s = tank.slices[i];
+          if (s.maxStage <= 0) continue;
+          rows.push({
+            key: `${p.struct.id}:t${i}`,
+            partId: p.struct.id,
+            partTitle: p.struct.title,
+            resourceCode: resourceMeta(s.resource).code,
+            sliceIndex: i,
+            stage: s.stage,
+            maxStage: s.maxStage,
+            coolerEcW: s.coolerEcW,
+            coolerHeatW: s.coolerHeatW,
+            boiloffFractionPerDay: s.boiloffFractionPerDay,
+            stageVector,
+          });
+        }
+      }
+    }
+    return rows;
+  });
+
+  function cycleTankCooler(row: CoolerRow): void {
+    const next = (row.stage + 1) % (row.maxStage + 1);
+    const vector = [...row.stageVector];
+    vector[row.sliceIndex] = next;
+    ksp.send(NovaPartTopic(row.partId), 'setTankCooler', vector);
+  }
+  function tankStageLabel(stage: number, maxStage: number): string {
+    if (stage === 0) return 'OFF';
+    if (maxStage === 1) return 'ON';
+    return 'S' + stage;
+  }
+  function fmtFracPctPerDay(frac: number): string {
+    return (frac * 100).toFixed(3) + '%/d';
+  }
+
   const groups = $derived.by(() => {
-    const producers: NovaTaggedPart[] = [];
-    const radiators: NovaTaggedPart[] = [];
-    for (const p of thermalParts.current) {
+    const producers: NovaPartHandle[] = [];
+    const radiators: NovaPartHandle[] = [];
+    for (const p of vesselParts.current) {
       if (isRtgPart(p)) producers.push(p);
       else if (isRadiatorPart(p)) radiators.push(p);
     }
@@ -113,8 +174,12 @@
   });
 
   const totals = $derived({
-    // Heat load on the cooling system (sum of waste-heat producers).
-    heatLoad: groups.producers.reduce((a, p) => a + rtgThermal(p).heatIn, 0),
+    // Heat load on the cooling system — RTG waste heat plus cooler
+    // waste heat (Q_hot = Q_cold + W_in lands on the bus radiators
+    // have to reject).
+    heatLoad: groups.producers.reduce((a, p) => a + rtgThermal(p).heatIn, 0)
+            + coolerRows.reduce((a, r) => a + r.coolerHeatW, 0),
+    coolerHeat: coolerRows.reduce((a, r) => a + r.coolerHeatW, 0),
     // Active cooling provided by deployed radiators.
     cooling:    groups.radiators.reduce((a, p) => a + radiatorOf(p).current, 0),
     coolingMax: groups.radiators.reduce((a, p) => a + radiatorOf(p).max, 0),
@@ -178,7 +243,7 @@
 <!-- Per-radiator deploy toggle. Fixed panels (deployable=false) have
      no control. Deployable rads show EXT when retracted, RET when
      deployed. Effect is immediate; no busy/pending state. -->
-{#snippet radiatorControl(p: NovaTaggedPart, r: { deployed: boolean; deployable: boolean })}
+{#snippet radiatorControl(p: NovaPartHandle, r: { deployed: boolean; deployable: boolean })}
   {#if r.deployable}
     {#if !r.deployed}
       <button type="button" class="thr__deploy-btn thr__deploy-btn--ext"
@@ -264,6 +329,78 @@
                         class:thr__rate--zero={isZero(t.rejection)}
                         title="Body radiation to environment, quantized into 10 tiers (linear in T). Idle when cooling loop covers production.">
                     {rejFmt.mag}<em>{rejFmt.unit}</em>
+                  </span>
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
+  </div>
+
+  <!-- Coolers ------------------------------------------------------ -->
+  <!-- Tank cryocoolers — heat producers in the same sense as RTGs
+       (waste heat hits the bus that radiators have to reject) but
+       sourced from EC × (1 + COP). Each row has its own stage toggle:
+       BAC = on/off, ZBO = off/s1/s2 (s1 runs BAC-equivalent). The
+       sub-line carries the live boiloff %/d so a player who throttles
+       the cooler can watch the tradeoff in real time. -->
+  <div class="thr__node">
+    <button type="button" class="thr__node-head"
+            aria-expanded={expanded.coolers}
+            onclick={() => toggle('coolers')}>
+      {@render chev(expanded.coolers)}
+      <span class="thr__node-title">COOLERS</span>
+      <span class="thr__rate thr__rate--load"
+            class:thr__rate--zero={isZero(totals.coolerHeat)}>
+        {fmtRate(totals.coolerHeat).mag}<em>{fmtRate(totals.coolerHeat).unit}</em>
+      </span>
+    </button>
+    {#if expanded.coolers}
+      {#if coolerRows.length === 0}
+        {@render emptyMsg('NO COOLERS')}
+      {:else}
+        <ul class="thr__rows">
+          {#each coolerRows as row (row.key)}
+            {@const heatFmt = fmtRate(row.coolerHeatW)}
+            {@const ecFmt   = fmtRate(row.coolerEcW)}
+            <li class="thr__row thr__row--stack"
+                class:thr__row--closed={row.stage === 0}
+                onmouseenter={() => highlightOn([row.partId])}
+                onmouseleave={highlightOff}>
+              <span class="thr__row-icon">
+                <ComponentIcon kind="tank" />
+              </span>
+              <div class="thr__row-stack">
+                <!-- Line 1: name + stage toggle + heat load (amber). -->
+                <div class="thr__row-line">
+                  <span class="thr__row-name">
+                    {row.partTitle}<em class="thr__row-subname"> · {row.resourceCode}</em>
+                  </span>
+                  <button type="button" class="thr__deploy-btn thr__cooler-btn"
+                          class:thr__cooler-btn--on={row.stage > 0}
+                          aria-label="Cycle cryocooler stage"
+                          title={row.maxStage === 1
+                            ? 'Toggle cryocooler (OFF / ON)'
+                            : 'Cycle cryocooler (OFF / S1 / S2)'}
+                          onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}>
+                    <span>{tankStageLabel(row.stage, row.maxStage)}</span>
+                  </button>
+                  <span class="thr__rate thr__rate--load"
+                        class:thr__rate--zero={isZero(row.coolerHeatW)}
+                        title="Waste heat dumped to the cooling bus by this cryocooler">
+                    {heatFmt.mag}<em>{heatFmt.unit}</em>
+                  </span>
+                </div>
+                <!-- Line 2: EC draw + live boiloff %/d. Both physical
+                     observables; the two together tell the player
+                     whether the cooler is making the tradeoff worth it. -->
+                <div class="thr__row-line thr__row-line--secondary">
+                  <span class="thr__cooler-meta"
+                        title="EC draw and realised boiloff for this slice">
+                    EC {ecFmt.mag}<em>{ecFmt.unit}</em>
+                    · boil {fmtFracPctPerDay(row.boiloffFractionPerDay)}
                   </span>
                 </div>
               </div>
@@ -499,6 +636,42 @@
   }
   .thr__deploy-btn--ret {
     color: var(--fg-dim);
+  }
+
+  /* Cryocooler stage toggle — mirrors PowerView's chip. Min-width
+     keeps OFF / ON / S1 / S2 the same physical button width so the
+     row's later columns don't jog as the player cycles. */
+  .thr__cooler-btn {
+    color: var(--fg-mute);
+    border-color: var(--line);
+    min-width: 28px;
+    text-align: center;
+  }
+  .thr__cooler-btn--on {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.08);
+  }
+
+  /* Resource-code subname appended to a cooler row title — same
+     visual as PowerView's tank-cooler subname. */
+  .thr__row-subname {
+    color: var(--fg-mute);
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    font-style: normal;
+  }
+  .thr__cooler-meta {
+    flex: 1 1 auto;
+    color: var(--fg-mute);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .thr__cooler-meta em {
+    font-style: normal;
+    color: var(--fg-mute);
+    margin-left: 1px;
   }
 
   .thr__empty {

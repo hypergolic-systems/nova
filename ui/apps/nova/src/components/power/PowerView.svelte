@@ -10,14 +10,15 @@
   // remounted (vessel switch, hud reload). Persisting later is a
   // settings concern, not a view concern.
 
-  import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
-  import type { SolarState, CommandState, ProbeState, WheelState, SystemTag } from '../../telemetry/nova-topics';
+  import type { SolarState, CommandState, ProbeState, WheelState } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy, untrack } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import { siPrefix, fmtMag } from '../../util/units';
+  import { resourceMeta } from '../resource/resource-codes';
 
   // Anything magnitudinally below this is "zero" for color purposes.
   // Same threshold fmtRate uses to floor display to "0.00" so the
@@ -25,12 +26,11 @@
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
 
-  // The renderer is scene-agnostic: the parent supplies a factory that
-  // hands back a reactive `{readonly current}` for any tag. Flight wires
-  // it to `useNovaPartsByTag(() => vesselId, tag)`; editor wires it to
-  // `useNovaEditorPartsByTag(tag)`. Lifecycle of the underlying
-  // subscriptions binds to PowerView (the factory is invoked from this
-  // setup), so unmounting on tab switch still tears them down.
+  // The renderer is scene-agnostic: the parent supplies a `parts`
+  // factory that hands back a reactive `{readonly current}` of every
+  // part on the vessel. Flight wires it to `useNovaParts(() => vesselId)`;
+  // editor wires it to `useNovaEditorParts()`. The view's switch on
+  // each part's component frame decides what (if anything) renders.
   //
   // `mode` switches presentation: flight shows live LP-throttled rates
   // alongside design max, with battery gauges + SoC; editor shows only
@@ -38,20 +38,55 @@
   // rows down to the part list — at design time the user is balancing
   // sources vs loads, not watching a snapshot of energy in motion.
   interface Props {
-    partsByTag: (tag: SystemTag) => { readonly current: NovaTaggedPart[] };
+    parts: () => { readonly current: NovaPartHandle[] };
     mode?: 'flight' | 'editor';
   }
-  const { partsByTag, mode = 'flight' }: Props = $props();
+  const { parts, mode = 'flight' }: Props = $props();
   const isEditor = $derived(mode === 'editor');
 
   // Invoke the factory once at setup. `untrack` suppresses Svelte's
   // state_referenced_locally warning — the prop is a stable factory,
-  // not a reactive value we want to track. Each call wires up keyed
-  // subscriptions whose own `$effect`s bind to PowerView's lifecycle
-  // and clean up on unmount.
-  const generators = untrack(() => partsByTag('power-gen'));
-  const consumers  = untrack(() => partsByTag('power-consume'));
-  const storage    = untrack(() => partsByTag('power-store'));
+  // not a reactive value we want to track. The hook's own `$effect`s
+  // bind to PowerView's lifecycle and clean up on unmount.
+  const vesselParts = untrack(() => parts());
+
+  // Has-X predicates partition the flat part list into the per-section
+  // groups. A part can show in multiple sections (e.g. an RTG part
+  // shows in generation; a hypothetical part with both a tank cooler
+  // and a battery shows in consumption + storage).
+  function hasGen(p: NovaPartHandle): boolean {
+    if (!p.state) return false;
+    return p.state.solar.length > 0
+        || p.state.fuelCell.length > 0
+        || p.state.rtg.length > 0;
+  }
+  function hasConsume(p: NovaPartHandle): boolean {
+    if (!p.state) return false;
+    return p.state.command.length > 0
+        || p.state.probe.length > 0
+        || p.state.wheel.length > 0
+        || p.state.light.length > 0
+        || hasTankCooler(p)
+        || hasRadiatorWithEc(p);
+  }
+  function hasRadiatorWithEc(p: NovaPartHandle): boolean {
+    if (!p.state) return false;
+    for (const r of p.state.radiator) if (r.maxEcW > 0) return true;
+    return false;
+  }
+  function hasStore(p: NovaPartHandle): boolean {
+    return !!p.state && p.state.battery.length > 0;
+  }
+  function hasTankCooler(p: NovaPartHandle): boolean {
+    if (!p.state) return false;
+    for (const t of p.state.tank)
+      for (const s of t.slices)
+        if (s.coolerEcW > 0) return true;
+    return false;
+  }
+  const generators = $derived(vesselParts.current.filter(hasGen));
+  const consumers  = $derived(vesselParts.current.filter(hasConsume));
+  const storage    = $derived(vesselParts.current.filter(hasStore));
 
   type NodeKey = 'gen' | 'gen_solar' | 'consume' | 'store';
   let expanded = $state<Record<NodeKey, boolean>>({
@@ -79,7 +114,7 @@
   // fall back to design-rated specs — solar `ratedRate`, fuel-cell
   // `maxOutput`, RTG `referencePower` — so the gen vs consume balance
   // reflects what the craft will deliver in nominal operation.
-  function generationRate(p: NovaTaggedPart): number {
+  function generationRate(p: NovaPartHandle): number {
     if (!p.state) return 0;
     let total = 0;
     if (isEditor) {
@@ -98,7 +133,7 @@
   // hold one fuel cell, but iterate to stay symmetric with the rest
   // of the helpers. In editor the cell isn't producing — current
   // collapses to the rated max so the row reads as the design spec.
-  function fuelCellOutput(p: NovaTaggedPart): { current: number; max: number } {
+  function fuelCellOutput(p: NovaPartHandle): { current: number; max: number } {
     let current = 0;
     let max = 0;
     if (p.state) {
@@ -115,7 +150,7 @@
   // readout (e.g. "0.50/1.20 kW"). In editor mode both collapse to the
   // BoL `ratedRate` since live orientation/sunlit gating is meaningless
   // off the launch pad.
-  function solarRates(p: NovaTaggedPart): { current: number; max: number } {
+  function solarRates(p: NovaPartHandle): { current: number; max: number } {
     let current = 0;
     let max = 0;
     if (p.state) {
@@ -138,7 +173,7 @@
   // inflow), even when the motor is being driven from buffered
   // energy. The wheel's expandable detail lines surface that
   // separately so the energy balance stays visible.
-  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light';
+  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'tankCooler' | 'radiator';
   interface ConsumerRow {
     key: string;
     partId: string;
@@ -147,14 +182,25 @@
     /** Bus-facing W. For Command/Probe this is idleRate + testLoadRate;
      *  for Wheel it is the refill device's busRate (motor draw is shown
      *  in the wheel-detail Torque sub-row, not here); for Light it's
-     *  light.rate. */
+     *  light.rate; for TankCooler it's the cooler's realised EC draw
+     *  (LP-throttled). */
     busRate: number;
     command?: CommandState;
     probe?: ProbeState;
     wheel?: WheelState;
+    /** TankCooler-specific: slice resource code (e.g. "LH2") for the
+     *  row label, plus current stage + maxStage to drive the toggle.
+     *  Slice index lets the cycle handler send a fresh stage vector. */
+    tankResource?: string;
+    tankStage?: number;
+    tankMaxStage?: number;
+    tankSliceIndex?: number;
+    /** Full per-slice stage vector for the part — cached on the row
+     *  so the cycle handler can replay it with one slot mutated. */
+    tankStageVector?: number[];
   }
 
-  function buildConsumerRows(p: NovaTaggedPart): ConsumerRow[] {
+  function buildConsumerRows(p: NovaPartHandle): ConsumerRow[] {
     const rows: ConsumerRow[] = [];
     if (!p.state) return rows;
     const partId = p.struct.id;
@@ -200,6 +246,44 @@
         busRate: isEditor ? l.ratedRate : l.rate,
       });
     }
+    // Radiators with a non-zero EC pump cost (folding rads run a
+    // working-fluid loop; fixed panels declare EcPerWattCooling=0
+    // and don't surface here). Editor mode shows the design ceiling;
+    // flight shows the LP-throttled draw.
+    for (let i = 0; i < p.state.radiator.length; i++) {
+      const r = p.state.radiator[i];
+      if (r.maxEcW <= 0) continue;
+      rows.push({
+        key: `${partId}:r${i}`, partId, partTitle,
+        kind: 'radiator',
+        busRate: isEditor ? r.maxEcW : r.currentEcW,
+      });
+    }
+    // Tank cryocoolers — one row per slice that can host an active
+    // cooler (maxStage > 0). Hide passive-only slices regardless of
+    // toggle state; show stage=0 active-tier slices so the player has
+    // a control surface to turn them on. In editor mode the row's
+    // busRate is the predicted full-stage EC draw; in flight it's the
+    // LP-throttled actual.
+    for (const tank of p.state.tank) {
+      for (let i = 0; i < tank.slices.length; i++) {
+        const s = tank.slices[i];
+        if (s.maxStage <= 0) continue;
+        rows.push({
+          key: `${partId}:t${i}`, partId, partTitle,
+          kind: 'tankCooler',
+          // In editor we expose the design ceiling (what the cooler
+          // pulls at full activity) so the load balance reflects worst-
+          // case. In flight it's the realised draw.
+          busRate: s.coolerEcW,
+          tankResource: s.resource,
+          tankStage: s.stage,
+          tankMaxStage: s.maxStage,
+          tankSliceIndex: i,
+          tankStageVector: tank.slices.map((q) => q.stage),
+        });
+      }
+    }
     return rows;
   }
 
@@ -207,18 +291,41 @@
     if (kind === 'command') return 'command';
     if (kind === 'probe') return 'command';
     if (kind === 'wheel') return 'wheel';
+    if (kind === 'tankCooler') return 'tank';
+    if (kind === 'radiator') return 'radiator';
     return 'light';
   }
 
+  // Stage cycle: 0 → 1 → … → maxStage → 0. One click advances by one.
+  // Sends the whole per-slice stage vector with one slot mutated so the
+  // server-side op sees a complete picture (it rejects mismatched
+  // lengths). Editor mode is a no-op — the mod rejects setTankCooler
+  // there, and the editor sim's display is fixed at max-stage anyway.
+  function cycleTankCooler(row: ConsumerRow): void {
+    if (isEditor) return;
+    if (row.tankStageVector == null || row.tankSliceIndex == null
+        || row.tankMaxStage == null || row.tankStage == null) return;
+    const next = (row.tankStage + 1) % (row.tankMaxStage + 1);
+    const vector = [...row.tankStageVector];
+    vector[row.tankSliceIndex] = next;
+    ksp.send(NovaPartTopic(row.partId), 'setTankCooler', vector);
+  }
+
+  function tankStageLabel(stage: number, maxStage: number): string {
+    if (stage === 0) return 'OFF';
+    if (maxStage === 1) return 'ON';
+    return 'S' + stage;
+  }
+
   const consumerRows = $derived.by((): ConsumerRow[] =>
-    consumers.current.flatMap(buildConsumerRows));
+    consumers.flatMap(buildConsumerRows));
 
   // Per-part consumption total. Flight: live bus-facing draw (matches
   // the per-row totals). Editor: design-rated bus draws — wheel
   // `busRated`, light `ratedRate`, command/probe `idleRated` (test-load
   // is an interactive flight-only feature, so it doesn't contribute to
   // the editor balance).
-  function consumptionRate(p: NovaTaggedPart): number {
+  function consumptionRate(p: NovaPartHandle): number {
     if (!p.state) return 0;
     let total = 0;
     if (isEditor) {
@@ -232,24 +339,33 @@
       for (const c of p.state.command) total += c.idleRate + c.testLoadRate;
       for (const pr of p.state.probe)  total += pr.idleRate + pr.testLoadRate;
     }
+    // Tank cryocoolers — EC draw is a single observable in both modes
+    // (the editor sim emits the design ceiling at max stage; in flight
+    // it's the LP-throttled draw). Adds zero for passive-only slices.
+    for (const tank of p.state.tank)
+      for (const s of tank.slices) total += s.coolerEcW;
+    // Radiator pump EC. Editor shows the design ceiling, flight shows
+    // the LP-throttled draw.
+    for (const r of p.state.radiator)
+      total += isEditor ? r.maxEcW : r.currentEcW;
     return total;
   }
 
-  function batteryStored(p: NovaTaggedPart): number {
+  function batteryStored(p: NovaPartHandle): number {
     if (!p.state) return 0;
     let total = 0;
     for (const b of p.state.battery) total += b.soc * b.capacity;
     return total;
   }
 
-  function batteryCapacity(p: NovaTaggedPart): number {
+  function batteryCapacity(p: NovaPartHandle): number {
     if (!p.state) return 0;
     let total = 0;
     for (const b of p.state.battery) total += b.capacity;
     return total;
   }
 
-  function batteryRate(p: NovaTaggedPart): number {
+  function batteryRate(p: NovaPartHandle): number {
     if (!p.state) return 0;
     let total = 0;
     for (const b of p.state.battery) total += b.rate;
@@ -258,18 +374,18 @@
 
   // Per-row icon choice. State-driven when loaded; falls back to the
   // section's dominant kind so first-frame rows aren't iconless.
-  function genKind(p: NovaTaggedPart): ComponentKind {
+  function genKind(p: NovaPartHandle): ComponentKind {
     if (p.state && p.state.rtg.length > 0) return 'rtg';
     if (p.state && p.state.fuelCell.length > 0) return 'fuelCell';
     return 'solar';
   }
-  function isSolarPart(p: NovaTaggedPart): boolean {
+  function isSolarPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.solar.length > 0;
   }
-  function isFuelCellPart(p: NovaTaggedPart): boolean {
+  function isFuelCellPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.fuelCell.length > 0;
   }
-  function isRtgPart(p: NovaTaggedPart): boolean {
+  function isRtgPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.rtg.length > 0;
   }
 
@@ -278,7 +394,7 @@
   // future multi-RTG part renders one cohesive row.
   // In editor mode `current` collapses to `referencePower` so the
   // current/max pair reads as the BoL design output, not "0/X".
-  function rtgOutput(p: NovaTaggedPart): {
+  function rtgOutput(p: NovaPartHandle): {
     current: number; max: number; reference: number; decline: number;
   } {
     let current = 0, max = 0, reference = 0, decline = 0;
@@ -296,15 +412,15 @@
   // Decay state (max / reference). Drives the gauge fraction —
   // independent of LP throttling, so the gauge represents the
   // physics, not the consumer load.
-  function rtgDesignFraction(p: NovaTaggedPart): number {
+  function rtgDesignFraction(p: NovaPartHandle): number {
     const { max, reference } = rtgOutput(p);
     return reference > 0 ? max / reference : 0;
   }
 
   const genGroups = $derived.by(() => {
-    const solar: NovaTaggedPart[] = [];
-    const other: NovaTaggedPart[] = [];
-    for (const p of generators.current) {
+    const solar: NovaPartHandle[] = [];
+    const other: NovaPartHandle[] = [];
+    for (const p of generators) {
       (isSolarPart(p) ? solar : other).push(p);
     }
     const groupSolar = solar.length > 1;
@@ -328,11 +444,11 @@
   });
 
   const totals = $derived({
-    gen: generators.current.reduce((a, p) => a + generationRate(p), 0),
-    consume: consumers.current.reduce((a, p) => a + consumptionRate(p), 0),
-    stored: storage.current.reduce((a, p) => a + batteryStored(p), 0),
-    capacity: storage.current.reduce((a, p) => a + batteryCapacity(p), 0),
-    netStorage: storage.current.reduce((a, p) => a + batteryRate(p), 0),
+    gen: generators.reduce((a, p) => a + generationRate(p), 0),
+    consume: consumers.reduce((a, p) => a + consumptionRate(p), 0),
+    stored: storage.reduce((a, p) => a + batteryStored(p), 0),
+    capacity: storage.reduce((a, p) => a + batteryCapacity(p), 0),
+    netStorage: storage.reduce((a, p) => a + batteryRate(p), 0),
   });
 
   // Pre-formatted node-head totals. `{@const}` is only valid inside
@@ -416,7 +532,7 @@
   const ksp = getKsp();
   const PENDING_TIMEOUT_MS = 4000;
 
-  function solarOf(p: NovaTaggedPart): SolarState | undefined {
+  function solarOf(p: NovaPartHandle): SolarState | undefined {
     return p.state?.solar?.[0];
   }
 
@@ -430,7 +546,7 @@
     return () => window.clearInterval(id);
   });
 
-  function isPending(p: NovaTaggedPart): boolean {
+  function isPending(p: NovaPartHandle): boolean {
     const e = pending[p.struct.id];
     if (!e) return false;
     if (now >= e.deadline) return false;
@@ -447,7 +563,7 @@
 
   // Bulk action across the SOLAR subgroup. Fans out one op per panel
   // matching the source state — extend retracts, retract deployeds.
-  function bulkSetSolarDeployed(parts: NovaTaggedPart[], deployed: boolean): void {
+  function bulkSetSolarDeployed(parts: NovaPartHandle[], deployed: boolean): void {
     for (const p of parts) {
       const s = solarOf(p);
       if (!s) continue;
@@ -459,10 +575,10 @@
 
   // Subgroup-level state — drives the bulk button label and which of
   // EXT-ALL / RET-ALL is offered.
-  function subgroupAnyRetracted(parts: NovaTaggedPart[]): boolean {
+  function subgroupAnyRetracted(parts: NovaPartHandle[]): boolean {
     return parts.some((p) => { const s = solarOf(p); return !!s && !s.deployed; });
   }
-  function subgroupAnyExtendedRetractable(parts: NovaTaggedPart[]): boolean {
+  function subgroupAnyExtendedRetractable(parts: NovaPartHandle[]): boolean {
     return parts.some((p) => {
       const s = solarOf(p);
       return !!s && s.deployed && s.retractable;
@@ -500,6 +616,7 @@
   {@const hasTestLoad = !isEditor && (row.kind === 'command' || row.kind === 'probe') && tlRate > 0}
   {@const cmdGauge = !isEditor && row.kind === 'probe' && row.probe && row.probe.commandCapacityBytes > 0
                        ? row.probe : undefined}
+  {@const isTankCooler = row.kind === 'tankCooler'}
   <li class="pwr__row"
       onmouseenter={() => highlightOn([row.partId])}
       onmouseleave={highlightOff}>
@@ -507,7 +624,11 @@
     <span class="pwr__row-icon">
       <ComponentIcon kind={rowKindIcon(row.kind)} />
     </span>
-    <span class="pwr__row-name">{row.partTitle}</span>
+    <span class="pwr__row-name">
+      {row.partTitle}{#if isTankCooler && row.tankResource}
+        <em class="pwr__row-subname"> · {resourceMeta(row.tankResource).code}</em>
+      {/if}
+    </span>
     {#if cmdGauge}
       <span class="pwr__cmd-gauge"
             title={`StoredCommands: ${cmdGauge.commandBytes.toFixed(0)} / ${cmdGauge.commandCapacityBytes.toFixed(0)} B`
@@ -524,6 +645,18 @@
               title={`Toggle ${tlRate} W debug load`}
               onclick={(e) => { e.stopPropagation(); setCommandTestLoad(row.partId, !tlActive); }}>
         <span>LOAD</span>
+      </button>
+    {/if}
+    {#if isTankCooler && !isEditor && row.tankMaxStage != null && row.tankStage != null}
+      <button type="button"
+              class="pwr__deploy-btn pwr__cooler-btn"
+              class:pwr__cooler-btn--on={row.tankStage > 0}
+              aria-label="Cycle cryocooler stage"
+              title={row.tankMaxStage === 1
+                ? 'Toggle cryocooler (OFF / ON)'
+                : 'Cycle cryocooler (OFF / S1 / S2)'}
+              onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}>
+        <span>{tankStageLabel(row.tankStage, row.tankMaxStage)}</span>
       </button>
     {/if}
     <span class="pwr__row-rate"
@@ -608,7 +741,7 @@
      hasn't flipped yet.
      Click stops propagation so the row's hover-highlight handlers
      stay coherent. -->
-{#snippet solarControl(p: NovaTaggedPart)}
+{#snippet solarControl(p: NovaPartHandle)}
   {@const s = solarOf(p)}
   {#if s}
     {@const busy = isPending(p)}
@@ -642,7 +775,7 @@
      retractable. Mixed states (some retracted, some extended) get
      EXT-ALL — finishing the deploy first matches the typical "I
      need power, deploy everything" intent. -->
-{#snippet solarBulkControl(parts: NovaTaggedPart[])}
+{#snippet solarBulkControl(parts: NovaPartHandle[])}
   {#if subgroupAnyRetracted(parts)}
     <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ext pwr__deploy-btn--bulk"
             aria-label="Extend all retracted solar panels"
@@ -675,7 +808,7 @@
       </span>
     </button>
     {#if expanded.gen}
-      {#if generators.current.length === 0}
+      {#if generators.length === 0}
         {@render emptyMsg('NO GENERATORS')}
       {:else}
         <ul class="pwr__rows">
@@ -932,17 +1065,17 @@
          are expanded — it's the at-a-glance "vessel power health"
          line and shouldn't disappear behind a collapsed node. Skipped
          in editor mode (always reads "full"). -->
-    {#if !isEditor && storage.current.length > 0}
+    {#if !isEditor && storage.length > 0}
       <div class="pwr__node-gauge">
         <SegmentGauge fraction={batteryFraction(totals.stored, totals.capacity)} />
       </div>
     {/if}
     {#if expanded.store}
-      {#if storage.current.length === 0}
+      {#if storage.length === 0}
         {@render emptyMsg('NO BATTERIES')}
       {:else if isEditor}
         <ul class="pwr__rows">
-          {#each storage.current as p (p.struct.id)}
+          {#each storage as p (p.struct.id)}
             {@const cap = batteryCapacity(p)}
             {@const cf = fmtCap(cap)}
             <li class="pwr__row"
@@ -962,7 +1095,7 @@
         </ul>
       {:else}
         <ul class="pwr__rows">
-          {#each storage.current as p (p.struct.id)}
+          {#each storage as p (p.struct.id)}
             {@const stored = batteryStored(p)}
             {@const cap = batteryCapacity(p)}
             {@const rate = batteryRate(p)}
@@ -1718,6 +1851,41 @@
     border-color: var(--warn);
     box-shadow: 0 0 4px var(--warn-glow);
     text-shadow: 0 0 4px var(--warn-glow);
+  }
+
+  /* Cryocooler stage toggle. Same chip shape as the test-load /
+     deploy buttons. Off = dim; running stage = accent (it's
+     consuming power on purpose and the load is real). */
+  .pwr__cooler-btn {
+    color: var(--fg-mute);
+    border-color: var(--line);
+    min-width: 28px;
+    text-align: center;
+  }
+  .pwr__cooler-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.06);
+  }
+  .pwr__cooler-btn--on {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.08);
+  }
+  .pwr__cooler-btn--on:hover {
+    background: rgba(126, 245, 184, 0.16);
+    border-color: var(--accent);
+    box-shadow: 0 0 4px var(--accent-glow);
+  }
+
+  /* Resource-code subname appended to a tank-cooler row title. Dim
+     and italicised so the part name stays the primary read. */
+  .pwr__row-subname {
+    color: var(--fg-mute);
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    font-style: normal;
   }
 
   /* StoredCommands ledger gauge inside a probe row. Sized just narrow

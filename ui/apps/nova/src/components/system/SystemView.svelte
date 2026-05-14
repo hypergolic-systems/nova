@@ -27,7 +27,7 @@
   //                   graph view; per-probe activity moved to STORED
   //                   COMMANDS.
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
   import { useComms } from '../../telemetry/use-comms.svelte';
   import { useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy, untrack } from 'svelte';
@@ -41,7 +41,7 @@
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
 
-  const cmdParts = untrack(() => useNovaPartsByTag(() => vesselId, 'command-source'));
+  const cmdParts = untrack(() => useNovaParts(() => vesselId));
   const comms    = useComms(() => vesselId);
 
   type NodeKey = 'storedCommands' | 'comms';

@@ -12,8 +12,7 @@
   import { useFlightData } from '@dragonglass/telemetry/svelte';
   import { FloatingWindow } from '@dragonglass/windows';
   import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
-  import { useNovaPartsByTag } from '../telemetry/use-nova-parts-by-tag.svelte';
-  import type { SystemTag } from '../telemetry/nova-topics';
+  import { useNovaParts } from '../telemetry/use-nova-parts.svelte';
   import PowerView from './power/PowerView.svelte';
   import ResourceView from './resource/ResourceView.svelte';
   import ScienceView from './science/ScienceView.svelte';
@@ -98,7 +97,7 @@
     {#if activeTab === 'system' && flight.vesselId}
       <SystemView vesselId={flight.vesselId} />
     {:else if activeTab === 'power' && flight.vesselId}
-      <PowerView partsByTag={(tag: SystemTag) => useNovaPartsByTag(() => flight.vesselId, tag)} />
+      <PowerView parts={() => useNovaParts(() => flight.vesselId)} />
     {:else if activeTab === 'thermal' && flight.vesselId}
       <ThermalView vesselId={flight.vesselId} />
     {:else if activeTab === 'resource' && flight.vesselId}

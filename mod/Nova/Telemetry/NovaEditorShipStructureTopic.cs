@@ -1,18 +1,15 @@
-using System.Linq;
 using System.Text;
 using Dragonglass.Telemetry.Topics;
 using KSP.UI.Screens;
-using Nova.Components;
-using Nova.Core.Components;
 using UnityEngine;
 
 namespace Nova.Telemetry;
 
 // Editor-scene parallel of NovaVesselStructureTopic — emits the part
 // tree of the current ShipConstruct so the editor's Vessel window can
-// list every part with its Nova system tags. Single instance (no
-// per-id routing) since KSP's editor only ever holds one ShipConstruct
-// at a time; the wire `shipId` is the constant `"editor"`.
+// list every part. Single instance (no per-id routing) since KSP's
+// editor only ever holds one ShipConstruct at a time; the wire `shipId`
+// is the constant `"editor"`.
 //
 // Lives on the persistent Dragonglass.Telemetry host (attached by
 // NovaTelemetryAddon, same as NovaSceneTopic). Outside the editor
@@ -22,15 +19,12 @@ namespace Nova.Telemetry;
 // Dirty triggers come from the engine, not from polling: KSP fires
 // `GameEvents.onEditorShipModified` on every structural change (part
 // attach, detach, decouple, undo/redo) and `onEditorLoad` /
-// `onEditorRestart` for whole-ship swaps. setTankCustom does *not*
-// dirty this topic — the per-part tag set doesn't change when a
-// tank's resource mix changes (the `tank` tag tracks component
-// presence, not contents). Per-part state changes flow through
-// NovaPartTopic.
+// `onEditorRestart` for whole-ship swaps. Per-part state changes flow
+// through NovaPartTopic.
 //
 // Wire format (matches NovaVesselStructureTopic):
 //   [shipId, shipName, [
-//     [partId, internalName, displayTitle, parentId|null, [tag, ...]],
+//     [partId, internalName, displayTitle, parentId|null],
 //     ...
 //   ]]
 public sealed class NovaEditorShipStructureTopic : Topic {
@@ -132,28 +126,6 @@ public sealed class NovaEditorShipStructureTopic : Topic {
     JsonWriter.Sep(sb, ref first);
     JsonWriter.WriteNullableUintAsString(sb, part.parent?.persistentId);
 
-    JsonWriter.Sep(sb, ref first);
-    WriteTags(sb, part);
-
-    JsonWriter.End(sb, ']');
-  }
-
-  private static void WriteTags(StringBuilder sb, Part part) {
-    JsonWriter.Begin(sb, '[');
-    var components = part.Modules?
-      .OfType<NovaPartModule>()
-      .Where(m => m.Components != null)
-      .SelectMany(m => m.Components);
-    if (components == null) {
-      JsonWriter.End(sb, ']');
-      return;
-    }
-    var tags = SystemTags.For(components);
-    bool first = true;
-    foreach (var tag in tags) {
-      JsonWriter.Sep(sb, ref first);
-      JsonWriter.WriteString(sb, tag);
-    }
     JsonWriter.End(sb, ']');
   }
 }

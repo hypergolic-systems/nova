@@ -12,24 +12,6 @@
 
 import { topic, type Topic } from '@dragonglass/telemetry/core';
 
-// ---------- System tags ----------------------------------------
-
-// Mirrors `Nova.Core.Components.SystemTags` constants. Keep in sync
-// — a typo here makes a part silently disappear from a view.
-export type SystemTag =
-  | 'power-gen'
-  | 'power-consume'
-  | 'power-store'
-  | 'propulsion'
-  | 'rcs'
-  | 'attitude'
-  | 'storage'
-  | 'tank'
-  | 'science-instrument'
-  | 'science-storage'
-  | 'thermal'
-  | 'command-source';
-
 // ---------- Wire (frame) types ---------------------------------
 
 export type NovaResourceFrame = [
@@ -51,16 +33,22 @@ export type NovaLightFrame    = ['L', rate: number, ratedRate: number];
 // list are tank slices vs. unrelated buffers (Battery's Electric
 // Charge, etc.).
 //
-// Slot 3 is the insulation tier as int (see InsulationTier below);
-// slot 4 is the realised boiloff fraction per Earth day (pre-blended
-// with cooler Activity — never raw LP activity); slots 5/6 are the
-// realised cooler EC draw and waste-heat output (W) for active tiers,
-// 0 for passive tiers and non-cryogenic slices.
+// Slot 3 is the insulation tier (structural, set in the editor).
+// Slot 4 is the runtime cryocooler stage (0=off, 1=stage 1 BAC-class,
+// 2=stage 2 ZBO full). Slot 5 is `MaxStage(tier)` — lets the UI shape
+// the stage toggle (0 = hide, 1 = on/off, 2 = off/s1/s2) without
+// hard-coding tier→stage rules.
+// Slot 6 is the realised boiloff fraction per Earth day (pre-blended
+// with cooler Activity — never raw LP activity); slots 7/8 are the
+// realised cooler EC draw and waste-heat output (W) for stage>0,
+// 0 for passive tiers, non-cryo slices, and stage=0.
 export type NovaTankSliceFrame = [
   resource: string,
   capacity: number,
   contents: number,
   tier: number,
+  stage: number,
+  maxStage: number,
   boiloffFractionPerDay: number,
   coolerEcW: number,
   coolerHeatW: number,
@@ -126,6 +114,8 @@ export type NovaRadiatorFrame = [
   maxCoolingW: number,
   isDeployed: 0 | 1,
   isDeployable: 0 | 1,
+  currentEcW: number,
+  maxEcW: number,
 ];
 
 // Per-decoupler state. `fullSeparation` is the editor-time toggle —
@@ -276,7 +266,6 @@ export type NovaPartStructFrame = [
   partName: string,    // KSP internal name (e.g. "solarPanels3")
   partTitle: string,   // player-facing display title (e.g. "OX-STAT Photovoltaic Panels")
   parentId: string | null,
-  tags: SystemTag[],
 ];
 
 export type NovaVesselStructureFrame = [
@@ -376,16 +365,25 @@ export interface TankSlice {
    *  baseline (no volume penalty); HeavyMLI / BAC pay a surface-area
    *  penalty; ZBO additionally pays a cold-finger penalty. */
   tier: InsulationTier;
+  /** Runtime cryocooler stage. 0 = off (passive insulation only);
+   *  1 = stage 1 (BAC-class single-stage cooler — applies on BAC + ZBO
+   *  tiers, behaves identically on either); 2 = stage 2 (ZBO full
+   *  deep cold-finger). */
+  stage: number;
+  /** Maximum stage the tier supports. 0 for passive tiers (no toggle),
+   *  1 for BAC (on/off), 2 for ZBO (off/s1/s2). Drives the toggle's
+   *  shape in the UI without hard-coding tier→stage rules. */
+  maxStage: number;
   /** Realised boiloff fraction per Earth day at the current cooler
    *  Activity — 0 for non-cryogenic resources and for ZBO at full
-   *  supply, larger when an active tier degrades to its passive
+   *  supply, larger when an active stage degrades to its passive
    *  fallback (EC starvation or saturated heat bus). */
   boiloffFractionPerDay: number;
   /** Live EC draw (W) of this slice's cryocooler — 0 for passive
-   *  tiers (MLI / HeavyMLI) and for non-cryogenic resources. */
+   *  tiers, stage=0, and non-cryogenic resources. */
   coolerEcW: number;
   /** Live waste heat (W) emitted to the vessel heat bus by this
-   *  slice's cryocooler. 0 for passive tiers. Radiators have to
+   *  slice's cryocooler. 0 for stage=0 / passive. Radiators have to
    *  reject this; if they can't, LP drops the cooler's Activity and
    *  boiloffFractionPerDay rises accordingly. */
   coolerHeatW: number;
@@ -662,6 +660,12 @@ export interface RadiatorState {
   /** True iff the radiator can be retracted/extended. Folding rads
    *  expose a toggle; fixed panels don't. */
   isDeployable: boolean;
+  /** Live EC draw, W. 0 for passive panels (no pumps); >0 for
+   *  folding rads that run a working fluid loop. */
+  currentEcW: number;
+  /** Design EC draw at full cooling, W. Editor view uses this when
+   *  the LP isn't running. */
+  maxEcW: number;
 }
 
 export interface DecouplerState {
@@ -730,7 +734,6 @@ export interface NovaPartStruct {
    *  by `shortenPartTitle` so rows stay readable. */
   title: string;
   parentId: string | null;
-  tags: SystemTag[];
 }
 
 export interface NovaVesselStructure {
@@ -794,8 +797,21 @@ export interface NovaPartOps {
    * length mismatches the slice count, an entry is out of range, or
    * the resulting Σ capacity × (1 + tierVolumePenalty) exceeds the
    * part's `TankVolume.Volume`. Tiers persist via `TankStructure.insulation`.
+   * Resets every slice's `stage` to 0 (cooler off) — the UI follows
+   * with `setTankCooler` to restore the desired runtime state.
    */
   setTankInsulation(tiers: InsulationTier[]): void;
+
+  /**
+   * Replace the per-slice runtime cryocooler-stage vector. Each entry
+   * is 0 (off), 1 (stage 1, BAC-class — valid on BAC and ZBO tiers),
+   * or 2 (stage 2, full ZBO — valid only on ZBO). Rejected when the
+   * length doesn't match the slice count or any entry is out of range
+   * for its slice's tier (e.g. stage=2 on a BAC slice).
+   * In flight the mod invalidates the vessel after a successful change
+   * so the LP rebuilds with the new cooler max-rates.
+   */
+  setTankCooler(stages: number[]): void;
 
   /**
    * Toggle the debug "test load" on this part's command pod (a
@@ -1160,12 +1176,11 @@ export function decodeStructure(
   return {
     vesselId,
     name,
-    parts: parts.map(([id, partName, partTitle, parentId, tags]) => ({
+    parts: parts.map(([id, partName, partTitle, parentId]) => ({
       id,
       name: partName,
       title: shortenPartTitle(partTitle),
       parentId,
-      tags,
     })),
   };
 }
@@ -1225,10 +1240,12 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           volume: c[1],
           slices: c[2].map(([
             resource, capacity, contents,
-            tier, boiloffFractionPerDay, coolerEcW, coolerHeatW,
+            tier, stage, maxStage,
+            boiloffFractionPerDay, coolerEcW, coolerHeatW,
           ]) => ({
             resource, capacity, contents,
             tier: tier as InsulationTier,
+            stage, maxStage,
             boiloffFractionPerDay,
             coolerEcW, coolerHeatW,
           })),
@@ -1288,6 +1305,8 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           maxCoolingW:     c[2],
           isDeployed:      c[3] === 1,
           isDeployable:    c[4] === 1,
+          currentEcW:      c[5],
+          maxEcW:          c[6],
         });
         break;
       case 'D':

@@ -26,15 +26,17 @@ public class TankThermalTests {
   // ─── Static math: per-slice helpers without OnBuildSystems ────────
 
   private static TankVolume MakeCryoTank(string resource, double capacity,
-      InsulationTier tier, double volume = -1) {
+      InsulationTier tier, double volume = -1, int stage = -1) {
     if (volume < 0) {
       volume = capacity * (1.0 + InsulationTierTable.VolumePenalty(tier));
     }
+    if (stage < 0) stage = InsulationTierTable.MaxStage(tier);
     return new TankVolume {
       Volume = volume,
       MaxRate = 1000,
       Tanks = { new Buffer { Resource = Resource.Get(resource), Capacity = capacity, Contents = capacity } },
       Tiers = { tier },
+      CoolerStages = { stage },
     };
   }
 

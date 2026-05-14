@@ -190,7 +190,23 @@ message PartState {
 }
 
 message TankVolumeState {
-  repeated double amounts = 1;  // one per tank, same order as structure
+  // One entry per slice, same order as the structure's `tanks`.
+  repeated TankState tanks = 1;
+}
+
+message TankState {
+  // Currently-stored amount (litres for cryogens, units for storables).
+  double amount = 1;
+  // Cryocooler stage for this slice.
+  //   0 = off (passive insulation only).
+  //   1 = stage 1 on (BAC-class single-stage cooler — applies to BAC
+  //                   and ZBO tiers; on ZBO this is the BAC-equivalent
+  //                   mode).
+  //   2 = stage 1 + 2 on (ZBO's deep cold-finger stacked on top of the
+  //                       stage-1 compressor — only meaningful when
+  //                       the slice's tier is ZBO).
+  // Passive tiers ignore this — they have no cooler hardware to run.
+  int32 cooler_stage = 2;
 }
 
 message BatteryState {

@@ -23,8 +23,8 @@
   // misleading. Aggregate rate appears once at the resource level
   // where it physically maps to the LP solution.
 
-  import { useNovaPartsByTag } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTaggedPart } from '../../telemetry/use-nova-parts-by-tag.svelte';
+  import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
   import type { NovaResourceFlow } from '../../telemetry/nova-topics';
   import { useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
@@ -41,7 +41,7 @@
   }
   const { vesselId }: Props = $props();
 
-  const parts = useNovaPartsByTag(() => vesselId, 'storage');
+  const parts = useNovaParts(() => vesselId);
 
   let byResource = $state(false);
 
@@ -59,7 +59,7 @@
     resCollapsed[id] = !resCollapsed[id];
   };
 
-  const partsWithResources = $derived.by<NovaTaggedPart[]>(() =>
+  const partsWithResources = $derived.by<NovaPartHandle[]>(() =>
     parts.current.filter((p) => (p.state?.resources?.length ?? 0) > 0),
   );
 
@@ -69,7 +69,7 @@
   // fuel as well as EC). Falls back to tank during the brief window
   // where state hasn't loaded — better than no icon, and correct for
   // the common "has fuel" case.
-  function partKind(p: NovaTaggedPart): ComponentKind {
+  function partKind(p: NovaPartHandle): ComponentKind {
     const rs = p.state?.resources;
     if (!rs || rs.length === 0) return 'tank';
     for (const r of rs) {
@@ -82,7 +82,7 @@
 
   interface ResourceGroup {
     resourceId: string;
-    entries: { part: NovaTaggedPart; flow: NovaResourceFlow }[];
+    entries: { part: NovaPartHandle; flow: NovaResourceFlow }[];
     totalAmount: number;
     totalCapacity: number;
     totalRate: number;
@@ -143,7 +143,7 @@
   // observables: a small tank with bad insulation can have a high %/d
   // but low absolute L/d, and the user wants both — %/d says "how
   // quickly", L/d says "how much you'll miss".
-  function partBoiloff(p: NovaTaggedPart, resourceId: string):
+  function partBoiloff(p: NovaPartHandle, resourceId: string):
       { litresPerDay: number; fractionPerDay: number } {
     let litresPerDay = 0;
     let weightedSum = 0;

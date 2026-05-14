@@ -427,6 +427,8 @@
     slices = [...slices, {
       resource: name, capacity: cap, contents: cap,
       tier: InsulationTier.MLI,
+      stage: 0,
+      maxStage: 0,
       boiloffFractionPerDay: 0,
       coolerEcW: 0,
       coolerHeatW: 0,

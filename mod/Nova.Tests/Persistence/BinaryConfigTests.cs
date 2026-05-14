@@ -34,7 +34,10 @@ public class ProtobufTests {
         Parts = {
           new PartState { Id = 0, Battery = new BatteryState { Value = 80 } },
           new PartState { Id = 1, TankVolume = new TankVolumeState {
-            Amounts = new double[] { 350, 175 },
+            Tanks = {
+              new TankState { Amount = 350, CoolerStage = 0 },
+              new TankState { Amount = 175, CoolerStage = 0 },
+            },
           }},
         },
       },
@@ -56,8 +59,8 @@ public class ProtobufTests {
 
     // State
     Assert.AreEqual(80, loaded.State.Parts[0].Battery.Value);
-    Assert.AreEqual(350, loaded.State.Parts[1].TankVolume.Amounts[0]);
-    Assert.AreEqual(175, loaded.State.Parts[1].TankVolume.Amounts[1]);
+    Assert.AreEqual(350, loaded.State.Parts[1].TankVolume.Tanks[0].Amount);
+    Assert.AreEqual(175, loaded.State.Parts[1].TankVolume.Tanks[1].Amount);
 
     Assert.IsNull(loaded.State.Flight);
   }
@@ -90,7 +93,10 @@ public class ProtobufTests {
   [TestMethod]
   public void TankVolumeState_RoundTrip() {
     var state = new TankVolumeState {
-      Amounts = new double[] { 800, 260 },
+      Tanks = {
+        new TankState { Amount = 800, CoolerStage = 1 },
+        new TankState { Amount = 260, CoolerStage = 0 },
+      },
     };
 
     using var ms = new MemoryStream();
@@ -98,9 +104,11 @@ public class ProtobufTests {
     ms.Position = 0;
     var loaded = Serializer.Deserialize<TankVolumeState>(ms);
 
-    Assert.AreEqual(2, loaded.Amounts.Length);
-    Assert.AreEqual(800, loaded.Amounts[0]);
-    Assert.AreEqual(260, loaded.Amounts[1]);
+    Assert.AreEqual(2, loaded.Tanks.Count);
+    Assert.AreEqual(800, loaded.Tanks[0].Amount);
+    Assert.AreEqual(1,   loaded.Tanks[0].CoolerStage);
+    Assert.AreEqual(260, loaded.Tanks[1].Amount);
+    Assert.AreEqual(0,   loaded.Tanks[1].CoolerStage);
   }
 
   [TestMethod]

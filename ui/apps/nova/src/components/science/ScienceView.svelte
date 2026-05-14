@@ -11,10 +11,10 @@
   // prefix (.sci__).
 
   import {
-    useNovaScienceByTag,
-    useNovaStorageByTag,
-  } from '../../telemetry/use-nova-parts-by-tag.svelte';
-  import type { NovaTagged } from '../../telemetry/use-nova-parts-by-tag.svelte';
+    useNovaScienceParts,
+    useNovaStorageParts,
+  } from '../../telemetry/use-nova-parts.svelte';
+  import type { NovaPartEntry } from '../../telemetry/use-nova-parts.svelte';
   import { NovaScienceTopic } from '../../telemetry/nova-topics';
   import type {
     ScienceFile,
@@ -32,15 +32,24 @@
   import { fmtBytes, fmtDuration } from '../../util/units';
   import { experimentLabel } from '../../util/science-labels';
 
-  type StorageTagged = NovaTagged<NovaStorage>;
+  type StorageEntry = NovaPartEntry<NovaStorage>;
 
   interface Props {
     vesselId: string;
   }
   const { vesselId }: Props = $props();
 
-  const instruments = useNovaScienceByTag(() => vesselId, 'science-instrument');
-  const storages    = useNovaStorageByTag(() => vesselId, 'science-storage');
+  const allScience = useNovaScienceParts(() => vesselId);
+  const allStorage = useNovaStorageParts(() => vesselId);
+  // Iterate every part's NovaScience/NovaStorage frame, drop parts that
+  // emit nothing of interest. The per-part topic returns empty
+  // instrument / file lists for non-science / non-storage parts.
+  const instruments = $derived(
+    allScience.current.filter((p) => (p.state?.instruments.length ?? 0) > 0),
+  );
+  const storages = $derived(
+    allStorage.current.filter((p) => (p.state?.capacityBytes ?? 0) > 0),
+  );
 
   const ksp = getKsp();
 
@@ -58,7 +67,7 @@
     let used = 0;
     let cap = 0;
     let fileCount = 0;
-    for (const p of storages.current) {
+    for (const p of storages) {
       if (!p.state) continue;
       used += p.state.usedBytes;
       cap += p.state.capacityBytes;
@@ -113,7 +122,7 @@
   // ---- File list modal ------------------------------------------
   let openModalPartId = $state<string | null>(null);
 
-  function openFiles(p: StorageTagged): void {
+  function openFiles(p: StorageEntry): void {
     openModalPartId = p.struct.id;
   }
   function closeFiles(): void {
@@ -122,7 +131,7 @@
 
   const openPart = $derived(
     openModalPartId
-      ? storages.current.find((p) => p.struct.id === openModalPartId) ?? null
+      ? storages.find((p) => p.struct.id === openModalPartId) ?? null
       : null,
   );
   const openFilesList = $derived.by<ScienceFile[]>(() =>
@@ -130,7 +139,7 @@
   );
 
   // ---- Per-storage helpers --------------------------------------
-  function partTotals(p: StorageTagged): { used: number; cap: number; files: number } {
+  function partTotals(p: StorageEntry): { used: number; cap: number; files: number } {
     if (!p.state) return { used: 0, cap: 0, files: 0 };
     return {
       used:  p.state.usedBytes,
@@ -139,7 +148,7 @@
     };
   }
 
-  function partFraction(p: StorageTagged): number {
+  function partFraction(p: StorageEntry): number {
     const t = partTotals(p);
     return t.cap > 0 ? t.used / t.cap : 0;
   }
@@ -262,8 +271,8 @@
       <span class="sci__chev" aria-hidden="true">{instrOpen ? '▾' : '▸'}</span>
       <span class="sci__node-title">INSTRUMENTS</span>
       <span class="sci__node-summary">
-        {#if instruments.current.length > 0}
-          <span class="sci__node-files">{instruments.current.length}</span>
+        {#if instruments.length > 0}
+          <span class="sci__node-files">{instruments.length}</span>
         {:else}
           <span class="sci__node-empty">—</span>
         {/if}
@@ -271,11 +280,11 @@
     </button>
 
     {#if instrOpen}
-      {#if instruments.current.length === 0}
+      {#if instruments.length === 0}
         <p class="sci__empty">No science instruments on this vessel.</p>
       {:else}
         <ul class="sci__instr-rows">
-          {#each instruments.current as p (p.struct.id)}
+          {#each instruments as p (p.struct.id)}
             {#each p.state?.instruments ?? [] as inst, instrIdx (instrIdx)}
               {@const partOpen = isInstrOpen(p.struct.id, instrIdx)}
               {@const headLabel = inst.name || p.struct.title}
@@ -416,18 +425,18 @@
       </span>
     </button>
 
-    {#if storages.current.length > 0}
+    {#if storages.length > 0}
       <div class="sci__node-gauge">
         <SegmentGauge fraction={aggregateFraction} />
       </div>
     {/if}
 
     {#if storeOpen}
-      {#if storages.current.length === 0}
+      {#if storages.length === 0}
         <p class="sci__empty">No data storage on this vessel — install a probe core.</p>
       {:else}
         <ul class="sci__rows">
-          {#each storages.current as p (p.struct.id)}
+          {#each storages as p (p.struct.id)}
             {@const t = partTotals(p)}
             {@const f = partFraction(p)}
             <li class="sci__row">

@@ -99,7 +99,6 @@ interface PartFixture {
   name: string;       // KSP internal part name
   title: string;      // Player-facing
   parentId: string | null;
-  tags: NovaPartStructFrame[4];
   /** Resources + virtual-component view — published on NovaPart/<id>. */
   build: () => NovaComponentFrame[];
   /** Optional science payload — published on NovaScience/<id> if set. */
@@ -428,7 +427,6 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'mk1pod_v2',
     title: 'Mk1 Command Pod',
     parentId: null,
-    tags: ['power-store', 'power-consume', 'science-storage'],
     build: () => [
       // Battery: 50% SoC, slow drain.
       ['B', 0.5, 200, -0.4],
@@ -448,7 +446,6 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'sensorThermometer',
     title: '2HOT Thermometer',
     parentId: '5001',
-    tags: ['power-consume', 'science-instrument'],
     build: () => [],   // no resources / components — pure instrument
     buildScience: buildThermometerScience,
   },
@@ -457,7 +454,6 @@ const FIXTURE_PARTS: PartFixture[] = [
     name: 'probeCoreOcto_v2',
     title: 'OKTO2 Probe Core',
     parentId: '5001',
-    tags: ['power-consume', 'science-storage'],
     build: () => [
       // Command idle draw.
       ['C', 0.02, 0, 0, 0, 0.02],
@@ -654,17 +650,14 @@ export class NovaSimulatedKsp implements Ksp {
 
   private vesselStructureFrame(): NovaVesselStructureFrame {
     const parts: NovaPartStructFrame[] = FIXTURE_PARTS.map((p) => [
-      p.id, p.name, p.title, p.parentId, p.tags as never,
+      p.id, p.name, p.title, p.parentId,
     ]);
     return [SIM_VESSEL_ID, FIXTURE_VESSEL_NAME, parts];
   }
 
-  // Editor ship-structure frame. Tag set is fixed (`storage` + `tank`)
-  // since every editor fixture is a TankVolume part — matches what
-  // SystemTags.For emits server-side for any TankVolume-bearing part.
   private editorShipStructureFrame(): NovaVesselStructureFrame {
     const parts: NovaPartStructFrame[] = EDITOR_TANK_FIXTURES.map((p) => [
-      p.id, p.name, p.title, p.parentId, ['storage', 'tank'] as never,
+      p.id, p.name, p.title, p.parentId,
     ]);
     return ['editor', EDITOR_SHIP_NAME, parts];
   }
@@ -680,13 +673,21 @@ export class NovaSimulatedKsp implements Ksp {
         // survive the round-trip. Boiloff/EC/heat stay zero — the
         // editor sim doesn't run the LP, so TankRowEditor uses its
         // physics mirror for the prospective and committed readouts.
-        ['T', tank.volume, tank.tanks.map((t) => [
-          t.resource, t.capacity, t.contents,
-          t.tier,
-          0, // boiloffFractionPerDay
-          0, // coolerEcW
-          0, // coolerHeatW
-        ])],
+        ['T', tank.volume, tank.tanks.map((t) => {
+          // Editor sim doesn't carry a runtime stage — assume max stage
+          // for the slice's tier so the displayed numbers match what
+          // the cooler would deliver if turned fully on in flight.
+          const maxStage = t.tier === 3 /* ZBO */ ? 2 : t.tier === 2 /* BAC */ ? 1 : 0;
+          return [
+            t.resource, t.capacity, t.contents,
+            t.tier,
+            maxStage, // stage — editor view shows the "fully on" picture
+            maxStage,
+            0, // boiloffFractionPerDay
+            0, // coolerEcW
+            0, // coolerHeatW
+          ];
+        })],
       ];
       return [partId, resources, components];
     }

@@ -285,15 +285,17 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
             tv.tanks.len(),
             tv.max_rate,
         );
-        let amounts = state
+        let saved = state
             .and_then(|s| s.tank_volume.as_ref())
-            .map(|t| t.amounts.as_slice())
+            .map(|t| t.tanks.as_slice())
             .unwrap_or(&[]);
         for (t, tank) in tv.tanks.iter().enumerate() {
-            let amount = amounts.get(t).copied().unwrap_or(f64::NAN);
+            let amount = saved.get(t).map(|s| s.amount).unwrap_or(f64::NAN);
+            let stage = saved.get(t).map(|s| s.cooler_stage).unwrap_or(0);
+            let stage_note = if stage > 0 { format!(" stage={stage}") } else { String::new() };
             println!(
-                "{p4}{}: {:.1}/{:.1}",
-                tank.resource, amount, tank.capacity,
+                "{p4}{}: {:.1}/{:.1}{}",
+                tank.resource, amount, tank.capacity, stage_note,
             );
         }
     }
