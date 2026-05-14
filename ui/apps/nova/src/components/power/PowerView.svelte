@@ -79,9 +79,13 @@
   }
   function hasTankCooler(p: NovaPartHandle): boolean {
     if (!p.state) return false;
+    // Filter on capability (maxStage > 0 — BAC/ZBO hardware is
+    // installed), not on current draw. An OFF cooler still needs to
+    // render so the player has a control surface to turn it on; in
+    // editor mode the LP isn't running so coolerEcW is 0 anyway.
     for (const t of p.state.tank)
       for (const s of t.slices)
-        if (s.coolerEcW > 0) return true;
+        if (s.maxStage > 0) return true;
     return false;
   }
   const generators = $derived(vesselParts.current.filter(hasGen));
@@ -173,7 +177,7 @@
   // inflow), even when the motor is being driven from buffered
   // energy. The wheel's expandable detail lines surface that
   // separately so the energy balance stays visible.
-  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'tankCooler' | 'radiator';
+  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'radiator';
   interface ConsumerRow {
     key: string;
     partId: string;
@@ -182,22 +186,29 @@
     /** Bus-facing W. For Command/Probe this is idleRate + testLoadRate;
      *  for Wheel it is the refill device's busRate (motor draw is shown
      *  in the wheel-detail Torque sub-row, not here); for Light it's
-     *  light.rate; for TankCooler it's the cooler's realised EC draw
-     *  (LP-throttled). */
+     *  light.rate. */
     busRate: number;
     command?: CommandState;
     probe?: ProbeState;
     wheel?: WheelState;
-    /** TankCooler-specific: slice resource code (e.g. "LH2") for the
-     *  row label, plus current stage + maxStage to drive the toggle.
-     *  Slice index lets the cycle handler send a fresh stage vector. */
-    tankResource?: string;
-    tankStage?: number;
-    tankMaxStage?: number;
-    tankSliceIndex?: number;
-    /** Full per-slice stage vector for the part — cached on the row
-     *  so the cycle handler can replay it with one slot mutated. */
-    tankStageVector?: number[];
+  }
+
+  // Tank cryocooler row — same data shape as ThermalView's CoolerRow.
+  // PowerView renders it with the EC draw as the primary readout (this
+  // is the PWR view's job) and heat + boiloff as the dim secondary line.
+  interface CoolerRow {
+    key: string;
+    partId: string;
+    partTitle: string;
+    resource: string;
+    resourceCode: string;
+    sliceIndex: number;
+    stage: number;
+    maxStage: number;
+    coolerEcW: number;
+    coolerHeatW: number;
+    boiloffFractionPerDay: number;
+    stageVector: number[];
   }
 
   function buildConsumerRows(p: NovaPartHandle): ConsumerRow[] {
@@ -259,56 +270,57 @@
         busRate: isEditor ? r.maxEcW : r.currentEcW,
       });
     }
-    // Tank cryocoolers — one row per slice that can host an active
-    // cooler (maxStage > 0). Hide passive-only slices regardless of
-    // toggle state; show stage=0 active-tier slices so the player has
-    // a control surface to turn them on. In editor mode the row's
-    // busRate is the predicted full-stage EC draw; in flight it's the
-    // LP-throttled actual.
+    return rows;
+  }
+
+  // Tank cryocoolers get their own multi-line row shape, matching
+  // ThermalView. One row per active-capable slice (maxStage > 0);
+  // passive-only slices have nothing to toggle so they don't show.
+  function buildCoolerRows(p: NovaPartHandle): CoolerRow[] {
+    const rows: CoolerRow[] = [];
+    if (!p.state) return rows;
     for (const tank of p.state.tank) {
+      const stageVector = tank.slices.map((s) => s.stage);
       for (let i = 0; i < tank.slices.length; i++) {
         const s = tank.slices[i];
         if (s.maxStage <= 0) continue;
         rows.push({
-          key: `${partId}:t${i}`, partId, partTitle,
-          kind: 'tankCooler',
-          // In editor we expose the design ceiling (what the cooler
-          // pulls at full activity) so the load balance reflects worst-
-          // case. In flight it's the realised draw.
-          busRate: s.coolerEcW,
-          tankResource: s.resource,
-          tankStage: s.stage,
-          tankMaxStage: s.maxStage,
-          tankSliceIndex: i,
-          tankStageVector: tank.slices.map((q) => q.stage),
+          key: `${p.struct.id}:t${i}`,
+          partId: p.struct.id,
+          partTitle: p.struct.title,
+          resource: s.resource,
+          resourceCode: resourceMeta(s.resource).code,
+          sliceIndex: i,
+          stage: s.stage,
+          maxStage: s.maxStage,
+          coolerEcW: s.coolerEcW,
+          coolerHeatW: s.coolerHeatW,
+          boiloffFractionPerDay: s.boiloffFractionPerDay,
+          stageVector,
         });
       }
     }
     return rows;
+  }
+  const coolerRows = $derived(consumers.flatMap(buildCoolerRows));
+
+  function cycleCoolerRow(row: CoolerRow): void {
+    if (isEditor) return;
+    const next = (row.stage + 1) % (row.maxStage + 1);
+    const vector = [...row.stageVector];
+    vector[row.sliceIndex] = next;
+    ksp.send(NovaPartTopic(row.partId), 'setTankCooler', vector);
+  }
+  function fmtFracPctPerDay(frac: number): string {
+    return (frac * 100).toFixed(3) + '%/d';
   }
 
   function rowKindIcon(kind: ConsumerRowKind): ComponentKind {
     if (kind === 'command') return 'command';
     if (kind === 'probe') return 'command';
     if (kind === 'wheel') return 'wheel';
-    if (kind === 'tankCooler') return 'tank';
     if (kind === 'radiator') return 'radiator';
     return 'light';
-  }
-
-  // Stage cycle: 0 → 1 → … → maxStage → 0. One click advances by one.
-  // Sends the whole per-slice stage vector with one slot mutated so the
-  // server-side op sees a complete picture (it rejects mismatched
-  // lengths). Editor mode is a no-op — the mod rejects setTankCooler
-  // there, and the editor sim's display is fixed at max-stage anyway.
-  function cycleTankCooler(row: ConsumerRow): void {
-    if (isEditor) return;
-    if (row.tankStageVector == null || row.tankSliceIndex == null
-        || row.tankMaxStage == null || row.tankStage == null) return;
-    const next = (row.tankStage + 1) % (row.tankMaxStage + 1);
-    const vector = [...row.tankStageVector];
-    vector[row.tankSliceIndex] = next;
-    ksp.send(NovaPartTopic(row.partId), 'setTankCooler', vector);
   }
 
   function tankStageLabel(stage: number, maxStage: number): string {
@@ -616,7 +628,6 @@
   {@const hasTestLoad = !isEditor && (row.kind === 'command' || row.kind === 'probe') && tlRate > 0}
   {@const cmdGauge = !isEditor && row.kind === 'probe' && row.probe && row.probe.commandCapacityBytes > 0
                        ? row.probe : undefined}
-  {@const isTankCooler = row.kind === 'tankCooler'}
   <li class="pwr__row"
       onmouseenter={() => highlightOn([row.partId])}
       onmouseleave={highlightOff}>
@@ -624,11 +635,7 @@
     <span class="pwr__row-icon">
       <ComponentIcon kind={rowKindIcon(row.kind)} />
     </span>
-    <span class="pwr__row-name">
-      {row.partTitle}{#if isTankCooler && row.tankResource}
-        <em class="pwr__row-subname"> · {resourceMeta(row.tankResource).code}</em>
-      {/if}
-    </span>
+    <span class="pwr__row-name">{row.partTitle}</span>
     {#if cmdGauge}
       <span class="pwr__cmd-gauge"
             title={`StoredCommands: ${cmdGauge.commandBytes.toFixed(0)} / ${cmdGauge.commandCapacityBytes.toFixed(0)} B`
@@ -647,23 +654,62 @@
         <span>LOAD</span>
       </button>
     {/if}
-    {#if isTankCooler && !isEditor && row.tankMaxStage != null && row.tankStage != null}
-      <button type="button"
-              class="pwr__deploy-btn pwr__cooler-btn"
-              class:pwr__cooler-btn--on={row.tankStage > 0}
-              aria-label="Cycle cryocooler stage"
-              title={row.tankMaxStage === 1
-                ? 'Toggle cryocooler (OFF / ON)'
-                : 'Cycle cryocooler (OFF / S1 / S2)'}
-              onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}>
-        <span>{tankStageLabel(row.tankStage, row.tankMaxStage)}</span>
-      </button>
-    {/if}
     <span class="pwr__row-rate"
           class:pwr__row-rate--neg={!isZero(row.busRate)}
           class:pwr__row-rate--zero={isZero(row.busRate)}>
       {r.mag}<em>{r.unit}</em>
     </span>
+  </li>
+{/snippet}
+
+<!-- Cooler row — multi-line stack mirroring ThermalView's COOLERS
+     layout, just with EC as the emphasized rate (and heat dropped
+     into the dim secondary line). Stage toggle + boiloff readout
+     stay in the same slot positions so a player who toggled in THM
+     finds the same control here. -->
+{#snippet coolerRowMarkup(row: CoolerRow)}
+  {@const ecFmt   = fmtRate(row.coolerEcW)}
+  {@const heatFmt = fmtRate(row.coolerHeatW)}
+  {@const tint    = resourceMeta(row.resource).color}
+  <li class="pwr__row pwr__row--storage pwr__row--cooler"
+      class:pwr__row--closed={row.stage === 0}
+      onmouseenter={() => highlightOn([row.partId])}
+      onmouseleave={highlightOff}>
+    <span class="pwr__row-icon">
+      <ComponentIcon kind="tank" />
+    </span>
+    <div class="pwr__row-stack">
+      <div class="pwr__row-line">
+        <span class="pwr__row-name">
+          {row.partTitle}<em class="pwr__row-subname"
+            style:color={tint}> · {row.resourceCode}</em>
+        </span>
+        {#if !isEditor}
+          <button type="button" class="pwr__deploy-btn pwr__cooler-btn"
+                  class:pwr__cooler-btn--on={row.stage > 0}
+                  aria-label="Cycle cryocooler stage"
+                  title={row.maxStage === 1
+                    ? 'Toggle cryocooler (OFF / ON)'
+                    : 'Cycle cryocooler (OFF / S1 / S2)'}
+                  onclick={(e) => { e.stopPropagation(); cycleCoolerRow(row); }}>
+            <span>{tankStageLabel(row.stage, row.maxStage)}</span>
+          </button>
+        {/if}
+        <span class="pwr__row-rate pwr__row-rate--col"
+              class:pwr__row-rate--neg={!isZero(row.coolerEcW)}
+              class:pwr__row-rate--zero={isZero(row.coolerEcW)}
+              title="EC drawn from the bus by this cryocooler">
+          {ecFmt.mag}<em>{ecFmt.unit}</em>
+        </span>
+      </div>
+      <div class="pwr__row-line pwr__row-line--secondary">
+        <span class="pwr__cooler-meta"
+              title="Waste heat output and realised boiloff for this slice">
+          heat {heatFmt.mag}<em>{heatFmt.unit}</em>
+          · boil {fmtFracPctPerDay(row.boiloffFractionPerDay)}
+        </span>
+      </div>
+    </div>
   </li>
 {/snippet}
 
@@ -1016,7 +1062,7 @@
       </span>
     </button>
     {#if expanded.consume}
-      {#if consumerRows.length === 0}
+      {#if consumerRows.length === 0 && coolerRows.length === 0}
         {@render emptyMsg('NO CONSUMERS')}
       {:else}
         <ul class="pwr__rows">
@@ -1026,6 +1072,9 @@
             {:else}
               {@render consumerFlatRow(row)}
             {/if}
+          {/each}
+          {#each coolerRows as row (row.key)}
+            {@render coolerRowMarkup(row)}
           {/each}
         </ul>
       {/if}
@@ -1853,14 +1902,15 @@
     text-shadow: 0 0 4px var(--warn-glow);
   }
 
-  /* Cryocooler stage toggle. Same chip shape as the test-load /
-     deploy buttons. Off = dim; running stage = accent (it's
-     consuming power on purpose and the load is real). */
+  /* Cryocooler stage toggle. Fixed width so OFF / ON / S1 / S2 all
+     occupy the same footprint — the rate column to its right stays
+     at a constant horizontal position as the player cycles. */
   .pwr__cooler-btn {
     color: var(--fg-mute);
     border-color: var(--line);
-    min-width: 28px;
+    width: 44px;
     text-align: center;
+    flex: 0 0 auto;
   }
   .pwr__cooler-btn:hover {
     color: var(--accent);
@@ -1878,14 +1928,37 @@
     box-shadow: 0 0 4px var(--accent-glow);
   }
 
-  /* Resource-code subname appended to a tank-cooler row title. Dim
-     and italicised so the part name stays the primary read. */
+  /* Resource-code subname appended to a tank-cooler row title.
+     The colour comes from the slice's per-resource tint (inline
+     style:color); this rule only carries the typographic frame. */
   .pwr__row-subname {
-    color: var(--fg-mute);
     font-family: var(--font-display);
     font-size: 9px;
     letter-spacing: 0.18em;
     font-style: normal;
+  }
+
+  /* Rate cell when used in a cooler row — fixed minimum width and
+     right-aligned so the button to its left lines up across rows
+     regardless of digit count ("200 W" vs "1.5 kW"). */
+  .pwr__row-rate--col {
+    min-width: 56px;
+    text-align: right;
+  }
+
+  /* Cooler secondary line — heat + boiloff readout. Use fg-dim so
+     the numbers stay readable, not so dim they vanish into the
+     panel background. */
+  .pwr__cooler-meta {
+    flex: 1 1 auto;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .pwr__cooler-meta em {
+    font-style: normal;
+    color: var(--fg-mute);
+    margin-left: 1px;
   }
 
   /* StoredCommands ledger gauge inside a probe row. Sized just narrow

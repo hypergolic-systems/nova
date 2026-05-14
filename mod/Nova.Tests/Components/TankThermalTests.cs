@@ -156,7 +156,9 @@ public class TankThermalTests {
   }
 
   private static (VirtualVessel vessel, TankVolume tank) BuildBacVessel(
-      double batteryRate, double batteryContents, double radiatorW) {
+      double batteryRate, double batteryContents, double radiatorW,
+      InsulationTier tier = InsulationTier.BAC,
+      int? stage = null) {
     // pod → tank → battery → radiator
     var defs = new[] {
       (1u, new uint[] { 2 }),
@@ -164,7 +166,8 @@ public class TankThermalTests {
       (3u, new uint[] { 4 }),
       (4u, System.Array.Empty<uint>()),
     };
-    var tank = MakeCryoTank("Liquid Hydrogen", 1000, InsulationTier.BAC);
+    var tank = MakeCryoTank("Liquid Hydrogen", 1000, tier,
+        stage: stage ?? InsulationTierTable.MaxStage(tier));
     var battery = new Battery {
       Buffer = new Buffer {
         Resource = Resource.ElectricCharge,
@@ -205,6 +208,104 @@ public class TankThermalTests {
     Assert.AreEqual(expectedEc, tank.SliceCurrentEcW(0), 1e-6);
     Assert.IsTrue(tank.SliceCurrentHeatW(0) > tank.SliceCurrentEcW(0),
         "Cooler heat output must exceed EC draw (Q_hot = Q_cold + W_in)");
+  }
+
+  [TestMethod]
+  public void Zbo_Stage2_WithFullSupply_RunsAtActiveRate() {
+    // ZBO at stage 2 (full cold-finger) on LH2. Plenty of EC, radiator
+    // headroom comfortably above the slice's max heat output. Boiloff
+    // collapses to ZBO's active fraction = 0 (fully closed).
+    var (vessel, tank) = BuildBacVessel(
+        batteryRate: 500, batteryContents: 1e6, radiatorW: 500,
+        tier: InsulationTier.ZBO, stage: 2);
+    vessel.Solve();
+
+    Assert.AreEqual(0.0, tank.SliceNetBoiloffFractionPerDay(0), 1e-9,
+        "ZBO stage 2 at full Satisfaction must close boiloff");
+    Assert.IsTrue(tank.SliceCurrentEcW(0) > 0,
+        "Cooler must draw EC at stage 2");
+    Assert.IsTrue(tank.SliceCurrentHeatW(0) > tank.SliceCurrentEcW(0),
+        "Cooler heat output must exceed EC draw (Q_hot = Q_cold + W_in)");
+  }
+
+  [TestMethod]
+  public void Zbo_Stage1_RunsAsBacEquivalent() {
+    // ZBO at stage 1 ≡ BAC behavior. Realised boiloff matches BAC
+    // active (0.01 × baseline = 0.0003 for LH2); EC draw matches BAC's
+    // profile because the LP caps Activity at the BAC/ZBO ratio.
+    var (vessel, tank) = BuildBacVessel(
+        batteryRate: 500, batteryContents: 1e6, radiatorW: 500,
+        tier: InsulationTier.ZBO, stage: 1);
+    vessel.Solve();
+
+    var expectedEc = ExpectedMaxEcW(Resource.LiquidHydrogen, InsulationTier.BAC, 1000);
+    Assert.AreEqual(0.0003, tank.SliceNetBoiloffFractionPerDay(0), 1e-9);
+    Assert.AreEqual(expectedEc, tank.SliceCurrentEcW(0), 1e-6);
+  }
+
+  [TestMethod]
+  public void Zbo_Stage0_NoActivity() {
+    // ZBO with cooler OFF — falls back to ZBO's passive fraction
+    // (= HeavyMLI insulation = 10% of baseline boiloff).
+    var (vessel, tank) = BuildBacVessel(
+        batteryRate: 500, batteryContents: 1e6, radiatorW: 500,
+        tier: InsulationTier.ZBO, stage: 0);
+    vessel.Solve();
+
+    Assert.AreEqual(0.003, tank.SliceNetBoiloffFractionPerDay(0), 1e-9);
+    Assert.AreEqual(0.0, tank.SliceCurrentEcW(0), 1e-6);
+    Assert.AreEqual(0.0, tank.SliceCurrentHeatW(0), 1e-6);
+  }
+
+  [TestMethod]
+  public void Zbo_Stage1_HeatMatchesBacExactly() {
+    // The per-stage decomposition's whole point: at ZBO stage 1 the
+    // heat output must match a standalone BAC's exactly (not just the
+    // EC). BAC's COP (0.20·T/dT) differs from ZBO's overall (0.10),
+    // so a single-device-with-Demand-scale model would emit ~0.8%
+    // less heat. Two-device summation gets it right because stage 1's
+    // own profile contributes its own Q_hot = ec × (1 + cop_bac).
+    var (vesselZbo, tankZbo) = BuildBacVessel(
+        batteryRate: 500, batteryContents: 1e6, radiatorW: 500,
+        tier: InsulationTier.ZBO, stage: 1);
+    vesselZbo.Solve();
+    var (vesselBac, tankBac) = BuildBacVessel(
+        batteryRate: 500, batteryContents: 1e6, radiatorW: 500,
+        tier: InsulationTier.BAC, stage: 1);
+    vesselBac.Solve();
+
+    Assert.AreEqual(tankBac.SliceCurrentEcW(0), tankZbo.SliceCurrentEcW(0), 1e-6,
+        "ZBO stage 1 EC must match standalone BAC's EC");
+    Assert.AreEqual(tankBac.SliceCurrentHeatW(0), tankZbo.SliceCurrentHeatW(0), 1e-6,
+        "ZBO stage 1 heat must match standalone BAC's heat — the per-stage "
+        + "device picks up BAC's COP, not a Demand-scaled ZBO ratio");
+  }
+
+  [TestMethod]
+  public void Zbo_Stage_TogglesViaDemandWithoutRebuild() {
+    // The core invariant the new model guarantees: a stage toggle is a
+    // per-tick Demand change, NOT a topology rebuild. Start at stage 2,
+    // confirm full activity. Flip to stage 0 (still no rebuild — just
+    // Invalidate). Activity should collapse to 0. Flip back to stage 2
+    // — full activity returns. Same Solve, same VesselSystems, same LP.
+    var (vessel, tank) = BuildBacVessel(
+        batteryRate: 500, batteryContents: 1e6, radiatorW: 500,
+        tier: InsulationTier.ZBO, stage: 2);
+    vessel.Solve();
+    var ecAtFull = tank.SliceCurrentEcW(0);
+    Assert.IsTrue(ecAtFull > 0, "Cooler should be drawing EC at stage 2");
+
+    tank.CoolerStages[0] = 0;
+    vessel.Invalidate();
+    vessel.Solve();
+    Assert.AreEqual(0.0, tank.SliceCurrentEcW(0), 1e-6,
+        "Stage 0 should park the cooler — no EC draw");
+
+    tank.CoolerStages[0] = 2;
+    vessel.Invalidate();
+    vessel.Solve();
+    Assert.AreEqual(ecAtFull, tank.SliceCurrentEcW(0), 1e-6,
+        "Returning to stage 2 must restore the original EC draw");
   }
 
   [TestMethod]

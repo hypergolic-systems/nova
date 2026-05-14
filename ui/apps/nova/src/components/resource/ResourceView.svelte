@@ -25,13 +25,59 @@
 
   import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
   import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
-  import type { NovaResourceFlow } from '../../telemetry/nova-topics';
-  import { useStageOps } from '@dragonglass/telemetry/svelte';
+  import type { NovaResourceFlow, TankSlice } from '../../telemetry/nova-topics';
+  import { NovaPartTopic } from '../../telemetry/nova-topics';
+  import { useStageOps, getKsp } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import { resourceMeta, resourceSortKey } from './resource-codes';
   import { siPrefix, fmtMag } from '../../util/units';
+
+  const ksp = getKsp();
+
+  // Tier int → short label. Mirrors `InsulationTier` C# enum order;
+  // matches the codes used in TankRowEditor and the THM/PWR views.
+  const TIER_LABELS = ['MLI', 'HVY', 'BAC', 'ZBO'] as const;
+  function tierLabel(tier: number): string {
+    return TIER_LABELS[tier] ?? '?';
+  }
+  function tankStageLabel(stage: number, maxStage: number): string {
+    if (stage === 0) return 'OFF';
+    if (maxStage === 1) return 'ON';
+    return 'S' + stage;
+  }
+
+  // Find the slice on a part that holds the given resource. Returns
+  // the first match — a part can technically have multiple tanks with
+  // the same resource (mixed loadouts) but in practice resource codes
+  // are uniqued per tank. Returns the tank index too so the cycle
+  // handler can rebuild the right stage vector.
+  function partSlice(p: NovaPartHandle, resourceId: string):
+      { tankIdx: number; sliceIdx: number; slice: TankSlice } | undefined {
+    if (!p.state) return undefined;
+    for (let t = 0; t < p.state.tank.length; t++) {
+      const tank = p.state.tank[t];
+      for (let i = 0; i < tank.slices.length; i++) {
+        if (tank.slices[i].resource === resourceId)
+          return { tankIdx: t, sliceIdx: i, slice: tank.slices[i] };
+      }
+    }
+    return undefined;
+  }
+
+  // Cycle the cooling stage for a specific (part, resource) slice.
+  // Reads the current per-slice stage vector for the slice's tank,
+  // bumps the matching slot, and ships the whole vector via the topic
+  // op (matches the wire contract — full vector, single slot mutated).
+  function cycleCoolingFor(p: NovaPartHandle, resourceId: string): void {
+    const hit = partSlice(p, resourceId);
+    if (!hit || !p.state) return;
+    const tank = p.state.tank[hit.tankIdx];
+    const next = (hit.slice.stage + 1) % (hit.slice.maxStage + 1);
+    const vector = tank.slices.map((s, i) => i === hit.sliceIdx ? next : s.stage);
+    ksp.send(NovaPartTopic(p.struct.id), 'setTankCooler', vector);
+  }
 
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
@@ -233,6 +279,35 @@
   </svg>
 {/snippet}
 
+<!-- Cooling-system sub-line. Renders only when the slice's tier is
+     above the MLI baseline (i.e. there's real cooling hardware
+     installed worth telling the player about). For BAC/ZBO it
+     additionally exposes the stage cycle button so the player can
+     toggle from this view without flipping to PWR or THM. -->
+{#snippet coolingSubLine(p: NovaPartHandle, resourceId: string, nested: boolean)}
+  {@const hit = partSlice(p, resourceId)}
+  {#if hit && hit.slice.tier > 0}
+    {@const slice = hit.slice}
+    <li class="rsv__sub" class:rsv__sub--nested={nested}
+        aria-label="cryocooler stage">
+      <span class="rsv__sub-label">cooling</span>
+      <span class="rsv__sub-sep">·</span>
+      <span class="rsv__cool-tier">{tierLabel(slice.tier)}</span>
+      {#if slice.maxStage > 0}
+        <button type="button" class="rsv__cool-btn"
+                class:rsv__cool-btn--on={slice.stage > 0}
+                aria-label="Cycle cryocooler stage"
+                title={slice.maxStage === 1
+                  ? 'Toggle cryocooler (OFF / ON)'
+                  : 'Cycle cryocooler (OFF / S1 / S2)'}
+                onclick={(e) => { e.stopPropagation(); cycleCoolingFor(p, resourceId); }}>
+          <span>{tankStageLabel(slice.stage, slice.maxStage)}</span>
+        </button>
+      {/if}
+    </li>
+  {/if}
+{/snippet}
+
 {#snippet emptyMsg(text: string)}
   <p class="rsv__empty">
     <span class="rsv__empty-rule"></span>
@@ -333,6 +408,7 @@
                     </span>
                   </span>
                 </li>
+                {@render coolingSubLine(p, r.resourceId, false)}
                 {#if bo.litresPerDay > 0}
                   {@const bp = fmtBoiloff(bo.litresPerDay, bo.fractionPerDay, m.unit)}
                   <li class="rsv__sub" aria-label="boil-off rate">
@@ -432,6 +508,7 @@
                     </span>
                   </span>
                 </li>
+                {@render coolingSubLine(e.part, g.resourceId, true)}
                 {#if ebo.litresPerDay > 0}
                   {@const ebp = fmtBoiloff(ebo.litresPerDay, ebo.fractionPerDay, m.unit)}
                   <li class="rsv__sub rsv__sub--nested" aria-label="boil-off rate">
@@ -962,6 +1039,47 @@
   }
   .rsv__sub-sep { color: var(--fg-dim); opacity: 0.5; margin: 0 2px; }
   .rsv__sub-pct { color: var(--fg-dim); font-size: 10px; }
+
+  /* Cooling-tier label — installed hardware identifier (HVY/BAC/ZBO).
+     Always-on (not a hot signal), so neutral fg + display font. */
+  .rsv__cool-tier {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--fg);
+  }
+  /* Inline stage toggle — same chip language as PWR/THM cooler-btn,
+     dropped into a sub-line so it sits flush with the cooling label.
+     Fixed width keeps OFF / ON / S1 / S2 the same footprint. */
+  .rsv__cool-btn {
+    margin-left: 6px;
+    padding: 0 6px;
+    width: 38px;
+    text-align: center;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--fg-mute);
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .rsv__cool-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.06);
+  }
+  .rsv__cool-btn--on {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.08);
+  }
+  .rsv__cool-btn--on:hover {
+    background: rgba(126, 245, 184, 0.16);
+    border-color: var(--accent);
+    box-shadow: 0 0 4px var(--accent-glow);
+  }
 
   /* Empty-state line — verbatim Power's pattern for visual rhyme. */
   .rsv__empty {

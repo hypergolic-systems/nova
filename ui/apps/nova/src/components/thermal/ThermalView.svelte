@@ -35,10 +35,9 @@
   const vesselParts = useNovaParts(() => vesselId);
   const ksp = getKsp();
 
-  type NodeKey = 'producers' | 'coolers' | 'radiators';
+  type NodeKey = 'producers' | 'radiators';
   let expanded = $state<Record<NodeKey, boolean>>({
     producers: true,
-    coolers: true,
     radiators: true,
   });
   function toggle(k: NodeKey): void {
@@ -111,6 +110,10 @@
     key: string;
     partId: string;
     partTitle: string;
+    /** Canonical resource name — drives `resourceMeta` lookup for the
+     *  tint colour. The short code is computed at render time so this
+     *  one carrier is enough. */
+    resource: string;
     resourceCode: string;
     sliceIndex: number;
     stage: number;
@@ -133,6 +136,7 @@
             key: `${p.struct.id}:t${i}`,
             partId: p.struct.id,
             partTitle: p.struct.title,
+            resource: s.resource,
             resourceCode: resourceMeta(s.resource).code,
             sliceIndex: i,
             stage: s.stage,
@@ -174,12 +178,11 @@
   });
 
   const totals = $derived({
-    // Heat load on the cooling system — RTG waste heat plus cooler
+    // Heat load on the cooling system — RTG waste heat plus cryocooler
     // waste heat (Q_hot = Q_cold + W_in lands on the bus radiators
     // have to reject).
     heatLoad: groups.producers.reduce((a, p) => a + rtgThermal(p).heatIn, 0)
             + coolerRows.reduce((a, r) => a + r.coolerHeatW, 0),
-    coolerHeat: coolerRows.reduce((a, r) => a + r.coolerHeatW, 0),
     // Active cooling provided by deployed radiators.
     cooling:    groups.radiators.reduce((a, p) => a + radiatorOf(p).current, 0),
     coolingMax: groups.radiators.reduce((a, p) => a + radiatorOf(p).max, 0),
@@ -240,6 +243,54 @@
   </p>
 {/snippet}
 
+<!-- Cooler row — two-line stack matching the RTG layout. Primary line
+     carries the heat load (amber, like RTG waste heat); secondary line
+     shows the EC pump cost + realised boiloff so the player sees the
+     full tradeoff. Resource code in the title gets the resource's
+     per-tint colour from `resourceMeta`. -->
+{#snippet coolerRow(row: CoolerRow)}
+  {@const heatFmt = fmtRate(row.coolerHeatW)}
+  {@const ecFmt   = fmtRate(row.coolerEcW)}
+  {@const tint    = resourceMeta(row.resource).color}
+  <li class="thr__row thr__row--stack thr__row--cooler"
+      class:thr__row--closed={row.stage === 0}
+      onmouseenter={() => highlightOn([row.partId])}
+      onmouseleave={highlightOff}>
+    <span class="thr__row-icon">
+      <ComponentIcon kind="tank" />
+    </span>
+    <div class="thr__row-stack">
+      <div class="thr__row-line">
+        <span class="thr__row-name">
+          {row.partTitle}<em class="thr__row-subname"
+            style:color={tint}> · {row.resourceCode}</em>
+        </span>
+        <button type="button" class="thr__deploy-btn thr__cooler-btn"
+                class:thr__cooler-btn--on={row.stage > 0}
+                aria-label="Cycle cryocooler stage"
+                title={row.maxStage === 1
+                  ? 'Toggle cryocooler (OFF / ON)'
+                  : 'Cycle cryocooler (OFF / S1 / S2)'}
+                onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}>
+          <span>{tankStageLabel(row.stage, row.maxStage)}</span>
+        </button>
+        <span class="thr__rate thr__rate--load thr__rate--col"
+              class:thr__rate--zero={isZero(row.coolerHeatW)}
+              title="Waste heat dumped to the cooling bus by this cryocooler">
+          {heatFmt.mag}<em>{heatFmt.unit}</em>
+        </span>
+      </div>
+      <div class="thr__row-line thr__row-line--secondary">
+        <span class="thr__cooler-meta"
+              title="EC pump cost and realised boiloff for this slice">
+          EC {ecFmt.mag}<em>{ecFmt.unit}</em>
+          · boil {fmtFracPctPerDay(row.boiloffFractionPerDay)}
+        </span>
+      </div>
+    </div>
+  </li>
+{/snippet}
+
 <!-- Per-radiator deploy toggle. Fixed panels (deployable=false) have
      no control. Deployable rads show EXT when retracted, RET when
      deployed. Effect is immediate; no busy/pending state. -->
@@ -277,7 +328,7 @@
       </span>
     </button>
     {#if expanded.producers}
-      {#if groups.producers.length === 0}
+      {#if groups.producers.length === 0 && coolerRows.length === 0}
         {@render emptyMsg('NO HEAT PRODUCERS')}
       {:else}
         <ul class="thr__rows">
@@ -334,77 +385,13 @@
               </div>
             </li>
           {/each}
-        </ul>
-      {/if}
-    {/if}
-  </div>
-
-  <!-- Coolers ------------------------------------------------------ -->
-  <!-- Tank cryocoolers — heat producers in the same sense as RTGs
-       (waste heat hits the bus that radiators have to reject) but
-       sourced from EC × (1 + COP). Each row has its own stage toggle:
-       BAC = on/off, ZBO = off/s1/s2 (s1 runs BAC-equivalent). The
-       sub-line carries the live boiloff %/d so a player who throttles
-       the cooler can watch the tradeoff in real time. -->
-  <div class="thr__node">
-    <button type="button" class="thr__node-head"
-            aria-expanded={expanded.coolers}
-            onclick={() => toggle('coolers')}>
-      {@render chev(expanded.coolers)}
-      <span class="thr__node-title">COOLERS</span>
-      <span class="thr__rate thr__rate--load"
-            class:thr__rate--zero={isZero(totals.coolerHeat)}>
-        {fmtRate(totals.coolerHeat).mag}<em>{fmtRate(totals.coolerHeat).unit}</em>
-      </span>
-    </button>
-    {#if expanded.coolers}
-      {#if coolerRows.length === 0}
-        {@render emptyMsg('NO COOLERS')}
-      {:else}
-        <ul class="thr__rows">
+          <!-- Tank cryocoolers — heat producers in the same sense as
+               RTGs (waste heat hits the bus radiators have to reject)
+               but sourced from EC × (1 + COP). Each row has its own
+               stage toggle: BAC = on/off, ZBO = off/s1/s2 (s1 runs
+               BAC-equivalent). -->
           {#each coolerRows as row (row.key)}
-            {@const heatFmt = fmtRate(row.coolerHeatW)}
-            {@const ecFmt   = fmtRate(row.coolerEcW)}
-            <li class="thr__row thr__row--stack"
-                class:thr__row--closed={row.stage === 0}
-                onmouseenter={() => highlightOn([row.partId])}
-                onmouseleave={highlightOff}>
-              <span class="thr__row-icon">
-                <ComponentIcon kind="tank" />
-              </span>
-              <div class="thr__row-stack">
-                <!-- Line 1: name + stage toggle + heat load (amber). -->
-                <div class="thr__row-line">
-                  <span class="thr__row-name">
-                    {row.partTitle}<em class="thr__row-subname"> · {row.resourceCode}</em>
-                  </span>
-                  <button type="button" class="thr__deploy-btn thr__cooler-btn"
-                          class:thr__cooler-btn--on={row.stage > 0}
-                          aria-label="Cycle cryocooler stage"
-                          title={row.maxStage === 1
-                            ? 'Toggle cryocooler (OFF / ON)'
-                            : 'Cycle cryocooler (OFF / S1 / S2)'}
-                          onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}>
-                    <span>{tankStageLabel(row.stage, row.maxStage)}</span>
-                  </button>
-                  <span class="thr__rate thr__rate--load"
-                        class:thr__rate--zero={isZero(row.coolerHeatW)}
-                        title="Waste heat dumped to the cooling bus by this cryocooler">
-                    {heatFmt.mag}<em>{heatFmt.unit}</em>
-                  </span>
-                </div>
-                <!-- Line 2: EC draw + live boiloff %/d. Both physical
-                     observables; the two together tell the player
-                     whether the cooler is making the tradeoff worth it. -->
-                <div class="thr__row-line thr__row-line--secondary">
-                  <span class="thr__cooler-meta"
-                        title="EC draw and realised boiloff for this slice">
-                    EC {ecFmt.mag}<em>{ecFmt.unit}</em>
-                    · boil {fmtFracPctPerDay(row.boiloffFractionPerDay)}
-                  </span>
-                </div>
-              </div>
-            </li>
+            {@render coolerRow(row)}
           {/each}
         </ul>
       {/if}
@@ -638,14 +625,15 @@
     color: var(--fg-dim);
   }
 
-  /* Cryocooler stage toggle — mirrors PowerView's chip. Min-width
-     keeps OFF / ON / S1 / S2 the same physical button width so the
-     row's later columns don't jog as the player cycles. */
+  /* Cryocooler stage toggle. Fixed width so OFF / ON / S1 / S2 all
+     occupy the same footprint — the right-side rate column stays at a
+     constant horizontal position as the player cycles. */
   .thr__cooler-btn {
     color: var(--fg-mute);
     border-color: var(--line);
-    min-width: 28px;
+    width: 44px;
     text-align: center;
+    flex: 0 0 auto;
   }
   .thr__cooler-btn--on {
     color: var(--accent);
@@ -653,18 +641,29 @@
     background: rgba(126, 245, 184, 0.08);
   }
 
-  /* Resource-code subname appended to a cooler row title — same
-     visual as PowerView's tank-cooler subname. */
+  /* Rate cell when used in a cooler row — fixed minimum width and
+     right-aligned so the button to its left lines up across rows
+     regardless of digit count ("200 W" vs "1.5 kW"). */
+  .thr__rate--col {
+    min-width: 56px;
+    text-align: right;
+  }
+
+  /* Resource-code subname appended to a cooler row title. Carries
+     the resource's per-tint colour via inline style:color, so this
+     rule only sets the typographic frame (display font + tracking). */
   .thr__row-subname {
-    color: var(--fg-mute);
     font-family: var(--font-display);
     font-size: 9px;
     letter-spacing: 0.18em;
     font-style: normal;
   }
+  /* Cooler secondary line — EC + boiloff. Use a slightly less-dim
+     foreground than fg-mute so the numbers stay readable against
+     the dark panel background. */
   .thr__cooler-meta {
     flex: 1 1 auto;
-    color: var(--fg-mute);
+    color: var(--fg-dim);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }

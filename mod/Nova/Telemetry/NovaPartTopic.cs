@@ -360,9 +360,10 @@ public sealed class NovaPartTopic : Topic {
           stages.Add(stage);
         }
         if (!module.TankVolume.SetCoolerStages(stages)) return;
-        // Device max-rates are baked at OnBuildSystems time, so the
-        // LP must rebuild to see the new cooler power envelope. No-op
-        // outside flight scope (editor sim has no VirtualVessel).
+        // No topology rebuild needed — the cooler device is already
+        // registered with the tier's max-stage envelope; OnPreSolve
+        // picks up the new stage's Demand on the next tick. Just nudge
+        // the solver to re-run.
         if (HighLogic.LoadedScene != GameScenes.EDITOR) {
           var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
           vesselModule?.Virtual?.Invalidate();

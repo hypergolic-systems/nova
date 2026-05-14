@@ -50,11 +50,20 @@ public class TankVolume : VirtualComponent {
   // (valid on ZBO only).
   public List<int> CoolerStages = new();
 
-  // Per-slice cryocooler handles, populated by OnBuildSystems for
-  // active tiers on cryo resources. Parallel to Tanks; null for
-  // passive tiers, non-cryogenic resources, stage-0 slices, or pre-
-  // build state.
-  internal List<Device> CoolerDevices = new();
+  // Per-slice cryocooler handles. Outer list is parallel to Tanks;
+  // inner list holds one Device per *stage* of cooling hardware
+  // installed on that slice (BAC tier → 1 entry, ZBO → 2, passive
+  // tiers and non-cryo resources → empty). Each device represents
+  // the INCREMENTAL hardware added at that stage — stage 1 is the
+  // single-stage compressor, stage 2 is the deep cold-finger that
+  // stacks on top. Cooler current is the sum of (Activity × max) over
+  // every entry, so the BAC↔ZBO heat:EC nonlinearity falls out
+  // naturally from each stage's own profile.
+  //
+  // Stage toggle is purely a per-tick Demand mutation (OnPreSolve):
+  // stage k's device gets Demand=1 when (k <= currentStage) else 0.
+  // No topology rebuild required.
+  internal List<List<Device>> CoolerDevices = new();
 
   public TankVolume() {}
 
@@ -206,20 +215,20 @@ public class TankVolume : VirtualComponent {
   public int SliceStage(int i) =>
       i < CoolerStages.Count ? CoolerStages[i] : 0;
 
-  // Physical cryocooler model. Cooling power = MLI-baseline heat leak
-  // the cooler must remove; EC draw = cooling / COP. Resource matters
-  // because COP collapses at low cold-tap temperatures (LH₂ at 20 K
-  // costs ~2-3× more EC per watt than LOX at 90 K under the same tier).
-  // Picks the effective profile for (tier, stage); returns 0 when no
-  // cooler is running (passive tier, non-cryo, or stage=0).
-  public double SliceMaxEcW(int i) {
+  // Cumulative EC draw at a given stage (= what the cooler would pull
+  // if every stage up through `stage` were running flat out). Returns
+  // 0 when the slice can't run a cooler (passive tier, non-cryo).
+  // Resource matters because COP collapses at low cold-tap temps
+  // (LH₂ at 20 K costs ~2-3× more EC per watt than LOX at 90 K under
+  // the same tier).
+  private double SliceCumulativeEcWForStage(int i, int stage) {
     if (i >= Tanks.Count) return 0;
     var res = Tanks[i].Resource;
     if (res == null) return 0;
     if (res.MliBoiloffFractionPerDay <= 0
         || res.LatentHeatJPerKg <= 0
         || res.BoilingPointK <= 0) return 0;
-    var profile = InsulationTierTable.ActiveProfile(SliceTier(i), SliceStage(i));
+    var profile = InsulationTierTable.ActiveProfile(SliceTier(i), stage);
     if (profile == null) return 0;
     var deltaT = InsulationTierTable.AmbientK - res.BoilingPointK;
     if (deltaT <= 0) return 0;
@@ -235,14 +244,12 @@ public class TankVolume : VirtualComponent {
     return cop > 0 ? qRemove / cop : 0;
   }
 
-  // Heat output at full activity: ec × (1 + COP_real). Q_hot = Q_cold
-  // + W_in by energy conservation; Q_cold = ec × cop, so Q_hot =
-  // ec × (1 + cop). 0 when no cooler is running.
-  public double SliceMaxHeatW(int i) {
-    var ec = SliceMaxEcW(i);
+  // Cumulative heat output at a given stage. Q_hot = Q_cold + W_in.
+  private double SliceCumulativeHeatWForStage(int i, int stage) {
+    var ec = SliceCumulativeEcWForStage(i, stage);
     if (ec <= 0) return 0;
     var res = Tanks[i].Resource;
-    var profile = InsulationTierTable.ActiveProfile(SliceTier(i), SliceStage(i));
+    var profile = InsulationTierTable.ActiveProfile(SliceTier(i), stage);
     if (profile == null) return 0;
     var data = profile.Value;
     var cop = data.CarnotEfficiency * res.BoilingPointK
@@ -250,37 +257,83 @@ public class TankVolume : VirtualComponent {
     return ec * (1.0 + cop);
   }
 
-  // Net boiloff fraction per day at the current cooler activity.
-  // When stage=0 (cooler off), uses the tier's passive fraction
-  // (HeavyMLI-equivalent on BAC/ZBO — the hardware is installed but
-  // not pumping). When stage>0, lerps from passive to the effective
-  // active fraction by the LP device's Activity.
+  // Incremental EC drawn by the hardware that stage `s` adds on top
+  // of stage `s-1`. Each stage is its own physical compressor /
+  // cold-finger unit with its own COP, so the deltas correctly
+  // reflect the BAC↔ZBO heat:EC nonlinearity — the LP sees one
+  // device per stage and sums the realised draws.
+  internal double StageIncrementalEcW(int i, int stage) =>
+      SliceCumulativeEcWForStage(i, stage) - SliceCumulativeEcWForStage(i, stage - 1);
+
+  internal double StageIncrementalHeatW(int i, int stage) =>
+      SliceCumulativeHeatWForStage(i, stage) - SliceCumulativeHeatWForStage(i, stage - 1);
+
+  // Fractional baseline boiloff this stage removes when fully active —
+  // the gap between this stage's residual leak and the previous
+  // stage's residual leak. Stage 1 on either BAC or ZBO removes
+  // (passive − BAC.active) = 0.09; stage 2 on ZBO removes the
+  // remaining (BAC.active − ZBO.active) = 0.01.
+  internal double StageRemovalFraction(int i, int stage) {
+    if (stage <= 0) return 0;
+    var tier = SliceTier(i);
+    var here = InsulationTierTable.ActiveProfile(tier, stage);
+    if (here == null) return 0;
+    var prevActive = stage == 1
+        ? InsulationTierTable.Get(tier).PassiveFraction
+        : (InsulationTierTable.ActiveProfile(tier, stage - 1)?.ActiveFraction
+            ?? InsulationTierTable.Get(tier).PassiveFraction);
+    return prevActive - here.Value.ActiveFraction;
+  }
+
+  // Operating profile values at the slice's CURRENT stage. Cumulative
+  // (i.e. the total EC / heat the cooler is asking for when every
+  // stage up through `current` is on). Useful as a "design rated"
+  // readout — the realised draws live on SliceCurrent{Ec,Heat}W.
+  public double SliceMaxEcW(int i) => SliceCumulativeEcWForStage(i, SliceStage(i));
+  public double SliceMaxHeatW(int i) => SliceCumulativeHeatWForStage(i, SliceStage(i));
+
+  // Net boiloff fraction per day. Sum each stage device's Activity ×
+  // that stage's removal fraction; subtract from passive. The LP can
+  // partially-supply each stage independently (heat-saturated bus →
+  // stage 2 throttles before stage 1), so this captures graceful
+  // degradation without any per-stage if-ladder.
   public double SliceNetBoiloffFractionPerDay(int i) {
     if (i >= Tanks.Count) return 0;
     var baseline = Tanks[i].Resource?.MliBoiloffFractionPerDay ?? 0;
     if (baseline <= 0) return 0;
     var tier = SliceTier(i);
     var tierData = InsulationTierTable.Get(tier);
-    var profile = InsulationTierTable.ActiveProfile(tier, SliceStage(i));
-    if (profile == null) return baseline * tierData.PassiveFraction;
-    var device = i < CoolerDevices.Count ? CoolerDevices[i] : null;
-    var activity = device?.Activity ?? 0;
-    var data = profile.Value;
-    var fraction = tierData.PassiveFraction
-                 + (data.ActiveFraction - tierData.PassiveFraction) * activity;
-    return baseline * fraction;
+    double removed = 0;
+    if (i < CoolerDevices.Count) {
+      var devices = CoolerDevices[i];
+      for (int s = 0; s < devices.Count; s++) {
+        removed += devices[s].Activity * StageRemovalFraction(i, s + 1);
+      }
+    }
+    return baseline * (tierData.PassiveFraction - removed);
   }
 
-  // Realised cooler EC draw and heat output (max × activity). These
-  // are what the wire frame publishes — no Activity leakage.
+  // Realised cooler EC draw and heat output — the LP-throttled
+  // physical-observable rates the wire publishes. Sum across per-stage
+  // devices for this slice; each contributes its own incremental
+  // (Activity × max). Stage 0 → all devices have Demand=0 → all
+  // Activities=0 → sum is 0.
   public double SliceCurrentEcW(int i) {
-    var device = i < CoolerDevices.Count ? CoolerDevices[i] : null;
-    return SliceMaxEcW(i) * (device?.Activity ?? 0);
+    if (i >= CoolerDevices.Count) return 0;
+    var devices = CoolerDevices[i];
+    double sum = 0;
+    for (int s = 0; s < devices.Count; s++)
+      sum += devices[s].Activity * StageIncrementalEcW(i, s + 1);
+    return sum;
   }
 
   public double SliceCurrentHeatW(int i) {
-    var device = i < CoolerDevices.Count ? CoolerDevices[i] : null;
-    return SliceMaxHeatW(i) * (device?.Activity ?? 0);
+    if (i >= CoolerDevices.Count) return 0;
+    var devices = CoolerDevices[i];
+    double sum = 0;
+    for (int s = 0; s < devices.Count; s++)
+      sum += devices[s].Activity * StageIncrementalHeatW(i, s + 1);
+    return sum;
   }
 
   public override void OnBuildSystems(VesselSystems systems, StagingFlowSystem.Node node) {
@@ -296,25 +349,39 @@ public class TankVolume : VirtualComponent {
       buf.Contents = tank.Contents;
       Tanks[i] = buf;
 
-      var maxEcW = SliceMaxEcW(i);
-      if (maxEcW > 0) {
-        var maxHeatW = SliceMaxHeatW(i);
+      // Register one cooler device per installed stage (BAC tier = 1,
+      // ZBO tier = 2). Each device carries its own incremental
+      // EC/heat — stage 1 is BAC-class params; stage 2 (ZBO only) is
+      // the deep cold-finger that stacks on top, with its own COP. The
+      // player's toggle just sets each device's Demand at OnPreSolve;
+      // no LP rebuild ever needed.
+      var stageDevices = new List<Device>();
+      var maxStage = InsulationTierTable.MaxStage(SliceTier(i));
+      var currentStage = SliceStage(i);
+      for (int stage = 1; stage <= maxStage; stage++) {
+        var ec = StageIncrementalEcW(i, stage);
+        if (ec <= 0) continue;
+        var heat = StageIncrementalHeatW(i, stage);
         var device = systems.AddDevice(node,
-            inputs: new[] { (Resource.ElectricCharge, maxEcW) },
-            outputs: new[] { (Resource.Heat, maxHeatW) },
+            inputs: new[] { (Resource.ElectricCharge, ec) },
+            outputs: new[] { (Resource.Heat, heat) },
             priority: ProcessFlowSystem.Priority.High);
-        device.Demand = 1.0;
-        CoolerDevices.Add(device);
-      } else {
-        CoolerDevices.Add(null);
+        device.Demand = stage <= currentStage ? 1.0 : 0.0;
+        stageDevices.Add(device);
       }
+      CoolerDevices.Add(stageDevices);
     }
   }
 
   public override void OnPreSolve() {
     for (int i = 0; i < CoolerDevices.Count; i++) {
-      var d = CoolerDevices[i];
-      if (d != null) d.Demand = 1.0;
+      var devices = CoolerDevices[i];
+      var currentStage = SliceStage(i);
+      // Each device represents one stage; turn on those whose stage
+      // index ≤ current stage. LP picks up Demand changes on the next
+      // Solve without any topology rebuild.
+      for (int s = 0; s < devices.Count; s++)
+        devices[s].Demand = (s + 1) <= currentStage ? 1.0 : 0.0;
     }
   }
 
