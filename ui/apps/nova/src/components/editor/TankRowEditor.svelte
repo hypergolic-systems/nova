@@ -220,18 +220,25 @@
   // for the whole panel — only one mouse, one preview at a time.
   let hovered = $state<{ sliceIdx: number; tier: InsulationTier } | null>(null);
 
-  // Per-fuel volumetric LOX demand for engine-typical mass ratios
-  // (against Nova's densities — LH2=0.07, LOX=1.20, RP-1=0.80 kg/L).
-  // For each fuel volume, the corresponding LOX volume needed in the
-  // engine ratio is `volume × LOX_PER_FUEL[fuel]`.
+  // Per-fuel volumetric LOX demand keyed off Nova's own engine
+  // PROPELLANT ratios (configs/overrides/propulsion/*.cfg). For each
+  // fuel volume, the corresponding LOX volume needed at engine ratio
+  // is `volume × LOX_PER_FUEL[fuel]`.
   //
-  //   Kerolox  60% LOX + 40% RP-1 by volume → LOX = 1.5  × RP-1
-  //            ⇒ 2.25:1 LOX:RP-1 by mass
-  //   Hydrolox 26% LOX + 74% LH2 by volume → LOX ≈ 0.351 × LH2
-  //            ⇒ ~6:1 LOX:LH2 by mass
+  // Engines this matches today:
+  //   Kerolox   LV-T30, LV-T45, "Mainsail" — 6 LOX : 4 RP-1 by ratio
+  //             (60/40 by volume; ⇒ 2.25:1 by mass against 1.20/0.80 kg/L)
+  //   Hydrolox  "Terrier" (LV-909-equivalent older config), "Poodle"  —
+  //             26% LOX + 74% LH2 by volume
+  //             (⇒ ~6:1 by mass against 1.20/0.07 kg/L)
+  //   Methalox  LV-909, 48-7S — 5 LOX : 4 Methane by ratio
+  //             (⇒ ~3.57:1 by mass against 1.20/0.42 kg/L). Fuel-rich
+  //             vs stoichiometric (~3.95:1 mass) — Nova's ratios trade
+  //             a touch of Isp for cooler combustion.
   const LOX_PER_FUEL: Record<string, number> = {
     'RP-1':            0.60 / 0.40,   // 1.5
     'Liquid Hydrogen': 0.26 / 0.74,   // ~0.3514
+    'Methane':         5 / 4,         // 1.25
   };
   const OXIDIZER_RESOURCE = 'Liquid Oxygen';
 
