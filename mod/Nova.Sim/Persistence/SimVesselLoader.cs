@@ -50,7 +50,16 @@ public static class SimVesselLoader {
       if (prefix.type != 'C')
         throw new InvalidDataException("expected .nvc craft file, got HGS type '" + prefix.type + "'");
       var craft = Serializer.Deserialize<Proto.CraftFile>(fs);
-      return BuildFromVessel(craft.Vessel, craft.Metadata?.Name, db, simTime, missionTime: 0, launchTime: simTime);
+      // Fallback chain: craft.Metadata.Name → filename stem. In-game,
+      // KSP's craft loader picks up the ship name from the .craft node;
+      // the sim's .nvc proto doesn't always carry it (Metadata.Name is
+      // optional), so derive from the filename when missing — that
+      // matches what the player sees in the VAB save dialog.
+      var metadataName = craft.Metadata?.Name;
+      var fallbackName = !string.IsNullOrEmpty(metadataName)
+          ? metadataName
+          : Path.GetFileNameWithoutExtension(path);
+      return BuildFromVessel(craft.Vessel, fallbackName, db, simTime, missionTime: 0, launchTime: simTime);
     }
   }
 
@@ -133,7 +142,11 @@ public static class SimVesselLoader {
 
     return new LoadResult {
       Vessel = vessel,
-      VesselName = state?.Name ?? fallbackName ?? "Vessel",
+      // `??` would let an empty string through; use IsNullOrEmpty so a
+      // proto with `Name = ""` falls through to the filename fallback.
+      VesselName = !string.IsNullOrEmpty(state?.Name) ? state.Name
+                 : !string.IsNullOrEmpty(fallbackName) ? fallbackName
+                 : "Vessel",
       VesselGuid = !string.IsNullOrEmpty(structure.VesselId) ? structure.VesselId : Guid.NewGuid().ToString("D"),
       UniversalTime = simTime,
       MissionTime = missionTime,
