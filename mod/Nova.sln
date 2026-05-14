@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nova", "Nova\Nova.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nova.Tests", "Nova.Tests\Nova.Tests.csproj", "{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Nova.Sim", "Nova.Sim\Nova.Sim.csproj", "{6E51A4D2-8B7C-4C8E-9A1A-2F4B91D5B7E1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +32,9 @@ Global
 		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{52EC495D-DB39-4F8C-A5BF-7FC949982DC0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6E51A4D2-8B7C-4C8E-9A1A-2F4B91D5B7E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6E51A4D2-8B7C-4C8E-9A1A-2F4B91D5B7E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6E51A4D2-8B7C-4C8E-9A1A-2F4B91D5B7E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6E51A4D2-8B7C-4C8E-9A1A-2F4B91D5B7E1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

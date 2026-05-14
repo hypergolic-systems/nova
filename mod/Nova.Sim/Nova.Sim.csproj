@@ -1,0 +1,89 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Nova.Sim — headless simulator binary. Hosts Nova.Core outside of
+    KSP to emit telemetry over WebSocket (Dragonglass-compatible wire
+    format) and accept kspcli-style C# expressions over UDP. Targets
+    net48 to match Nova.Core's runtime exactly, so solver behavior is
+    bit-identical to what runs inside KSP.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Nova.Sim</RootNamespace>
+    <AssemblyName>Nova.Sim</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>build/</OutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>false</Optimize>
+
+    <!-- OR-Tools native runtime selection. Match Nova.Tests so the
+         sim runs on the host's architecture without manual rid pinning. -->
+    <OrToolsVersion>9.8.3296</OrToolsVersion>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">osx-arm64</OrToolsRid>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'X64'">osx-x64</OrToolsRid>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('LINUX'))">linux-x64</OrToolsRid>
+    <OrToolsRid Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">win-x64</OrToolsRid>
+    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('OSX'))">dylib</OrToolsNativeExt>
+    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('LINUX'))">so</OrToolsNativeExt>
+    <OrToolsNativeExt Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">dll</OrToolsNativeExt>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Fleck — small WebSocket server, BSD, net4-compatible. Single DLL. -->
+    <PackageReference Include="Fleck" Version="1.2.0" />
+
+    <!-- OR-Tools managed lib is transitively referenced through Nova.Core,
+         but the test-style native loading needs the matching runtime. -->
+    <PackageReference Include="Google.OrTools" Version="$(OrToolsVersion)" />
+    <PackageReference Include="Google.OrTools.runtime.osx-arm64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'osx-arm64'" />
+    <PackageReference Include="Google.OrTools.runtime.osx-x64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'osx-x64'" />
+    <PackageReference Include="Google.OrTools.runtime.linux-x64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'linux-x64'" />
+    <PackageReference Include="Google.OrTools.runtime.win-x64" Version="$(OrToolsVersion)"
+                      Condition="'$(OrToolsRid)' == 'win-x64'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nova.Core\Nova.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Copy host's OR-Tools native libs into output (mirrors Nova.Tests). -->
+  <ItemGroup>
+    <_OrToolsNativeFile Include="$(NuGetPackageRoot)google.ortools.runtime.$(OrToolsRid)/$(OrToolsVersion)/runtimes/$(OrToolsRid)/native/*"
+                        Condition="'$(OrToolsRid)' != ''" />
+  </ItemGroup>
+
+  <Target Name="CopyOrToolsNative" AfterTargets="Build"
+          Condition="'$(OrToolsRid)' != ''"
+          Inputs="@(_OrToolsNativeFile)"
+          Outputs="@(_OrToolsNativeFile -> '$(OutputPath)%(Filename)%(Extension)')">
+    <Copy SourceFiles="@(_OrToolsNativeFile)"
+          DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="AliasOrToolsShim" AfterTargets="CopyOrToolsNative"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) OR $([MSBuild]::IsOSPlatform('LINUX'))">
+    <PropertyGroup>
+      <_ShimSrc>$(OutputPath)google-ortools-native.$(OrToolsNativeExt)</_ShimSrc>
+      <_ShimDst>$(OutputPath)libgoogle-ortools-native.$(OrToolsNativeExt)</_ShimDst>
+    </PropertyGroup>
+    <Copy SourceFiles="$(_ShimSrc)" DestinationFiles="$(_ShimDst)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_ShimSrc)')" />
+  </Target>
+
+</Project>

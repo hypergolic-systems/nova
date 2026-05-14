@@ -87,6 +87,18 @@ test config="Release": (mod-build config) save-cli-test
 mod-test config="Release": (mod-build config)
     cd mod && dotnet test Nova.sln -c {{config}} --no-build
 
+# --- Nova.Sim (headless simulator) ---
+
+# Build the Nova.Sim binary. Depends on a full mod build because Nova.Sim
+# references Nova.Core and lives in the same solution.
+sim-build config="Release": proto
+    cd mod && dotnet build Nova.Sim/Nova.Sim.csproj -c {{config}}
+
+# Run nova-sim with forwarded args.
+#   just sim-run -- --ksp-path ~/KSP_osx --craft fixtures/test.nvc
+sim-run *args: sim-build
+    mod/Nova.Sim/build/Nova.Sim.exe "$@"
+
 # --- Rust (crates/) ---
 
 # Build the save-cli binary in release mode.
