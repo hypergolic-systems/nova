@@ -1,39 +1,51 @@
 using System.Collections.Generic;
+using System.Text;
 using Dragonglass.Telemetry.Topics;
 using Nova.Components;
 using Nova.Core.Components.Propulsion;
 using Nova.Core.Resources;
 using Nova.Core.Systems;
 using UnityEngine;
+// DG owns one EngineFrame type; Nova.Core owns its own with the same shape.
+// Disambiguate so both names resolve cleanly inside this file.
+using NovaEngineFrame = Nova.Core.Telemetry.EngineFrame;
+using NovaPropellantFrame = Nova.Core.Telemetry.EnginePropellantFrame;
 
 namespace Nova.Telemetry;
 
-// Nova's engine-topic override. Subclass of DG's EngineTopic — wire
-// shape and Name are inherited unchanged, the only override is the
-// data source. Where the stock topic samples ModuleEngines + walks
-// `Part.crossfeedPartSet`, this reads from Nova's own systems:
+// Nova's engine-topic override.
 //
-//   - Per-engine state (throttle, Isp, thrust, ignition, flameout)
-//     comes from the `Engine` virtual component.
-//   - Fuel-pool reach + propellant aggregation use
-//     `StagingFlowSystem.ReachableNodes` / `ReachableBuffers` from
-//     the engine's staging node — same connectivity water-fill uses,
-//     so the HUD's fuel-group readout matches what the DV simulation
-//     would compute if you isolated this engine and let it drain.
+// Still a subclass of `Dragonglass.Telemetry.Topics.EngineTopic` so
+// the broadcaster registers us under the same wire name and lifecycle
+// (`OnEnable` / `OnDisable` / `Update` / change-detection /
+// `MarkDirty` all flow through DG's base). The two things we change:
 //
-// Stock `crossfeedPartSet` is dead in Nova (we patch out
-// `Vessel.BuildCrossfeedPartSets`). The signature on the wire uses
-// staging node IDs rather than part flightIDs — opaque strings the
-// HUD's `groupEngines` only consumes as a grouping key.
+//   1. **Data source** — `SampleEngines` reads from Nova's `Engine`
+//      virtual components + `StagingFlowSystem` reach data, NOT from
+//      stock `ModuleEngines` + `Part.crossfeedPartSet` (which Nova
+//      patches out anyway).
+//   2. **Wire emission** — `WriteData` calls Nova.Core's
+//      `EngineFrameFormatter` against a Nova-owned `List<EngineFrame>`,
+//      so the bytes on the wire come from code Nova controls. The
+//      simulator emits the same bytes through the same formatter,
+//      keeping mod/sim parity byte-for-byte.
 //
-// Like the base topic we maintain a structural cache rebuilt on KSP
-// `GameEvents` so the base class's `HasMaterialChange` reference-
-// equality check on `CrossfeedPartIds` doesn't fire every frame.
+// `_novaFrames` mirrors DG's private `_engines` cache — populated in
+// `SampleEngines` alongside the DG-typed `scratch` list that the base
+// class still uses for its `HasMaterialChange` / `MarkDirty` plumbing.
+// DG's inherited `WriteData` is never called (overridden here); its
+// `_engines` list becomes dead weight but the cost is one extra
+// allocation per active engine per change-detection cycle — trivial.
 public sealed class NovaEngineTopic : EngineTopic {
 
   private bool _structureDirty = true;
   private Vessel _cachedVessel;
   private readonly List<EngineEntry> _structure = new();
+
+  // Nova-owned wire cache. Repopulated on every SampleEngines call;
+  // read by our WriteData override.
+  private readonly List<NovaEngineFrame> _novaFrames = new();
+  private string _novaVesselId = "";
 
   private sealed class EngineEntry {
     public Part Part;
@@ -43,7 +55,6 @@ public sealed class NovaEngineTopic : EngineTopic {
   }
 
   private sealed class PropellantEntry {
-    public int ResourceId;
     public string Name;
     public string Abbreviation;
     public List<Buffer> Buffers = new();
@@ -76,7 +87,9 @@ public sealed class NovaEngineTopic : EngineTopic {
   private void OnNovaVesselChanged(Vessel _) { _structureDirty = true; }
 
   protected override bool SampleEngines(Vessel v, Transform refT, List<EngineFrame> scratch) {
+    _novaFrames.Clear();
     if (v == null || v.parts == null) return true;
+    _novaVesselId = v.id.ToString("D");
 
     if (v != _cachedVessel) {
       _cachedVessel = v;
@@ -106,7 +119,7 @@ public sealed class NovaEngineTopic : EngineTopic {
         ? Mathf.Clamp01((float)(es.Engine.Throttle * es.Engine.NormalizedOutput))
         : 0f;
 
-      var propellants = new List<PropellantFrame>(es.Propellants.Count);
+      var novaProps = new List<NovaPropellantFrame>(es.Propellants.Count);
       bool stale = false;
       for (int pi = 0; pi < es.Propellants.Count; pi++) {
         var pe = es.Propellants[pi];
@@ -118,8 +131,7 @@ public sealed class NovaEngineTopic : EngineTopic {
           cap += buf.Capacity;
         }
         if (stale) break;
-        propellants.Add(new PropellantFrame {
-          ResourceId = pe.ResourceId,
+        novaProps.Add(new NovaPropellantFrame {
           Name = pe.Name,
           Abbreviation = pe.Abbreviation,
           Amount = amt,
@@ -131,6 +143,23 @@ public sealed class NovaEngineTopic : EngineTopic {
         return false;
       }
 
+      _novaFrames.Add(new NovaEngineFrame {
+        Id = es.Part.flightID.ToString(),
+        MapX = local.x,
+        MapY = local.z,
+        Status = status,
+        Throttle = throttle,
+        MaxThrust = (float)es.Engine.Thrust,
+        Isp = (float)es.Engine.Isp,
+        CrossfeedPartIds = es.CrossfeedPartIds,
+        Propellants = novaProps,
+      });
+
+      // DG still owns change detection; feed its scratch with the
+      // same shape it expects so HasMaterialChange / MarkDirty fire
+      // correctly. The DG-side wire emission is overridden by our
+      // WriteData below, so this list never reaches the wire — it's
+      // pure broadcaster bookkeeping.
       scratch.Add(new EngineFrame {
         Id = es.Part.flightID.ToString(),
         MapX = local.x,
@@ -140,10 +169,14 @@ public sealed class NovaEngineTopic : EngineTopic {
         MaxThrust = (float)es.Engine.Thrust,
         Isp = (float)es.Engine.Isp,
         CrossfeedPartIds = es.CrossfeedPartIds,
-        Propellants = propellants,
+        Propellants = new List<PropellantFrame>(0),
       });
     }
     return true;
+  }
+
+  public override void WriteData(StringBuilder sb) {
+    Nova.Core.Telemetry.EngineFrameFormatter.Write(sb, _novaVesselId, _novaFrames);
   }
 
   private void RebuildStructure(Vessel v) {
@@ -195,7 +228,6 @@ public sealed class NovaEngineTopic : EngineTopic {
       // just sum live Contents/Capacity off the cached refs.
       foreach (var prop in engine.Propellants) {
         var pe = new PropellantEntry {
-          ResourceId = ResolveResourceId(prop.Resource.Name),
           Name = prop.Resource.Name,
           Abbreviation = prop.Resource.Abbreviation,
         };
@@ -205,13 +237,6 @@ public sealed class NovaEngineTopic : EngineTopic {
 
       _structure.Add(es);
     }
-  }
-
-  private static int ResolveResourceId(string name) {
-    var lib = PartResourceLibrary.Instance;
-    if (lib == null) return 0;
-    var def = lib.GetDefinition(name);
-    return def != null ? def.id : 0;
   }
 
   private static byte Classify(Engine e) {

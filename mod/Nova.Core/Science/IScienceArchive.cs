@@ -14,4 +14,11 @@ public interface IScienceArchive {
                uint sourceVesselPersistentId,
                string sourceVesselName,
                double ut);
+
+  // Read-side: look up a previously-received record by subject id.
+  // Used by the archive telemetry formatter to render per-(body,
+  // experiment, subject) cells with their saved fidelity, receive
+  // time, and source vessel name. Returns false if the subject hasn't
+  // been archived yet.
+  bool TryGet(string subjectId, out ArchivedScienceRecord record);
 }

@@ -33,12 +33,32 @@ public class Decoupler : VirtualComponent {
   /// </summary>
   public bool FullSeparation;
 
+  /// <summary>
+  /// Design-rated impulse this decoupler imparts when firing, in kN·s
+  /// (stock KSP convention). Populated mod-side from
+  /// `NovaDecouplerModule.ejectionForce` and sim-side from the part
+  /// config's `ejectionForce` field. Telemetry-only — wire callers
+  /// read it to render the per-part popover.
+  /// </summary>
+  public double EjectionForce;
+
+  /// <summary>
+  /// True iff this decoupler has more than one neighbour to release.
+  /// Radial decouplers (single surface-attach face) are false; the
+  /// FullSeparation toggle becomes meaningless and the UI greys it
+  /// out. Mod-side derives this from `explosiveNodeID != "srf"`;
+  /// sim-side detects stack attach nodes from the part config.
+  /// </summary>
+  public bool CanFullSeparate = true;
+
   public override VirtualComponent Clone() {
     return new Decoupler {
       AllowedResources = new HashSet<Resource>(AllowedResources),
       UpOnlyResources = new HashSet<Resource>(UpOnlyResources),
       Priority = Priority,
       FullSeparation = FullSeparation,
+      EjectionForce = EjectionForce,
+      CanFullSeparate = CanFullSeparate,
     };
   }
 

@@ -3,6 +3,7 @@ using System.Text;
 using Dragonglass.Telemetry.Topics;
 using Nova.Core.Persistence.Protos;
 using Nova.Core.Science;
+using Nova.Core.Telemetry;
 using Nova.Science;
 using UnityEngine;
 
@@ -68,44 +69,7 @@ public sealed class NovaScienceArchiveTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    var archive = NovaScienceArchive.Instance;
-    var bodies = ResolveBodies();
-
-    JsonWriter.Begin(sb, '[');
-
-    // ---- Body summary list -------------------------------------
-    JsonWriter.Begin(sb, '[');
-    bool firstBody = true;
-    foreach (var b in bodies) {
-      int possible = 0, archived = 0;
-      CountSubjects(archive, b.name, ref possible, ref archived);
-      JsonWriter.Sep(sb, ref firstBody);
-      JsonWriter.Begin(sb, '[');
-      bool f = true;
-      JsonWriter.Sep(sb, ref f);
-      JsonWriter.WriteString(sb, b.name);
-      JsonWriter.Sep(sb, ref f);
-      JsonWriter.WriteString(sb, b.parent);
-      JsonWriter.Sep(sb, ref f);
-      JsonWriter.WriteDouble(sb, archived);
-      JsonWriter.Sep(sb, ref f);
-      JsonWriter.WriteDouble(sb, possible);
-      JsonWriter.End(sb, ']');
-    }
-    JsonWriter.End(sb, ']');
-
-    sb.Append(',');
-
-    // ---- Per-(body, experiment) subject grids ------------------
-    JsonWriter.Begin(sb, '[');
-    bool firstGrid = true;
-    foreach (var b in bodies) {
-      WriteAtmGridForBody(sb, archive, b.name, ref firstGrid);
-      WriteLtsGridForBody(sb, archive, b.name, ref firstGrid);
-    }
-    JsonWriter.End(sb, ']');
-
-    JsonWriter.End(sb, ']');
+    ScienceArchiveFormatter.Write(sb, NovaScienceArchive.Instance, ResolveBodies());
   }
 
   // ---- Body roster ---------------------------------------------
@@ -132,105 +96,4 @@ public sealed class NovaScienceArchiveTopic : Topic {
     }
   }
 
-  // ---- Counters ------------------------------------------------
-
-  private static void CountSubjects(NovaScienceArchive archive, string bodyName,
-                                    ref int possible, ref int archived) {
-    var layers = AtmosphericProfileExperiment.LayersFor(bodyName);
-    if (layers != null) {
-      foreach (var l in layers) {
-        possible++;
-        var key = new SubjectKey(
-            AtmosphericProfileExperiment.ExperimentId, bodyName, l.name);
-        if (archive.TryGet(key.ToString(), out _)) archived++;
-      }
-    }
-    foreach (var (situation, slice) in
-             LongTermStudyExperiment.AllSubjectsFor(bodyName)) {
-      possible++;
-      var key = new SubjectKey(
-          LongTermStudyExperiment.ExperimentId,
-          bodyName, situation.ToString(), slice);
-      if (archive.TryGet(key.ToString(), out _)) archived++;
-    }
-  }
-
-  // ---- Grid writers --------------------------------------------
-
-  private static void WriteAtmGridForBody(
-      StringBuilder sb, NovaScienceArchive archive, string bodyName, ref bool first) {
-    var layers = AtmosphericProfileExperiment.LayersFor(bodyName);
-    if (layers == null) return;
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.Begin(sb, '[');
-    bool f = true;
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteString(sb, bodyName);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteString(sb, AtmosphericProfileExperiment.ExperimentId);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.Begin(sb, '[');
-    bool firstSubj = true;
-    foreach (var l in layers) {
-      var key = new SubjectKey(
-          AtmosphericProfileExperiment.ExperimentId, bodyName, l.name);
-      WriteSubjectEntry(sb, archive, key, l.name, sliceIndex: -1, ref firstSubj);
-    }
-    JsonWriter.End(sb, ']');
-    JsonWriter.End(sb, ']');
-  }
-
-  private static void WriteLtsGridForBody(
-      StringBuilder sb, NovaScienceArchive archive, string bodyName, ref bool first) {
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.Begin(sb, '[');
-    bool f = true;
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteString(sb, bodyName);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteString(sb, LongTermStudyExperiment.ExperimentId);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.Begin(sb, '[');
-    bool firstSubj = true;
-    foreach (var (situation, slice) in
-             LongTermStudyExperiment.AllSubjectsFor(bodyName)) {
-      var key = new SubjectKey(
-          LongTermStudyExperiment.ExperimentId,
-          bodyName, situation.ToString(), slice);
-      WriteSubjectEntry(sb, archive, key, situation.ToString(),
-                        sliceIndex: slice, ref firstSubj);
-    }
-    JsonWriter.End(sb, ']');
-    JsonWriter.End(sb, ']');
-  }
-
-  private static void WriteSubjectEntry(
-      StringBuilder sb, NovaScienceArchive archive, SubjectKey key,
-      string variant, int sliceIndex, ref bool first) {
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.Begin(sb, '[');
-    bool f = true;
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteString(sb, variant);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteDouble(sb, sliceIndex);
-
-    double fidelity = 0;
-    double receivedAt = 0;
-    string sourceVessel = "";
-    if (archive.TryGet(key.ToString(), out var record)
-        && record != null && record.File != null) {
-      fidelity     = record.File.Fidelity;
-      receivedAt   = record.ReceivedAtUt;
-      sourceVessel = record.SourceVesselName ?? "";
-    }
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteDouble(sb, fidelity);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteDouble(sb, receivedAt);
-    JsonWriter.Sep(sb, ref f);
-    JsonWriter.WriteString(sb, sourceVessel);
-    JsonWriter.End(sb, ']');
-  }
 }

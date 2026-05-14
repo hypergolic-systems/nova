@@ -23,6 +23,10 @@ public class ScienceTransmissionSystemTests {
     public void Receive(ScienceFile file, uint vesselId, string vesselName, double ut) {
       Received.Add((file, vesselId, vesselName, ut));
     }
+    public bool TryGet(string subjectId, out ArchivedScienceRecord record) {
+      record = null;
+      return false;
+    }
   }
 
   private static Antenna FlatAntenna(double maxRate = 1000) => new() {

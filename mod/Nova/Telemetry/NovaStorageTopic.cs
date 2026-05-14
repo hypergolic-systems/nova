@@ -5,6 +5,7 @@ using Dragonglass.Telemetry.Topics;
 using Nova.Components;
 using Nova.Core.Components.Science;
 using Nova.Core.Persistence.Protos;
+using Nova.Core.Telemetry;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -68,55 +69,7 @@ public sealed class NovaStorageTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteUintAsString(sb, _part.persistentId);
-
-    var storage = ResolveStorage();
-
-    long displayed = storage?.DisplayedBytes ?? 0;
-    long capacity  = storage?.CapacityBytes  ?? 0;
-    int  count     = storage?.Files.Count    ?? 0;
-
-    WriteNum(sb, displayed, ref first);
-    WriteNum(sb, capacity,  ref first);
-    WriteNum(sb, count,     ref first);
-
-    // Inline file list. Typical storages hold tens of files; the 10 Hz
-    // cadence keeps bandwidth modest. Interpolated files recompute
-    // fidelity from `now` against start/end UT so the UI sees a
-    // live-climbing value.
-    double simNow = Planetarium.GetUniversalTime();
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.Begin(sb, '[');
-    bool firstFile = true;
-    if (storage != null) {
-      foreach (var file in storage.Files) {
-        JsonWriter.Sep(sb, ref firstFile);
-        JsonWriter.Begin(sb, '[');
-        bool ff = true;
-        JsonWriter.Sep(sb, ref ff);
-        JsonWriter.WriteString(sb, file.SubjectId ?? "");
-        JsonWriter.Sep(sb, ref ff);
-        JsonWriter.WriteString(sb, file.ExperimentId ?? "");
-        double liveFidelity = ComputeLiveFidelity(file, simNow);
-        WriteNum(sb, liveFidelity, ref ff);
-        WriteNum(sb, file.ProducedAt, ref ff);
-        JsonWriter.Sep(sb, ref ff);
-        JsonWriter.WriteString(sb, file.Instrument ?? "");
-        WriteNum(sb, file.RecordedMinAltM, ref ff);
-        WriteNum(sb, file.RecordedMaxAltM, ref ff);
-        WriteNum(sb, file.StartUt, ref ff);
-        WriteNum(sb, file.EndUt, ref ff);
-        WriteNum(sb, file.SliceDurationSeconds, ref ff);
-        JsonWriter.End(sb, ']');
-      }
-    }
-    JsonWriter.End(sb, ']');
-
-    JsonWriter.End(sb, ']');
+    StorageFormatter.Write(sb, _part.persistentId, ResolveStorage(), Planetarium.GetUniversalTime());
   }
 
   private DataStorage ResolveStorage() {
@@ -134,20 +87,4 @@ public sealed class NovaStorageTopic : Topic {
       .FirstOrDefault();
   }
 
-  // Direct-measurement files store their fidelity directly (updated
-  // every tick by the experiment). Interpolated files derive fidelity
-  // from start/end UT against now, so save-cli / unloaded vessels /
-  // closed-tab UIs see the same value.
-  private static double ComputeLiveFidelity(ScienceFile file, double nowUT) {
-    if (file.SliceDurationSeconds > 0) {
-      double covered = System.Math.Min(nowUT, file.EndUt) - file.StartUt;
-      return System.Math.Min(1.0, System.Math.Max(0.0, covered / file.SliceDurationSeconds));
-    }
-    return file.Fidelity;
-  }
-
-  private static void WriteNum(StringBuilder sb, double value, ref bool first) {
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, value);
-  }
 }

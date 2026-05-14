@@ -1,5 +1,6 @@
 using System.Text;
 using Dragonglass.Telemetry.Topics;
+using Nova.Core.Telemetry;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -67,12 +68,9 @@ public sealed class NovaTimewarpTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _cachedRate);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, _cachedMode == TimeWarp.Modes.HIGH ? "rails" : "physics");
-    JsonWriter.End(sb, ']');
+    var mode = _cachedMode == TimeWarp.Modes.HIGH
+        ? TimewarpFormatter.ModeRails
+        : TimewarpFormatter.ModePhysics;
+    TimewarpFormatter.Write(sb, _cachedRate, mode);
   }
 }

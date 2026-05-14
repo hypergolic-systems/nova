@@ -1,5 +1,6 @@
 using System.Text;
 using Dragonglass.Telemetry.Topics;
+using Nova.Core.Telemetry;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -56,15 +57,7 @@ public sealed class NovaOrbitTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, _vesselGuid);
-
     var bodyName = _vessel.mainBody != null ? (_vessel.mainBody.bodyName ?? "") : "";
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, bodyName);
 
     double apA = 0, peA = 0, ecc = 0, inc = 0, period = 0;
     var orbit = _vessel.orbitDriver != null ? _vessel.orbitDriver.orbit : null;
@@ -76,22 +69,8 @@ public sealed class NovaOrbitTopic : Topic {
       period = ecc < 1.0 ? orbit.period : 0.0;
     }
 
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, apA);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, peA);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, ecc);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, inc);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, period);
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _vessel.missionTime);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _vessel.launchTime);
-
-    JsonWriter.End(sb, ']');
+    OrbitFormatter.Write(sb, _vesselGuid, bodyName,
+        apA, peA, ecc, inc, period,
+        _vessel.missionTime, _vessel.launchTime);
   }
 }

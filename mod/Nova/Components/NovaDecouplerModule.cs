@@ -56,6 +56,14 @@ public class NovaDecouplerModule : NovaPartModule, IStageSeparator, IStageSepara
     if (part.stagingIcon == string.Empty) {
       part.stagingIcon = explosiveNodeID == "srf" ? "DECOUPLER_HOR" : "DECOUPLER_VERT";
     }
+
+    // Mirror the KSP-side design fields onto the Core component so
+    // telemetry formatters in Nova.Core can render the per-decoupler
+    // popover without reaching back into the mod-side module.
+    if (decoupler != null) {
+      decoupler.EjectionForce = ejectionForce;
+      decoupler.CanFullSeparate = CanFullSeparate;
+    }
   }
 
   public override void OnActive() {

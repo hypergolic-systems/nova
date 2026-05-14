@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Dragonglass.Telemetry.Topics;
+using Nova.Core.Telemetry;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -74,8 +75,6 @@ public sealed class NovaSceneTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    sb.Append('[');
-    JsonWriter.WriteString(sb, _virtualScene);
-    sb.Append(']');
+    SceneFormatter.Write(sb, _virtualScene);
   }
 }

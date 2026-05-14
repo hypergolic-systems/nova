@@ -3,6 +3,7 @@ using System.Text;
 using Dragonglass.Telemetry.Topics;
 using Nova.Components;
 using Nova.Core.Components;
+using Nova.Core.Telemetry;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -75,55 +76,22 @@ public sealed class NovaVesselStructureTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, _vesselGuid);
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, _vessel.GetDisplayName() ?? _vessel.vesselName ?? "");
-
-    JsonWriter.Sep(sb, ref first);
-    WriteParts(sb);
-
-    JsonWriter.End(sb, ']');
+    var name = _vessel.GetDisplayName() ?? _vessel.vesselName ?? "";
+    VesselStructureFormatter.Write(sb, _vesselGuid, name, EnumerateParts());
   }
 
-  private void WriteParts(StringBuilder sb) {
-    JsonWriter.Begin(sb, '[');
-    if (_vesselModule == null || _vesselModule.Virtual == null) {
-      JsonWriter.End(sb, ']');
-      return;
-    }
+  private IEnumerable<VesselStructureFormatter.PartEntry> EnumerateParts() {
+    if (_vesselModule == null || _vesselModule.Virtual == null) yield break;
     var virt = _vesselModule.Virtual;
-
-    bool firstPart = true;
     foreach (var partId in virt.AllPartIds()) {
-      JsonWriter.Sep(sb, ref firstPart);
-      WritePart(sb, virt, partId);
+      var internalName = virt.GetPartName(partId) ?? "";
+      yield return new VesselStructureFormatter.PartEntry {
+        PartId = partId,
+        InternalName = internalName,
+        DisplayTitle = ResolveTitle(partId, internalName),
+        ParentId = virt.GetPartParent(partId),
+      };
     }
-    JsonWriter.End(sb, ']');
-  }
-
-  private static void WritePart(StringBuilder sb, VirtualVessel virt, uint partId) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteUintAsString(sb, partId);
-
-    var internalName = virt.GetPartName(partId) ?? "";
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, internalName);
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, ResolveTitle(partId, internalName));
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteNullableUintAsString(sb, virt.GetPartParent(partId));
-
-    JsonWriter.End(sb, ']');
   }
 
   // Pull the player-facing display title from the live KSP Part (its

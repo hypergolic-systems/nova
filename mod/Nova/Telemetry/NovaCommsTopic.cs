@@ -3,6 +3,7 @@ using Dragonglass.Telemetry.Topics;
 using Nova.Communications;
 using Nova.Components;
 using Nova.Core.Communications;
+using Nova.Core.Telemetry;
 using UnityEngine;
 
 namespace Nova.Telemetry;
@@ -169,36 +170,10 @@ public sealed class NovaCommsTopic : Topic {
   }
 
   public override void WriteData(StringBuilder sb) {
-    JsonWriter.Begin(sb, '[');
-    bool first = true;
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, _vesselGuid);
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteBoolAsBit(sb, _hasPath);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _bottleneckBps);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _directSnr);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _directRateBps);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _directMaxRateBps);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _directSnrFloor);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteString(sb, _peerLabel ?? "");
-
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteBoolAsBit(sb, _txActive);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _txRateBps);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _txDelivered);
-    JsonWriter.Sep(sb, ref first);
-    JsonWriter.WriteDouble(sb, _txTotal);
-
-    JsonWriter.End(sb, ']');
+    CommsFormatter.Write(sb, _vesselGuid,
+        _hasPath, _bottleneckBps,
+        _directSnr, _directRateBps, _directMaxRateBps,
+        _directSnrFloor, _peerLabel,
+        _txActive, _txRateBps, _txDelivered, _txTotal);
   }
 }

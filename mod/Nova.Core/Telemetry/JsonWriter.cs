@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Nova.Telemetry;
+namespace Nova.Core.Telemetry;
 
 // Tiny positional-array JSON writer for Nova's telemetry topics.
 // Wire payloads are nested arrays of numbers, strings, and small
@@ -12,9 +12,6 @@ namespace Nova.Telemetry;
 // in the output: callers should encode "absent" as `null` literal
 // only when the schema explicitly allows it (parent id of root part).
 public static class JsonWriter {
-  // Group helpers — writers track comma-separation themselves via the
-  // `first` ref bool so callers stay readable.
-
   public static void Begin(StringBuilder sb, char open) {
     sb.Append(open);
   }
@@ -80,6 +77,18 @@ public static class JsonWriter {
       return;
     }
     sb.Append(value.ToString("G17", CultureInfo.InvariantCulture));
+  }
+
+  public static void WriteFloat(StringBuilder sb, float value) {
+    if (float.IsNaN(value) || float.IsInfinity(value)) {
+      sb.Append("0");
+      return;
+    }
+    sb.Append(value.ToString("R", CultureInfo.InvariantCulture));
+  }
+
+  public static void WriteLong(StringBuilder sb, long value) {
+    sb.Append(value.ToString(CultureInfo.InvariantCulture));
   }
 
   public static void WriteBoolAsBit(StringBuilder sb, bool value) {

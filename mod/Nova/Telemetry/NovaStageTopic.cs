@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using Dragonglass.Telemetry.Topics;
 using KSP.UI.Screens;
 using Nova.Components;
@@ -6,6 +7,9 @@ using Nova.Core.Components;
 using Nova.Core.Components.Propulsion;
 using Nova.Core.Resources;
 using UnityEngine;
+using NovaStageFrame = Nova.Core.Telemetry.StageFrame;
+using NovaStagePartFrame = Nova.Core.Telemetry.StagePartFrame;
+using NovaStageFormatter = Nova.Core.Telemetry.StageFrameFormatter;
 
 namespace Nova.Telemetry;
 
@@ -48,6 +52,12 @@ public sealed class NovaStageTopic : StageTopic {
   private Vessel _cachedVessel;
   private bool _editorDirty = true;
 
+  // Nova-owned wire cache. CollectStageScalars rebuilds these alongside
+  // the DG-typed `_cached` scalars; WriteData reads from them.
+  private readonly List<NovaStageFrame> _novaFrames = new();
+  private string _novaVesselId = "";
+  private int _novaCurrentStage = -1;
+
   protected override void OnEnable() {
     base.OnEnable();
     GameEvents.onEditorShipModified.Add(OnEditorShipModified);
@@ -82,6 +92,10 @@ public sealed class NovaStageTopic : StageTopic {
       _cachedAt = now;
     }
 
+    _novaVesselId = v.id.ToString("D");
+    _novaCurrentStage = v.currentStage;
+    RebuildNovaFrames(v.Parts);
+
     for (int i = 0; i < _cached.Count; i++) scratch.Add(_cached[i]);
   }
 
@@ -93,7 +107,138 @@ public sealed class NovaStageTopic : StageTopic {
       _cachedVessel = null;
       _cachedAt = now;
     }
+    _novaVesselId = "editor";
+    _novaCurrentStage = -1;
+    var ship = EditorLogic.fetch?.ship;
+    RebuildNovaFrames(ship?.parts);
     for (int i = 0; i < _cached.Count; i++) scratch.Add(_cached[i]);
+  }
+
+  // Nova-owned wire emission. The DG base's WriteData reads its own
+  // private `_stages`; we override here to emit from our own cache
+  // through the shared Nova.Core formatter. HandleOp is *not*
+  // overridden — DG owns the inbound stage-edit ops (movePart,
+  // moveStage, setHighlightParts, …) and those keep working.
+  public override void WriteData(StringBuilder sb) {
+    NovaStageFormatter.Write(sb, _novaVesselId, _novaCurrentStage, _novaFrames);
+  }
+
+  // Combine the cached scalars with a parts-by-stage bucketing of the
+  // live parts list to produce the Nova-owned StageFrame[]. The
+  // bucketing logic mirrors stock DG StageTopic.BuildPartsByStage so
+  // the wire shape stays identical to what DG would emit. Sim-side
+  // bucketing is different (no KSP modules), but the resulting frame
+  // shape is the same.
+  private void RebuildNovaFrames(IList<Part> parts) {
+    _novaFrames.Clear();
+    var partsByStage = parts != null ? BuildPartsByStage(parts) : null;
+
+    for (int i = 0; i < _cached.Count; i++) {
+      var sc = _cached[i];
+      var sf = new NovaStageFrame {
+        Stage = sc.Stage,
+        DeltaVActual = sc.DeltaVActual,
+        TwrActual = sc.TwrActual,
+      };
+      if (partsByStage != null && partsByStage.TryGetValue(sc.Stage, out var bucket)) {
+        sf.Parts = bucket;
+      }
+      _novaFrames.Add(sf);
+    }
+  }
+
+  // Build a stage→parts dictionary for the vessel's icon-worthy parts,
+  // pre-sorted into presentation order (kind priority, then
+  // persistentId ascending). Lifted from
+  // `Dragonglass.Telemetry.Topics.StageTopic.BuildPartsByStage`;
+  // duplicated here so Nova owns the bytes on the wire end-to-end.
+  // Symmetry dedupe: representative is the cousin with the smallest
+  // persistentId among cousins sharing the same stage; the others ride
+  // in `CousinsInStage`.
+  private static Dictionary<int, List<NovaStagePartFrame>> BuildPartsByStage(IList<Part> parts) {
+    var byStage = new Dictionary<int, List<NovaStagePartFrame>>();
+    for (int i = 0; i < parts.Count; i++) {
+      Part p = parts[i];
+      if (p == null) continue;
+      if (!p.hasStagingIcon) continue;
+      if (!p.stagingOn) continue;
+      if (!IsRepresentativeForStage(p)) continue;
+      List<string> cousins = BuildCousinsInStage(p);
+
+      if (!byStage.TryGetValue(p.inverseStage, out var bucket)) {
+        bucket = new List<NovaStagePartFrame>();
+        byStage[p.inverseStage] = bucket;
+      }
+      bucket.Add(new NovaStagePartFrame {
+        Kind = ClassifyKind(p),
+        PersistentId = p.persistentId.ToString(),
+        IconName = p.stagingIcon,
+        CousinsInStage = cousins,
+      });
+    }
+    foreach (var bucket in byStage.Values) bucket.Sort(ComparePresentation);
+    return byStage;
+  }
+
+  private static bool IsRepresentativeForStage(Part p) {
+    var cousins = p.symmetryCounterparts;
+    if (cousins == null || cousins.Count == 0) return true;
+    uint minId = p.persistentId;
+    int stage = p.inverseStage;
+    for (int i = 0; i < cousins.Count; i++) {
+      var c = cousins[i];
+      if (c == null) continue;
+      if (c.inverseStage != stage) continue;
+      if (c.persistentId < minId) return false;
+    }
+    return true;
+  }
+
+  private static List<string> BuildCousinsInStage(Part p) {
+    var cousins = p.symmetryCounterparts;
+    if (cousins == null || cousins.Count == 0) return _emptyCousins;
+    int stage = p.inverseStage;
+    var ids = new List<uint>();
+    for (int i = 0; i < cousins.Count; i++) {
+      var c = cousins[i];
+      if (c == null) continue;
+      if (c.inverseStage != stage) continue;
+      ids.Add(c.persistentId);
+    }
+    if (ids.Count == 0) return _emptyCousins;
+    ids.Sort();
+    var result = new List<string>(ids.Count);
+    for (int i = 0; i < ids.Count; i++) result.Add(ids[i].ToString());
+    return result;
+  }
+
+  private static readonly List<string> _emptyCousins = new(0);
+
+  private static int KindPriority(string kind) {
+    if (kind == NovaStageFormatter.KindDecoupler) return 0;
+    if (kind == NovaStageFormatter.KindEngine)    return 1;
+    if (kind == NovaStageFormatter.KindParachute) return 2;
+    if (kind == NovaStageFormatter.KindClamp)     return 3;
+    return 4;
+  }
+
+  private static int ComparePresentation(NovaStagePartFrame a, NovaStagePartFrame b) {
+    int pa = KindPriority(a.Kind);
+    int pb = KindPriority(b.Kind);
+    if (pa != pb) return pa - pb;
+    ulong.TryParse(a.PersistentId, out var ia);
+    ulong.TryParse(b.PersistentId, out var ib);
+    return ia < ib ? -1 : (ia > ib ? 1 : 0);
+  }
+
+  private static string ClassifyKind(Part p) {
+    if (p.FindModuleImplementing<ModuleEngines>() != null) return NovaStageFormatter.KindEngine;
+    if (p.FindModuleImplementing<ModuleDecouplerBase>() != null) return NovaStageFormatter.KindDecoupler;
+    if (p.FindModuleImplementing<ModuleParachute>() != null) return NovaStageFormatter.KindParachute;
+    if (p.FindModuleImplementing<LaunchClamp>() != null) return NovaStageFormatter.KindClamp;
+    var dock = p.FindModuleImplementing<ModuleDockingNode>();
+    if (dock != null && dock.StagingEnabled()) return NovaStageFormatter.KindDecoupler;
+    return NovaStageFormatter.KindOther;
   }
 
   private void RecomputeFlight(Vessel v) {
