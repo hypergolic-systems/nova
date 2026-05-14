@@ -25,8 +25,14 @@ target/
 # macOS
 .DS_Store
 
-# Claude
-.claude/
+# Claude — per-developer config (settings, history) stays ignored,
+# but `.claude/skills/` is part of the repo so CLAUDE.md can point at
+# project-shared skill files. (Listing `.claude/*` rather than
+# `.claude/` so the `!skills/` re-include works — git's gitignore
+# logic short-circuits descent into a flatly-ignored directory.)
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # Release staging
 release/

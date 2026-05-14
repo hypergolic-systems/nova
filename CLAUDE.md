@@ -191,6 +191,18 @@ just run -- eval <expression>
 
 Don't add bridge/CLI commands inside Nova — they live in kspcli.
 
+## Headless simulator
+
+`mod/Nova.Sim/` builds a console binary that hosts `Nova.Core` outside KSP. It loads a `.nvc` / `.nvs` proto file, runs the same `VirtualVessel` tick loop the in-game `NovaVesselModule` drives, and exposes Dragonglass-compatible telemetry over WebSocket plus kspcli-style C# eval over UDP. The Vite UI dev server can talk to it byte-for-byte the same as it talks to in-game Dragonglass — so UI iteration drops from "rebuild + restart KSP + load save" minutes to "vite HMR" seconds, and component / solver changes show up in the wire without round-tripping through the game.
+
+```
+just sim-build
+just sim-run -- --ksp-path ~/KSP_osx --save ~/KSP_osx/saves/default/persistent.nvs
+# ws://0.0.0.0:9887 (telemetry), udp://127.0.0.1:9886 (eval)
+```
+
+Defaults are picked to coexist with a running KSP — `8787` (Dragonglass in-game WS) and `9876` (kspcli UDP) are both untouched. See the [`nova-simulator`](.claude/skills/nova-simulator/SKILL.md) skill for the full reference: flags, topic-emission catalogue, UDP eval handles, UI dev workflow, what's *not* simulated (no flight integrator, no atmosphere model, no in-game UI ops yet).
+
 ## save-cli (Rust)
 
 `crates/save-cli/` produces the `nova-save-cli` binary — a stand-alone inspector for the binary `.nvs` / `.nvc` files Nova writes. It auto-detects file type from the HGS magic-byte header and prints the decoded proto tree to stdout.
