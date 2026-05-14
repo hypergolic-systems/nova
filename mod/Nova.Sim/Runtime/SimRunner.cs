@@ -25,6 +25,13 @@ public sealed class SimRunner {
   public double MissionTime { get; private set; }
   public double LaunchTime { get; private set; }
   public double WarpFactor { get; set; } = 1.0;
+  // Editor mode: load a craft and freeze its state. Ops mutate
+  // components directly; no Vessel.Tick runs, so no LP solve, no
+  // boiloff, no battery drain — what you see is the prefab loadout
+  // until the player changes it. Mirrors the in-game VAB/SPH, where
+  // PartModule.Components is populated from prefab config and no
+  // NovaVesselModule.Virtual exists.
+  public bool Editor { get; set; }
   public readonly object Lock = new object();
 
   private const double TickIntervalSec = 1.0 / 60.0;
@@ -68,19 +75,20 @@ public sealed class SimRunner {
       // per tick before warp.
       if (wallDt > 0.5) wallDt = 0.5;
 
-      double simDt = wallDt * WarpFactor;
-      double target;
-      lock (Lock) {
-        SimUt += simDt;
-        MissionTime += simDt;
-        target = SimUt;
-        try {
-          Vessel.Tick(target);
-        } catch (Exception ex) {
-          // Sim-side: log + continue. Bad ticks shouldn't kill the
-          // background loop because the UI is still rendering on the
-          // last good snapshot.
-          Console.Error.WriteLine("[sim] tick error at UT=" + target + ": " + ex);
+      if (!Editor) {
+        double simDt = wallDt * WarpFactor;
+        lock (Lock) {
+          SimUt += simDt;
+          MissionTime += simDt;
+          double target = SimUt;
+          try {
+            Vessel.Tick(target);
+          } catch (Exception ex) {
+            // Sim-side: log + continue. Bad ticks shouldn't kill the
+            // background loop because the UI is still rendering on the
+            // last good snapshot.
+            Console.Error.WriteLine("[sim] tick error at UT=" + target + ": " + ex);
+          }
         }
       }
 

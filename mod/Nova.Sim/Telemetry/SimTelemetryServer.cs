@@ -41,6 +41,7 @@ public sealed class SimTelemetryServer : IDisposable {
   private readonly int _port;
   private readonly SimRunner _runner;
   private readonly PartDatabase _partDb;
+  private readonly bool _isEditor;
   private WebSocketServer _server;
   private Timer _publishTimer;
 
@@ -52,10 +53,11 @@ public sealed class SimTelemetryServer : IDisposable {
     public readonly HashSet<string> Subscriptions = new HashSet<string>();
   }
 
-  public SimTelemetryServer(int port, SimRunner runner, PartDatabase partDb) {
+  public SimTelemetryServer(int port, SimRunner runner, PartDatabase partDb, bool isEditor) {
     _port = port;
     _runner = runner;
     _partDb = partDb;
+    _isEditor = isEditor;
   }
 
   public void Start() {
@@ -177,6 +179,12 @@ public sealed class SimTelemetryServer : IDisposable {
       return true;
     }
     if (topic == "flight") {
+      // Editor scene has no FlightGlobals — the in-game mod doesn't
+      // emit `flight` here either. UI's useFlight() readers don't
+      // subscribe in EditorHud, but suppress emission anyway so a
+      // stray subscribe gets a clean silent ignore (frame absent →
+      // useFlight().vesselId stays empty).
+      if (_isEditor) return false;
       // DG's `flight` topic: vessel state for navball + readouts.
       // Sim emits the bare minimum — `vesselId` is what every
       // useFlight()-reading component keys on for "is there an
@@ -199,16 +207,22 @@ public sealed class SimTelemetryServer : IDisposable {
     }
     if (topic == "game") {
       // DG's `game` singleton: [scene, activeVesselGuid|null, timewarpRate, mapActive].
-      // The sim is always "in flight" from the UI's perspective — the
-      // Hud router needs scene="FLIGHT" to route to FlightHud.
+      // The Hud router keys on scene to mount FlightHud / EditorHud.
+      // In editor mode, in-game KSP reports activeVesselId=null because
+      // FlightGlobals.fetch isn't live in VAB/SPH; we mirror that so
+      // the editor UI doesn't see a phantom flight vessel.
       sb.Append('[');
-      JsonWriter.WriteString(sb, "FLIGHT");
-      sb.Append(',');
-      JsonWriter.WriteString(sb, _runner.VesselGuid);
-      sb.Append(',');
-      JsonWriter.WriteDouble(sb, _runner.WarpFactor);
-      sb.Append(',');
-      sb.Append("false");
+      if (_isEditor) {
+        JsonWriter.WriteString(sb, "EDITOR");
+        sb.Append(",null,1,false");
+      } else {
+        JsonWriter.WriteString(sb, "FLIGHT");
+        sb.Append(',');
+        JsonWriter.WriteString(sb, _runner.VesselGuid);
+        sb.Append(',');
+        JsonWriter.WriteDouble(sb, _runner.WarpFactor);
+        sb.Append(",false");
+      }
       sb.Append(']');
       return true;
     }
@@ -230,7 +244,15 @@ public sealed class SimTelemetryServer : IDisposable {
       return true;
     }
     if (TryPrefix(topic, "NovaVesselStructure/", out _)) {
-      WriteVesselStructureFrame(sb);
+      WriteVesselStructureFrame(sb, shipIdOverride: null);
+      return true;
+    }
+    if (topic == "NovaEditorShipStructure/editor") {
+      // Editor-side singleton. The in-game mod publishes this with a
+      // fixed shipId="editor" (NovaEditorShipStructureTopic.cs:34);
+      // we mirror that so the editor UI's hook keys match. Same
+      // formatter, different first field.
+      WriteVesselStructureFrame(sb, shipIdOverride: "editor");
       return true;
     }
     if (TryPrefix(topic, "NovaPart/", out var partIdStr)) {
@@ -262,8 +284,6 @@ public sealed class SimTelemetryServer : IDisposable {
       WriteStageFrame(sb);
       return true;
     }
-    // NovaEditorShipStructure: sim has no editor scene; silently skip.
-
     return false;
   }
 
@@ -302,12 +322,12 @@ public sealed class SimTelemetryServer : IDisposable {
         txActive: false, txRateBps: 0, txDeliveredBytes: 0, txTotalBytes: 0);
   }
 
-  private void WriteVesselStructureFrame(StringBuilder sb) {
+  private void WriteVesselStructureFrame(StringBuilder sb, string shipIdOverride) {
     List<VesselStructureFormatter.PartEntry> parts;
-    string name, guid;
+    string name, id;
     lock (_runner.Lock) {
       name = _runner.VesselName;
-      guid = _runner.VesselGuid;
+      id = shipIdOverride ?? _runner.VesselGuid;
       var virt = _runner.Vessel;
       parts = new List<VesselStructureFormatter.PartEntry>();
       foreach (var partId in virt.AllPartIds()) {
@@ -321,7 +341,7 @@ public sealed class SimTelemetryServer : IDisposable {
         });
       }
     }
-    VesselStructureFormatter.Write(sb, guid, name, parts);
+    VesselStructureFormatter.Write(sb, id, name, parts);
   }
 
   private string ResolveTitle(string internalName) {

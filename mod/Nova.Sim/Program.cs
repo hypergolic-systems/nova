@@ -88,15 +88,22 @@ public static class Program {
     }
     Console.WriteLine("[load] vessel '" + load.VesselName + "' (" + load.VesselGuid + ") at UT=" + load.UniversalTime);
 
+    // --craft loads a single VAB/SPH design and stays static (no LP
+    // solve, no boiloff). --save runs the LP and advances UT. The flag
+    // gates both the runner's tick body and the telemetry server's
+    // scene emission so the UI mounts EditorHud vs FlightHud.
+    bool isEditor = !string.IsNullOrEmpty(options.CraftPath);
+
     var context = new SimVesselContext();
     var runner = new SimRunner(load.Vessel, context,
         load.VesselName, load.VesselGuid,
         load.UniversalTime, load.MissionTime, load.LaunchTime) {
       WarpFactor = options.Warp,
+      Editor = isEditor,
     };
     runner.Start();
 
-    var ws = new SimTelemetryServer(options.WsPort, runner, partDb);
+    var ws = new SimTelemetryServer(options.WsPort, runner, partDb, isEditor);
     ws.Start();
 
     var udp = new UdpEvalServer(options.UdpPort);
