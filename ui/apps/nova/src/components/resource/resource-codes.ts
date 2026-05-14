@@ -75,6 +75,18 @@ const HYDROGEN: ResourceMeta = {
   tint: 'rgba(122, 184, 255, 0.08)',
 };
 
+const METHANE: ResourceMeta = {
+  // Methane (LCH4) — mint teal. Sits between LH2 (cold cryo, ice blue)
+  // and EC (vital signs, accent green) in temperature and palette; not
+  // close enough to either to confuse a glance.
+  code: 'CH4',
+  unit: 'L',
+  rateUnit: 'L/s',
+  color: '#7de8c8',
+  glow: 'rgba(125, 232, 200, 0.45)',
+  tint: 'rgba(125, 232, 200, 0.08)',
+};
+
 const HYPERGOL: ResourceMeta = {
   // Hydrazine / MonoPropellant — magenta-pink, "exotic".
   code: 'N2H4',
@@ -112,6 +124,7 @@ const META: Record<string, ResourceMeta> = {
   'Electric Charge': ELECTRIC,
   'Liquid Hydrogen': HYDROGEN,
   'Liquid Oxygen': { ...OXIDIZER, code: 'LOX' },
+  'Methane': METHANE,
   'RP-1': { ...FUEL, code: 'RP1' },
   'Hydrazine': HYPERGOL,
   'Xenon': XENON,

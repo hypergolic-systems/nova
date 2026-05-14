@@ -53,6 +53,7 @@
   const DENSITY: Record<string, number> = {
     'Liquid Hydrogen': 0.07,
     'Liquid Oxygen':   1.20,
+    'Methane':         0.42,
     'RP-1':            0.80,
     'Hydrazine':       1.00,
     'Xenon':           2.00,
@@ -68,6 +69,7 @@
     'Hydrazine',
     'Liquid Hydrogen',
     'Liquid Oxygen',
+    'Methane',
     'RP-1',
     'Xenon',
   ];
