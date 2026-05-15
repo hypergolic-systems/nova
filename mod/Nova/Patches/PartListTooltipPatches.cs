@@ -1,4 +1,5 @@
 using HarmonyLib;
+using KSP.UI;
 using KSP.UI.Screens;
 using KSP.UI.Screens.Editor;
 using Nova.Telemetry;
@@ -55,12 +56,24 @@ internal static class PartListTooltipController_OnPointerEnter_Patch {
   }
 }
 
-[HarmonyPatch(typeof(PartListTooltipController), nameof(PartListTooltipController.OnPointerExit))]
-internal static class PartListTooltipController_OnPointerExit_Patch {
+// `PartListTooltipController` does NOT override `OnPointerExit` —
+// only `OnPointerEnter` and `OnPointerClick`. The exit handler is
+// inherited from `PinnableTooltipController`, so targeting it through
+// the derived type would silently re-resolve to the base method and
+// affect every pinnable tooltip in KSP (navball, action group editor,
+// etc.). Patch the base class explicitly and gate on instance type.
+//
+// Returning `true` so stock's despawn path still runs for non-parts-list
+// callers. For parts-list controllers, stock's despawn is a no-op since
+// the spawn was suppressed by the OnPointerEnter prefix above — so
+// letting it run costs nothing.
+[HarmonyPatch(typeof(PinnableTooltipController), nameof(PinnableTooltipController.OnPointerExit))]
+internal static class PinnableTooltipController_OnPointerExit_Patch {
   [HarmonyPrefix]
-  static bool Prefix() {
-    NovaPartInfoTopic.ClearHover();
-    return false; // skip stock unspawn / pin path
+  static void Prefix(PinnableTooltipController __instance) {
+    if (__instance is PartListTooltipController) {
+      NovaPartInfoTopic.ClearHover();
+    }
   }
 }
 

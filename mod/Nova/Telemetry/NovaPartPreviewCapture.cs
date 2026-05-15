@@ -63,6 +63,10 @@ public class NovaPartPreviewCapture : MonoBehaviour {
   private float _yaw;
   private int _layerId;
   private bool _started;
+  // Push diagnostics: log once per active-part on the 1st and 60th push
+  // so we can see in KSP.log whether the capture pipeline is running
+  // and reaching the native plugin without spamming every frame.
+  private int _pushCount;
 
   void Awake() {
     Instance = this;
@@ -76,22 +80,28 @@ public class NovaPartPreviewCapture : MonoBehaviour {
     _layerId = LayerMask.NameToLayer("UIAdditional");
     if (_layerId < 0) _layerId = LayerMask.NameToLayer("UI");
     if (_layerId < 0) {
-      Debug.LogWarning(LogPrefix + "Neither UIAdditional nor UI layer present; preview disabled");
+      Debug.LogWarning(LogPrefix + "neither UIAdditional nor UI layer present; preview disabled");
       enabled = false;
       return;
     }
 
+    // Camera config copied verbatim from stock's PartListTooltipMaster
+    // Controller.CreateThumbnailCamera (~/dev/ksp-reference). Same
+    // orthographicSize, same far clip, same off-world position, same
+    // allowHDR=false. Stock uses the editor scene's existing
+    // directional lights for shading; they're infinite-range, so an
+    // off-world camera still picks them up.
     var camHost = new GameObject("NovaPartPreviewCamera");
     camHost.transform.position = new Vector3(0f, -2000f, -300f);
     DontDestroyOnLoad(camHost);
     _camera = camHost.AddComponent<Camera>();
     _camera.orthographic     = true;
     _camera.orthographicSize = 34f;
-    _camera.nearClipPlane    = 0.1f;
     _camera.farClipPlane     = 295f;
     _camera.cullingMask      = 1 << _layerId;
     _camera.clearFlags       = CameraClearFlags.Color;
     _camera.backgroundColor  = new Color(0f, 0f, 0f, 0f); // transparent — keeps slot edges clean
+    _camera.allowHDR         = false;
     _camera.enabled          = false;                     // manual Render only
 
     _rt = new RenderTexture(Size, Size, 24, RenderTextureFormat.ARGB32);
@@ -100,6 +110,8 @@ public class NovaPartPreviewCapture : MonoBehaviour {
 
     _readback = new Texture2D(Size, Size, TextureFormat.RGBA32, mipChain: false, linear: false);
     _started = true;
+    Debug.Log(LogPrefix + "started; layer=" + LayerMask.LayerToName(_layerId)
+        + " size=" + Size + " idHash=0x" + StreamIdHash.ToString("x8"));
   }
 
   /// <summary>
@@ -107,7 +119,14 @@ public class NovaPartPreviewCapture : MonoBehaviour {
   /// preview stream. Replaces any previously active part.
   /// </summary>
   public void SetActivePart(AvailablePart ap) {
-    if (!_started || ap == null || ap.iconPrefab == null) return;
+    if (!_started) {
+      Debug.LogWarning(LogPrefix + "SetActivePart called before Start completed");
+      return;
+    }
+    if (ap == null || ap.iconPrefab == null) {
+      Debug.LogWarning(LogPrefix + "SetActivePart: no iconPrefab for " + (ap?.name ?? "<null>"));
+      return;
+    }
     DestroyClone();
     var clone = Instantiate(ap.iconPrefab);
     clone.name = "NovaPartPreview." + ap.name;
@@ -118,6 +137,8 @@ public class NovaPartPreviewCapture : MonoBehaviour {
     clone.SetActive(true);
     _clone = clone;
     _yaw = 0f;
+    _pushCount = 0;
+    Debug.Log(LogPrefix + "SetActivePart: " + ap.name);
   }
 
   /// <summary>
@@ -159,9 +180,16 @@ public class NovaPartPreviewCapture : MonoBehaviour {
       IntPtr ptr = (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(raw);
       try {
         DgHudNative_PushStreamFrame(StreamIdHash, Size, Size, ptr);
+        _pushCount++;
+        if (_pushCount == 1 || _pushCount == 60) {
+          Debug.Log(LogPrefix + "push #" + _pushCount + " idHash=0x"
+              + StreamIdHash.ToString("x8") + " " + Size + "x" + Size);
+        }
       } catch (DllNotFoundException) {
-        // No native plugin — disable so we don't try every frame.
         Debug.LogWarning(LogPrefix + "DgHudNative not loaded; disabling preview capture");
+        enabled = false;
+      } catch (System.Exception ex) {
+        Debug.LogWarning(LogPrefix + "push failed: " + ex.GetType().Name + " " + ex.Message);
         enabled = false;
       }
     }
