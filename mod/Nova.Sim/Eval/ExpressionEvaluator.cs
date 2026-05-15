@@ -9,11 +9,13 @@ using System.Text;
 namespace Nova.Sim.Eval {
   // Vendored from kspcli (~/dev/hgs/kspcli/mod/Eval/ExpressionEvaluator.cs).
   // Sim-side modifications:
-  //   - Namespace renamed; Proto.Value-based output replaced with
-  //     plain-text formatters returning string. The sim's UDP
-  //     transport ships UTF-8 text rather than protobuf.
-  //   - `ListRefs()` returns a List<string> of formatted entries
-  //     rather than List<Proto.RefEntry>.
+  //   - Namespace renamed.
+  //   - kspcli's `RefSummary` → `RefEntry` with a `ToString()` override;
+  //     `ListRefSummaries()` → `ListRefs()`.
+  //   - kspcli's `Current` static instance handle removed (Nova.Sim
+  //     doesn't need cross-call access to the active evaluator).
+  // The expression parser and the `Render` formatter are kept byte-identical
+  // with kspcli's so the wire bodies look the same on both targets.
 
   public sealed class RefEntry {
     public string Handle;
@@ -670,39 +672,39 @@ namespace Nova.Sim.Eval {
       }
     }
 
-    // --- Summarizer ---
+    // --- Renderer ---
     //
-    // Sim-side text formatter (replaces kspcli's Proto.Value version).
-    // Returns a one-line summary suitable for a UDP eval response;
-    // collections render up to 10 items inline.
+    // The mod replies to every eval with a plain string. Scalars (strings,
+    // primitives, enums) render compactly. Collections render as a one-line
+    // header followed by indented items (first 10). POCOs that don't override
+    // ToString — like the KspCli result types — render their public
+    // fields/properties as `{ Key=Value, ... }`. Anything else (KSP/Unity
+    // types) falls through to ToString so we preserve the existing summary
+    // behavior for `FlightGlobals.ActiveVessel` and friends.
 
-    public static string Summarize(object value) {
+    public static string Render(object value) {
       var sb = new StringBuilder();
-      SummarizeInner(sb, value, depth: 0);
+      RenderInner(sb, value, depth: 0, indent: 0);
       return sb.ToString();
     }
 
-    private static void SummarizeInner(StringBuilder sb, object value, int depth) {
+    private static void RenderInner(StringBuilder sb, object value, int depth, int indent) {
       if (value == null) { sb.Append("null"); return; }
 
       var type = value.GetType();
-      if (value is string s) { sb.Append('"').Append(Truncate(s, 200)).Append('"'); return; }
-      if (type.IsPrimitive || type.IsEnum) {
-        sb.Append(value).Append(" : ").Append(type.Name);
+      // Only the top-level value carries a `:: Type` suffix — nested values
+      // would just be noise. Strings always render quoted so empty strings
+      // and string-vs-identifier ambiguity stay visible.
+      bool tag = depth == 0;
+
+      if (value is string s) {
+        sb.Append('"').Append(Truncate(s, 200)).Append('"');
+        if (tag) sb.Append(" :: String");
         return;
       }
-
-      if (value is IList list) {
-        sb.Append(FormatTypeName(type)).Append('[').Append(list.Count).Append("] {");
-        if (depth < 1) {
-          var limit = Math.Min(list.Count, 10);
-          for (int i = 0; i < limit; i++) {
-            if (i > 0) sb.Append(", ");
-            SummarizeInner(sb, list[i], depth + 1);
-          }
-          if (list.Count > limit) sb.Append(", …");
-        }
-        sb.Append('}');
+      if (type.IsPrimitive || type.IsEnum) {
+        sb.Append(value.ToString());
+        if (tag) sb.Append(" :: ").Append(type.Name);
         return;
       }
 
@@ -713,19 +715,63 @@ namespace Nova.Sim.Eval {
           count++;
           if (items.Count < 10) items.Add(item);
         }
-        sb.Append(FormatTypeName(type)).Append('[').Append(count).Append("] {");
-        if (depth < 1) {
-          for (int i = 0; i < items.Count; i++) {
-            if (i > 0) sb.Append(", ");
-            SummarizeInner(sb, items[i], depth + 1);
-          }
-          if (count > items.Count) sb.Append(", …");
+        sb.Append("[").Append(FormatTypeName(type)).Append("; count=").Append(count).Append("]");
+        // Only expand the outermost collection — nested collections render as
+        // their header only, same as the old Summarize behavior.
+        if (depth >= 1) return;
+        var childIndent = indent + 2;
+        var pad = new string(' ', childIndent);
+        foreach (var item in items) {
+          sb.Append('\n').Append(pad).Append("- ");
+          RenderInner(sb, item, depth + 1, childIndent);
         }
-        sb.Append('}');
+        if (count > items.Count) {
+          sb.Append('\n').Append(pad).Append("… (").Append(count - items.Count).Append(" more)");
+        }
         return;
       }
 
-      sb.Append(FormatTypeName(type)).Append(' ').Append(Truncate(value.ToString(), 200));
+      // Generic object: walk public instance fields and zero-arg properties
+      // only if the type doesn't override ToString. KSP types like Vessel
+      // have their own ToString and should keep it; our result POCOs use
+      // object.ToString and benefit from member rendering.
+      if (!HasToStringOverride(type)) {
+        var fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance);
+        var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+          .Where(p => p.CanRead && p.GetIndexParameters().Length == 0)
+          .ToArray();
+
+        if (fields.Length > 0 || props.Length > 0) {
+          sb.Append("{ ");
+          bool first = true;
+          foreach (var f in fields) {
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append(f.Name).Append("=");
+            object fv;
+            try { fv = f.GetValue(value); } catch { fv = "<unreadable>"; }
+            RenderInner(sb, fv, depth + 1, indent);
+          }
+          foreach (var p in props) {
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append(p.Name).Append("=");
+            object pv;
+            try { pv = p.GetValue(value); } catch { pv = "<unreadable>"; }
+            RenderInner(sb, pv, depth + 1, indent);
+          }
+          sb.Append(" }");
+          return;
+        }
+      }
+
+      sb.Append(Truncate(value.ToString() ?? "null", 200));
+      if (tag) sb.Append(" :: ").Append(FormatTypeName(type));
+    }
+
+    private static bool HasToStringOverride(Type type) {
+      var m = type.GetMethod("ToString", Type.EmptyTypes);
+      return m != null && m.DeclaringType != typeof(object);
     }
 
     // Renders a Type as it appears in C# source — short name, generic args

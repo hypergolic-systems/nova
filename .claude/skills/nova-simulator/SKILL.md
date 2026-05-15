@@ -8,7 +8,7 @@ description: Run Nova.Sim — the headless Nova simulator binary at `mod/Nova.Si
 `Nova.Sim` is a `net48` console binary that hosts `Nova.Core` outside KSP. It loads a craft (`.nvc`) or full save (`.nvs`), runs the same `VirtualVessel` tick loop the in-game `NovaVesselModule` uses, and exposes:
 
 - **WebSocket telemetry** on `ws://0.0.0.0:9887` (default) — same wire as Dragonglass's in-game broadcaster, so the Vite UI dev server speaks to it unmodified.
-- **UDP eval** on `udp://127.0.0.1:9886` (default) — same kspcli expression language vendored into `Nova.Sim/Eval/ExpressionEvaluator.cs`, with pre-registered refs `$0` = `SimRunner`, `$1` = `PartDatabase`.
+- **UDP eval** on `udp://127.0.0.1:9877` (default) — same kspcli expression language vendored into `Nova.Sim/Eval/ExpressionEvaluator.cs`, with pre-registered refs `$0` = `SimRunner`, `$1` = `PartDatabase`.
 
 Source: `mod/Nova.Sim/`. Builds out-of-process; never link from `Nova.dll`.
 
@@ -44,7 +44,7 @@ Flags:
 - `--ksp-path <dir>` — required. Reads stock parts + localization from here.
 - `--craft <path>` / `--save <path>` — required, mutually exclusive. Save's active vessel becomes the simulated one.
 - `--ws-port <n>` — default `9887`. WebSocket telemetry server.
-- `--udp-port <n>` — default `9886`. UDP eval server.
+- `--udp-port <n>` — default `9877`. UDP eval server.
 - `--warp <factor>` — default `1.0`. Sim UT advances by `wall_dt × warp` per tick.
 
 Startup logs the part-DB build (`358 parts (stock 358, patched 159, deleted 0)`), the loaded vessel (`vessel 'Tanks I' (<guid>) at UT=...`), and both listener addresses. If you see `save file contains no vessels`, the save legitimately has none — use a different save or build a craft in KSP first.
@@ -55,7 +55,7 @@ Defaults are picked to coexist with a running KSP on the same machine:
 - Dragonglass's in-game WS broadcaster: `ws://localhost:8787` (see `TelemetryAddon.Port` in `~/dev/dragonglass/mod/Dragonglass.Telemetry/src/TelemetryAddon.cs`).
 - kspcli's in-game listener: `udp://localhost:9876` (see `KSPCLI_PORT` env in the [kspcli](./kspcli) skill).
 - Nova.Sim's WS: `9887` — distinct from DG's `8787`.
-- Nova.Sim's UDP: `9886` — distinct from kspcli's `9876`.
+- Nova.Sim's UDP: `9877` — distinct from kspcli's `9876`.
 
 Override with `--ws-port` / `--udp-port` if you're running multiple sim instances on the same host.
 
@@ -77,21 +77,23 @@ Vite HMR works — edit a Svelte component, save, the browser reloads against li
 
 ## UDP eval
 
-The simplest way to poke the live sim:
+The sim speaks kspcli's wire format byte-for-byte, so the `kspcli` CLI drives it directly — point it at port `9877` instead of `9876`:
 
 ```
-printf '%s' '$0.Vessel.AllPartIds().Count()' | nc -u -w 1 localhost 9886
-# → $5 = 5 : Int32
+KSPCLI_PORT=9877 kspcli '$0.Vessel.AllPartIds().Count()'
+# → $5 = 4 :: Int32
 
-printf '%s' '$0.SimUt' | nc -u -w 1 localhost 9886
-# → $6 = 21656.49 : Double
+KSPCLI_PORT=9877 kspcli '$0.SimUt'
+# → $6 = 21656.49 :: Double
 ```
 
 Pre-registered handles:
 - `$0` — `Nova.Sim.Runtime.SimRunner` (the active runner). Reach `.Vessel`, `.Context`, `.SimUt`, `.MissionTime`, `.LaunchTime`, `.WarpFactor`, `.VesselName`, `.VesselGuid`.
 - `$1` — `Nova.Sim.Config.PartDatabase`. `.Get(partName) → ConfigNode`, `.Count`, `.Names`.
 
-Subsequent `$N` references work the same as kspcli — each eval result is stored and back-referenced. The expression language and built-in LINQ operators are identical to kspcli's (the evaluator is vendored from `~/dev/hgs/kspcli/mod/Eval/ExpressionEvaluator.cs`); see the [kspcli](./kspcli) skill for the full reference. The transport differs — Nova.Sim uses raw UTF-8 over a single UDP datagram and replies with plain text (`$N = <type-prefixed value>`), not kspcli's protobuf `Envelope`/`Fragment` scheme.
+Subsequent `$N` references work the same as kspcli — each eval result is stored and back-referenced. The expression language and built-in LINQ operators are identical to kspcli's (the evaluator is vendored from `~/dev/hgs/kspcli/mod/Eval/ExpressionEvaluator.cs`); see the [kspcli](./kspcli) skill for the full reference.
+
+Raw-wire form (UTF-8 text, single datagram): request `<id>\n<expr>`, reply `<id>\n+\n<body>` on success or `<id>\n-\n<error>` on failure. The id is an opaque correlator the client uses to drop stale replies; `kspcli` generates it and matches it transparently.
 
 Shell-quote `$N` references with single quotes so your shell doesn't substitute them.
 

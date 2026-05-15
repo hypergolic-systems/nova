@@ -7,22 +7,23 @@ using System.Threading;
 namespace Nova.Sim.Eval;
 
 // UDP server accepting kspcli-style C# expressions. Each datagram is
-// a UTF-8 expression text; the server evaluates it against a shared
-// ExpressionEvaluator (so `$N` refs persist across packets) and
-// replies on the source endpoint with a UTF-8 text result.
+// a UTF-8 request matching kspcli's wire format, so the `kspcli` CLI
+// (~/dev/hgs/kspcli) drives the sim verbatim:
 //
-// The expression runtime has root-namespace access to whatever's
-// in the loaded assemblies — reflection resolves identifiers by
-// short name. Sim-defined globals (the active runner, part DB,
-// telemetry server) are exposed via the evaluator's reference table
-// at startup so an agent can write e.g. `$0.Vessel` to reach the
-// VirtualVessel.
+//   request:  "<id>\n<expr>"
+//   response: "<id>\n+\n<body>"   on success, body = "$N = <rendered>"
+//             "<id>\n-\n<error>"  on failure
 //
-// Wire format vs kspcli: kspcli wraps eval traffic in a protobuf
-// Envelope/Fragment scheme. The sim simplifies to raw text since the
-// data we exchange fits comfortably in a single MTU for most expressions,
-// and the convenience of `nc -u localhost 9876` outweighs the
-// over-MTU edge cases.
+// `<id>` is an opaque correlator (kspcli uses 12 hex chars). It's echoed
+// verbatim so the client can match replies to outstanding requests and
+// drop stale datagrams.
+//
+// The evaluator is shared across packets so `$N` refs persist; sim-defined
+// globals (the runner, part DB) are exposed via the ref table at startup so
+// agents reach them as e.g. `$0.Vessel`.
+//
+// Point kspcli-the-binary at the sim instead of in-game KSP with
+// `KSPCLI_PORT=9877 kspcli eval '<expr>'`.
 public sealed class UdpEvalServer : IDisposable {
   private readonly int _port;
   private readonly ExpressionEvaluator _evaluator;
@@ -59,30 +60,45 @@ public sealed class UdpEvalServer : IDisposable {
 
   private void Loop() {
     while (_running) {
-      IPEndPoint sender = null;
+      IPEndPoint sender;
       byte[] data;
       try {
         sender = new IPEndPoint(IPAddress.Any, 0);
         data = _client.Receive(ref sender);
       } catch (SocketException) {
-        // Socket closed during Dispose — exit loop.
         return;
       } catch (ObjectDisposedException) {
         return;
       }
 
-      string expr = Encoding.UTF8.GetString(data).Trim();
-      if (expr.Length == 0) continue;
+      string id, expr;
+      try {
+        var text = Encoding.UTF8.GetString(data);
+        var split = text.IndexOf('\n');
+        if (split < 0) {
+          Console.Error.WriteLine("[udp] malformed datagram from " + sender + ": no newline separator");
+          continue;
+        }
+        id   = text.Substring(0, split);
+        expr = text.Substring(split + 1);
+      } catch (Exception ex) {
+        Console.Error.WriteLine("[udp] undecodable datagram from " + sender + ": " + ex.Message);
+        continue;
+      }
 
-      string reply;
+      string body;
+      bool ok;
       try {
         var value = _evaluator.Evaluate(expr);
         var handle = _evaluator.Store(value);
-        reply = "$" + handle + " = " + ExpressionEvaluator.Summarize(value);
+        body = "$" + handle + " = " + ExpressionEvaluator.Render(value);
+        ok = true;
       } catch (Exception ex) {
-        reply = "ERROR: " + ex.Message;
+        body = ex.Message;
+        ok = false;
       }
 
+      var reply = id + "\n" + (ok ? "+" : "-") + "\n" + body;
       try {
         var bytes = Encoding.UTF8.GetBytes(reply);
         _client.Send(bytes, bytes.Length, sender);

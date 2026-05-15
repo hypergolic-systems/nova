@@ -198,10 +198,10 @@ Don't add bridge/CLI commands inside Nova — they live in kspcli.
 ```
 just sim-build
 just sim-run -- --ksp-path ~/KSP_osx --save ~/KSP_osx/saves/default/persistent.nvs
-# ws://0.0.0.0:9887 (telemetry), udp://127.0.0.1:9886 (eval)
+# ws://0.0.0.0:9887 (telemetry), udp://127.0.0.1:9877 (eval)
 ```
 
-Defaults are picked to coexist with a running KSP — `8787` (Dragonglass in-game WS) and `9876` (kspcli UDP) are both untouched. See the [`nova-simulator`](.claude/skills/nova-simulator/SKILL.md) skill for the full reference: flags, topic-emission catalogue, UDP eval handles, UI dev workflow, what's *not* simulated (no flight integrator, no atmosphere model, no in-game UI ops yet).
+Defaults are picked to coexist with a running KSP — `8787` (Dragonglass's in-game WS broadcaster) and `9876` (the kspcli mod's in-game UDP listener) are both untouched. The `kspcli` binary can drive either UDP target — point it at `9876` for in-game KSP, `9877` for Nova.Sim. See the [`nova-simulator`](.claude/skills/nova-simulator/SKILL.md) skill for the full reference: flags, topic-emission catalogue, UDP eval handles, UI dev workflow, what's *not* simulated (no flight integrator, no atmosphere model, no in-game UI ops yet).
 
 ## save-cli (Rust)
 

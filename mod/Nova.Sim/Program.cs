@@ -15,7 +15,7 @@ namespace Nova.Sim;
 // Usage:
 //   nova-sim --ksp-path <KSP install>
 //            (--craft <path.nvc> | --save <path.nvs>)
-//            [--ws-port 9877] [--udp-port 9876] [--warp 1.0]
+//            [--ws-port 9877] [--udp-port 9877] [--warp 1.0]
 //
 // The sim:
 //   1. Walks $kspPath/GameData to build a stock-part database, then
@@ -151,7 +151,7 @@ internal sealed class Options {
   public string CraftPath;
   public string SavePath;
   public int WsPort = 9877;
-  public int UdpPort = 9876;
+  public int UdpPort = 9877;
   public double Warp = 1.0;
   public bool Editor = false;
   public bool ShowHelp;
@@ -171,7 +171,7 @@ Optional:
                        no UT advance. Mounts EditorHud on the UI side.
                        Default: flight mode.
   --ws-port <n>        WebSocket telemetry port. Default: 9877.
-  --udp-port <n>       UDP eval port. Default: 9876.
+  --udp-port <n>       UDP eval port. Default: 9877.
   --warp <factor>      Time-warp multiplier. Default: 1.0.
   -h, --help           Show this message.";
 
