@@ -975,20 +975,20 @@ export type NovaInfoNuclearFrame     = ['N', thrustKn: number, ispS: number, idl
 export type NovaInfoRcsFrame         = ['M', thrusterPowerKn: number, thrusterCount: number, ispS: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoTankFrame        = ['T', volumeL: number, maxRateLps: number, slices: [resource: string, capacityL: number, tier: number][]];
 export type NovaInfoBatteryFrame     = ['B', capacityJ: number, maxRateW: number];
-export type NovaInfoFuelCellFrame    = ['F', maxOutputW: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoFuelCellFrame    = ['F', maxOutputW: number, lh2RateKgs: number, loxRateKgs: number];
 export type NovaInfoSolarFrame       = ['S', chargeRateW: number, isTracking: 0 | 1, isDeployable: 0 | 1];
 export type NovaInfoRtgFrame         = ['R', referencePowerW: number, halfLifeDays: number, thermalOutputW: number, maxOpTempC: number, vacuumRejectionW: number, atmRejectionW: number];
 export type NovaInfoWheelFrame       = ['W', pitchTorqueKnm: number, yawTorqueKnm: number, rollTorqueKnm: number, electricRateW: number];
 export type NovaInfoRadiatorFrame    = ['X', vacuumCoolingW: number, atmCoolingW: number, ecPerWattCooling: number, isDeployable: 0 | 1];
 export type NovaInfoLightFrame       = ['L', drawW: number];
-export type NovaInfoCommandFrame     = ['C', idleDrawW: number, testLoadRateW: number, crewCapacity: number];
+export type NovaInfoCommandFrame     = ['C', idleDrawW: number, testLoadRateW: number];
 export type NovaInfoProbeFrame       = ['P', idleDrawW: number, testLoadRateW: number, sasLevel: number, commandCapBytes: number, commandDecayBps: number, commandReceiveBps: number, inputCostBps: number];
 export type NovaInfoAntennaFrame     = ['A', txPowerW: number, gain: number, maxRateBps: number, refDistanceM: number];
 export type NovaInfoDecouplerFrame   = ['D', ejectionForceKn: number, canFullSeparate: 0 | 1, allowedResources: string[]];
-export type NovaInfoDockingFrame     = ['K', sizeIndex: number];
+export type NovaInfoDockingFrame     = ['K', nodeType: string];
 export type NovaInfoCrewFrame        = ['Y', crewCapacity: number];
 export type NovaInfoStorageFrame     = ['Z', capacityBytes: number];
-export type NovaInfoThermometerFrame = ['H', instrumentName: string];
+export type NovaInfoThermometerFrame = ['H', instrumentName: string, ecRateW: number];
 
 export type NovaInfoComponentFrame =
   | NovaInfoEngineFrame
@@ -1088,7 +1088,10 @@ export interface BatterySpec {
 
 export interface FuelCellSpec {
   maxOutputW: number;
-  propellants: PropellantSpec[];
+  /** LH₂ consumption at full output, kg/s. */
+  lh2RateKgs: number;
+  /** LOX consumption at full output, kg/s. */
+  loxRateKgs: number;
 }
 
 export interface SolarSpec {
@@ -1140,7 +1143,6 @@ export interface CommandSpec {
   idleDrawW: number;
   /** Configured ceiling for the debug test load, W. 0 = no test load. */
   testLoadRateW: number;
-  crewCapacity: number;
 }
 
 export interface ProbeSpec {
@@ -1177,8 +1179,9 @@ export interface DecouplerSpec {
 }
 
 export interface DockingSpec {
-  /** Stock size index (0 = clamp-o-tron jr, 1 = standard, etc.). */
-  sizeIndex: number;
+  /** Stock-style `nodeType` string (e.g. "size0", "size1", "size2"). Two
+   *  ports only dock together when their node types match. */
+  nodeType: string;
 }
 
 export interface CrewSpec {
@@ -1191,6 +1194,8 @@ export interface StorageSpec {
 
 export interface ThermometerSpec {
   instrumentName: string;
+  /** EC draw while the instrument is sampling, W. */
+  ecRateW: number;
 }
 
 export interface NovaPartInfo {
@@ -1285,7 +1290,7 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
         break;
       case 'F':
         out.fuelCell.push({
-          maxOutputW: c[1], propellants: decodePropellants(c[2]),
+          maxOutputW: c[1], lh2RateKgs: c[2], loxRateKgs: c[3],
         });
         break;
       case 'S':
@@ -1318,7 +1323,7 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
         break;
       case 'C':
         out.command.push({
-          idleDrawW: c[1], testLoadRateW: c[2], crewCapacity: c[3],
+          idleDrawW: c[1], testLoadRateW: c[2],
         });
         break;
       case 'P':
@@ -1341,7 +1346,7 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
         });
         break;
       case 'K':
-        out.docking.push({ sizeIndex: c[1] });
+        out.docking.push({ nodeType: c[1] });
         break;
       case 'Y':
         out.crew.push({ crewCapacity: c[1] });
@@ -1350,7 +1355,7 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
         out.storage.push({ capacityBytes: c[1] });
         break;
       case 'H':
-        out.thermometer.push({ instrumentName: c[1] });
+        out.thermometer.push({ instrumentName: c[1], ecRateW: c[2] });
         break;
     }
   }

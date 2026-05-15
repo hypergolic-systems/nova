@@ -286,8 +286,9 @@
         {@render group('F', 'FUEL CELL', null)}
         <div class="pip__grid">
           {@render kv('OUTPUT', fmtPower(f.maxOutputW))}
+          {@render kv('LH₂',    `${fmtMag(f.lh2RateKgs * 1000)} g/s`)}
+          {@render kv('LOX',    `${fmtMag(f.loxRateKgs * 1000)} g/s`)}
         </div>
-        {@render propellants(f.propellants)}
       {/each}
 
       {#each info.solar as s, i (i)}
@@ -345,7 +346,7 @@
       {/each}
 
       {#each info.command as c, i (i)}
-        {@render group('C', 'COMMAND POD', c.crewCapacity > 0 ? `${c.crewCapacity} crew` : null)}
+        {@render group('C', 'COMMAND POD', null)}
         <div class="pip__grid">
           {@render kv('IDLE',  fmtPower(c.idleDrawW))}
           {#if c.testLoadRateW > 0}
@@ -389,7 +390,7 @@
       {/each}
 
       {#each info.docking as k, i (i)}
-        {@render group('K', 'DOCKING PORT', `size ${k.sizeIndex}`)}
+        {@render group('K', 'DOCKING PORT', k.nodeType || null)}
       {/each}
 
       {#each info.crew as c, i (i)}
@@ -405,6 +406,9 @@
 
       {#each info.thermometer as h, i (i)}
         {@render group('H', 'INSTRUMENT', h.instrumentName)}
+        <div class="pip__grid">
+          {@render kv('EC', fmtPower(h.ecRateW))}
+        </div>
       {/each}
 
       {#each info.light as l, i (i)}
