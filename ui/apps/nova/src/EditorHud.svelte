@@ -33,6 +33,7 @@
   import { StagingStack } from '@dragonglass/instruments';
   import { ContextMenu, type MenuItem } from '@dragonglass/instruments';
   import EditorVesselPanel from './components/editor/EditorVesselPanel.svelte';
+  import PartInfoPopup from './components/editor/PartInfoPopup.svelte';
   import { NovaPartTopic, decodePart, type NovaPart } from './telemetry/nova-topics';
 
   const ksp = getKsp();
@@ -129,6 +130,12 @@
 </script>
 
 <EditorVesselPanel {focusPartId} />
+
+<!-- Parts-list hover popup. Stock's `PartListTooltip` is suppressed by
+     a Harmony patch on `PartListTooltipController.OnPointerEnter`; this
+     subscribes to the singleton `NovaPartInfoTopic` that the same patch
+     drives, and renders the Nova-styled readout in its place. -->
+<PartInfoPopup />
 
 {#if menu}
   <ContextMenu items={menu.items} x={menu.x} y={menu.y} onDismiss={() => (menu = null)} />

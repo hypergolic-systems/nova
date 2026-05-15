@@ -950,6 +950,413 @@ export const NovaScienceTopic = (partId: string): Topic<NovaScienceFrame, NovaSc
 export const NovaStorageTopic = (partId: string): Topic<NovaStorageFrame> =>
   topic<NovaStorageFrame>(`NovaStorage/${partId}`);
 
+// ---------- Editor part-info popup ------------------------------
+
+// Singleton hover-state topic emitted by `NovaPartInfoTopic` (C# side).
+// One frame per hover event: an empty array clears the popup, a populated
+// frame opens it at the given screen anchor with the part's static design
+// spec.
+//
+// Distinct schema from `NovaPartFrame`. Same single-char kind prefix per
+// component family (E/T/B/S/R/...) because the kind is a property of the
+// component itself, but each frame here carries *design* values
+// (thrust, capacity, EC draw at full intensity) — the runtime/LP fields
+// the per-part topic carries are meaningless before the part is placed.
+//
+// The anchor (`anchorX`, `anchorY`) is in browser pixels: the C# patch
+// already converts from Unity's Y-up screen coords. The UI smart-flips
+// near the right/bottom edges so the popup never clips.
+//
+// `propellants` list (Engine / NuclearEngine / Rcs / FuelCell): each
+// entry is `[resourceName, volumeRatio]`; ratios are author-side volumes,
+// not mass.
+export type NovaInfoEngineFrame      = ['E', thrustKn: number, ispS: number, gimbalDeg: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoNuclearFrame     = ['N', thrustKn: number, ispS: number, idleTempK: number, opTempK: number, idlePowerW: number, maxPowerW: number, warmupSec: number, slewPerSec: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoRcsFrame         = ['M', thrusterPowerKn: number, thrusterCount: number, ispS: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoTankFrame        = ['T', volumeL: number, maxRateLps: number, slices: [resource: string, capacityL: number, tier: number][]];
+export type NovaInfoBatteryFrame     = ['B', capacityJ: number, maxRateW: number];
+export type NovaInfoFuelCellFrame    = ['F', maxOutputW: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoSolarFrame       = ['S', chargeRateW: number, isTracking: 0 | 1, isDeployable: 0 | 1];
+export type NovaInfoRtgFrame         = ['R', referencePowerW: number, halfLifeDays: number, thermalOutputW: number, maxOpTempC: number, vacuumRejectionW: number, atmRejectionW: number];
+export type NovaInfoWheelFrame       = ['W', pitchTorqueKnm: number, yawTorqueKnm: number, rollTorqueKnm: number, electricRateW: number];
+export type NovaInfoRadiatorFrame    = ['X', vacuumCoolingW: number, atmCoolingW: number, ecPerWattCooling: number, isDeployable: 0 | 1];
+export type NovaInfoLightFrame       = ['L', drawW: number];
+export type NovaInfoCommandFrame     = ['C', idleDrawW: number, testLoadRateW: number, crewCapacity: number];
+export type NovaInfoProbeFrame       = ['P', idleDrawW: number, testLoadRateW: number, sasLevel: number, commandCapBytes: number, commandDecayBps: number, commandReceiveBps: number, inputCostBps: number];
+export type NovaInfoAntennaFrame     = ['A', txPowerW: number, gain: number, maxRateBps: number, refDistanceM: number];
+export type NovaInfoDecouplerFrame   = ['D', ejectionForceKn: number, canFullSeparate: 0 | 1, allowedResources: string[]];
+export type NovaInfoDockingFrame     = ['K', sizeIndex: number];
+export type NovaInfoCrewFrame        = ['Y', crewCapacity: number];
+export type NovaInfoStorageFrame     = ['Z', capacityBytes: number];
+export type NovaInfoThermometerFrame = ['H', instrumentName: string];
+
+export type NovaInfoComponentFrame =
+  | NovaInfoEngineFrame
+  | NovaInfoNuclearFrame
+  | NovaInfoRcsFrame
+  | NovaInfoTankFrame
+  | NovaInfoBatteryFrame
+  | NovaInfoFuelCellFrame
+  | NovaInfoSolarFrame
+  | NovaInfoRtgFrame
+  | NovaInfoWheelFrame
+  | NovaInfoRadiatorFrame
+  | NovaInfoLightFrame
+  | NovaInfoCommandFrame
+  | NovaInfoProbeFrame
+  | NovaInfoAntennaFrame
+  | NovaInfoDecouplerFrame
+  | NovaInfoDockingFrame
+  | NovaInfoCrewFrame
+  | NovaInfoStorageFrame
+  | NovaInfoThermometerFrame;
+
+// Wire frame for the singleton NovaPartInfo topic. Empty array = nothing
+// hovered; populated frame = open at the supplied anchor.
+export type NovaPartInfoFrame =
+  | []
+  | [
+      internalName: string,
+      displayTitle: string,
+      manufacturer: string,
+      description: string,
+      dryMassKg: number,
+      costFunds: number,
+      anchorX: number,
+      anchorY: number,
+      components: NovaInfoComponentFrame[],
+    ];
+
+// Decoded forms — clean named objects per kind. Same translation
+// boundary the rest of nova-topics.ts uses (`decodePart`, etc.).
+
+export interface PropellantSpec {
+  resource: string;
+  /** Volume ratio as authored in the cfg. Engine code derives mass flow
+   *  from thrust + Isp; the ratio just controls per-resource shares of
+   *  that flow. */
+  ratio: number;
+}
+
+export interface EngineSpec {
+  thrustKn: number;
+  ispS: number;
+  /** 0 for non-gimbaling engines (UI hides the row). */
+  gimbalDeg: number;
+  propellants: PropellantSpec[];
+}
+
+export interface NuclearSpec extends EngineSpec {
+  /** Steady-state idle core temperature (K) when reactor is on but
+   *  throttle is 0. */
+  idleTempK: number;
+  /** Steady-state operating core temperature (K) at full throttle. */
+  opTempK: number;
+  /** Fission power at idle, W. */
+  idlePowerW: number;
+  /** Fission power at full throttle, W. */
+  maxPowerW: number;
+  /** Cold→Idle warmup duration, seconds. */
+  warmupSec: number;
+  /** Throttle slew rate per second (0..1 units / s). */
+  slewPerSec: number;
+}
+
+export interface RcsSpec {
+  /** kN per nozzle. Total thrust = thrusterPowerKn × thrusterCount. */
+  thrusterPowerKn: number;
+  thrusterCount: number;
+  ispS: number;
+  propellants: PropellantSpec[];
+}
+
+export interface TankSpec {
+  /** Geometric envelope, litres. Sum of slice capacities ≤ this
+   *  (insulation tiers can take a slice of the budget). */
+  volumeL: number;
+  /** Part-level pipe ceiling, litres per second (in or out). */
+  maxRateLps: number;
+  slices: { resource: string; capacityL: number; tier: InsulationTier }[];
+}
+
+export interface BatterySpec {
+  /** Joules. 1 EC = 1 J in Nova. */
+  capacityJ: number;
+  /** Charge/discharge rate ceiling, W. */
+  maxRateW: number;
+}
+
+export interface FuelCellSpec {
+  maxOutputW: number;
+  propellants: PropellantSpec[];
+}
+
+export interface SolarSpec {
+  /** Optimal W at 1 AU full sun, normal-incidence. */
+  chargeRateW: number;
+  isTracking: boolean;
+  isDeployable: boolean;
+}
+
+export interface RtgSpec {
+  /** Electrical W at beginning-of-life. */
+  referencePowerW: number;
+  /** Isotope half-life in days (Pu-238 ≈ 32 032 d). */
+  halfLifeDays: number;
+  /** Waste heat at BoL, W. */
+  thermalOutputW: number;
+  /** Upper safe device temperature, °C. */
+  maxOpTempC: number;
+  /** Passive heat rejection ceiling in vacuum, W. */
+  vacuumRejectionW: number;
+  /** Passive heat rejection ceiling at 1 atm, W. */
+  atmRejectionW: number;
+}
+
+export interface WheelSpec {
+  pitchTorqueKnm: number;
+  yawTorqueKnm: number;
+  rollTorqueKnm: number;
+  /** EC draw per unit intensity (intensity ∈ [0, 3]), W. */
+  electricRateW: number;
+}
+
+export interface RadiatorSpec {
+  /** Cooling capacity in vacuum, W. */
+  vacuumCoolingW: number;
+  /** Cooling capacity at 1 atm, W (folding rads get an atm bonus). */
+  atmCoolingW: number;
+  /** Pump cost: W per W of cooling. 0 for passive panels. */
+  ecPerWattCooling: number;
+  isDeployable: boolean;
+}
+
+export interface LightSpec {
+  drawW: number;
+}
+
+export interface CommandSpec {
+  /** Always-on avionics draw, W. */
+  idleDrawW: number;
+  /** Configured ceiling for the debug test load, W. 0 = no test load. */
+  testLoadRateW: number;
+  crewCapacity: number;
+}
+
+export interface ProbeSpec {
+  idleDrawW: number;
+  testLoadRateW: number;
+  /** Stock SAS service level, 0..3. */
+  sasLevel: number;
+  /** Command ledger maximum, bytes. */
+  commandCapBytes: number;
+  /** Continuous decay drain, B/s. */
+  commandDecayBps: number;
+  /** Refill ceiling from a healthy KSC link, B/s. */
+  commandReceiveBps: number;
+  /** B/s burned per unit input magnitude (full-stick attitude, etc.). */
+  inputCostBps: number;
+}
+
+export interface AntennaSpec {
+  txPowerW: number;
+  /** Antenna gain (dimensionless, ≥1). */
+  gain: number;
+  /** Hardware data-rate ceiling, b/s. */
+  maxRateBps: number;
+  /** Design distance the antenna pair achieves `maxRateBps` at, m. */
+  refDistanceM: number;
+}
+
+export interface DecouplerSpec {
+  ejectionForceKn: number;
+  /** False for radial decouplers (only one face — toggle has no effect). */
+  canFullSeparate: boolean;
+  /** Canonical resource names that cross this decoupler. */
+  allowedResources: string[];
+}
+
+export interface DockingSpec {
+  /** Stock size index (0 = clamp-o-tron jr, 1 = standard, etc.). */
+  sizeIndex: number;
+}
+
+export interface CrewSpec {
+  crewCapacity: number;
+}
+
+export interface StorageSpec {
+  capacityBytes: number;
+}
+
+export interface ThermometerSpec {
+  instrumentName: string;
+}
+
+export interface NovaPartInfo {
+  /** KSP internal name, e.g. "fuelTankS3-7200". */
+  internalName: string;
+  /** Player-facing title. */
+  title: string;
+  manufacturer: string;
+  description: string;
+  /** Dry mass in kilograms; UI formats kg / t at render time. */
+  dryMassKg: number;
+  /** Career-mode funds price; sandbox still surfaces it as a relative
+   *  cost. */
+  costFunds: number;
+  /** Browser-space anchor (the C# patch converts from Unity's Y-up).
+   *  Popup smart-flips itself near the right/bottom edge. */
+  anchorX: number;
+  anchorY: number;
+
+  engine:       EngineSpec[];
+  nuclear:      NuclearSpec[];
+  rcs:          RcsSpec[];
+  tank:         TankSpec[];
+  battery:      BatterySpec[];
+  fuelCell:     FuelCellSpec[];
+  solar:        SolarSpec[];
+  rtg:          RtgSpec[];
+  wheel:        WheelSpec[];
+  radiator:     RadiatorSpec[];
+  light:        LightSpec[];
+  command:      CommandSpec[];
+  probe:        ProbeSpec[];
+  antenna:      AntennaSpec[];
+  decoupler:    DecouplerSpec[];
+  docking:      DockingSpec[];
+  crew:         CrewSpec[];
+  storage:      StorageSpec[];
+  thermometer:  ThermometerSpec[];
+}
+
+export const NovaPartInfoTopic: Topic<NovaPartInfoFrame> =
+  topic<NovaPartInfoFrame>('NovaPartInfo');
+
+export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
+  if (f.length === 0) return null;
+  const [internalName, title, manufacturer, description,
+         dryMassKg, costFunds, anchorX, anchorY, components] = f;
+  const out: NovaPartInfo = {
+    internalName, title, manufacturer, description,
+    dryMassKg, costFunds, anchorX, anchorY,
+    engine: [], nuclear: [], rcs: [], tank: [], battery: [],
+    fuelCell: [], solar: [], rtg: [], wheel: [], radiator: [],
+    light: [], command: [], probe: [], antenna: [], decoupler: [],
+    docking: [], crew: [], storage: [], thermometer: [],
+  };
+  const decodePropellants = (raw: [string, number][]): PropellantSpec[] =>
+    raw.map(([resource, ratio]) => ({ resource, ratio }));
+  for (const c of components) {
+    switch (c[0]) {
+      case 'E':
+        out.engine.push({
+          thrustKn: c[1], ispS: c[2], gimbalDeg: c[3],
+          propellants: decodePropellants(c[4]),
+        });
+        break;
+      case 'N':
+        out.nuclear.push({
+          thrustKn: c[1], ispS: c[2],
+          idleTempK: c[3], opTempK: c[4],
+          idlePowerW: c[5], maxPowerW: c[6],
+          warmupSec: c[7], slewPerSec: c[8],
+          gimbalDeg: 0,
+          propellants: decodePropellants(c[9]),
+        });
+        break;
+      case 'M':
+        out.rcs.push({
+          thrusterPowerKn: c[1], thrusterCount: c[2], ispS: c[3],
+          propellants: decodePropellants(c[4]),
+        });
+        break;
+      case 'T':
+        out.tank.push({
+          volumeL: c[1], maxRateLps: c[2],
+          slices: c[3].map(([resource, capacityL, tier]) => ({
+            resource, capacityL, tier: tier as InsulationTier,
+          })),
+        });
+        break;
+      case 'B':
+        out.battery.push({ capacityJ: c[1], maxRateW: c[2] });
+        break;
+      case 'F':
+        out.fuelCell.push({
+          maxOutputW: c[1], propellants: decodePropellants(c[2]),
+        });
+        break;
+      case 'S':
+        out.solar.push({
+          chargeRateW: c[1],
+          isTracking: c[2] === 1, isDeployable: c[3] === 1,
+        });
+        break;
+      case 'R':
+        out.rtg.push({
+          referencePowerW: c[1], halfLifeDays: c[2],
+          thermalOutputW: c[3], maxOpTempC: c[4],
+          vacuumRejectionW: c[5], atmRejectionW: c[6],
+        });
+        break;
+      case 'W':
+        out.wheel.push({
+          pitchTorqueKnm: c[1], yawTorqueKnm: c[2], rollTorqueKnm: c[3],
+          electricRateW: c[4],
+        });
+        break;
+      case 'X':
+        out.radiator.push({
+          vacuumCoolingW: c[1], atmCoolingW: c[2],
+          ecPerWattCooling: c[3], isDeployable: c[4] === 1,
+        });
+        break;
+      case 'L':
+        out.light.push({ drawW: c[1] });
+        break;
+      case 'C':
+        out.command.push({
+          idleDrawW: c[1], testLoadRateW: c[2], crewCapacity: c[3],
+        });
+        break;
+      case 'P':
+        out.probe.push({
+          idleDrawW: c[1], testLoadRateW: c[2], sasLevel: c[3],
+          commandCapBytes: c[4], commandDecayBps: c[5],
+          commandReceiveBps: c[6], inputCostBps: c[7],
+        });
+        break;
+      case 'A':
+        out.antenna.push({
+          txPowerW: c[1], gain: c[2],
+          maxRateBps: c[3], refDistanceM: c[4],
+        });
+        break;
+      case 'D':
+        out.decoupler.push({
+          ejectionForceKn: c[1], canFullSeparate: c[2] === 1,
+          allowedResources: c[3],
+        });
+        break;
+      case 'K':
+        out.docking.push({ sizeIndex: c[1] });
+        break;
+      case 'Y':
+        out.crew.push({ crewCapacity: c[1] });
+        break;
+      case 'Z':
+        out.storage.push({ capacityBytes: c[1] });
+        break;
+      case 'H':
+        out.thermometer.push({ instrumentName: c[1] });
+        break;
+    }
+  }
+  return out;
+}
+
 // ---------- Virtual scene ---------------------------------------
 
 // Nova's virtual-scene topic. KSP's real `LoadedScene` (FLIGHT,
