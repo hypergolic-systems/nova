@@ -13,11 +13,16 @@
   //            so a part with multiple kinds always reads the same way
   //            (propulsion → power → control → structural → science).
   //
-  // Smart placement: the C# patch sends raw browser-space cursor coords;
-  // the UI measures the popup after mount and flips horizontally / clamps
-  // vertically if the natural placement would clip. `pointer-events:
-  // none` keeps the cursor "owned" by the underlying icon, so the popup
-  // can't accidentally trap focus while the user is scanning the list.
+  // Placement: the C# patch sends the part icon's screen-space rect.
+  // The popup's left edge is flushed against the icon's right edge by
+  // default; if that would clip the viewport, it flips so the popup's
+  // right edge is flushed against the icon's left edge. Vertically the
+  // popup top aligns with the icon top, clamped into the viewport.
+  //
+  // The popup renders opaque so Dragonglass's raycast filter sees it
+  // as "DG UI" — that's how `NovaPartInfoCloser` C#-side decides to
+  // keep the popup open when the cursor crosses from icon onto popup.
+  // No hover bookkeeping on this side.
 
   import { onDestroy } from 'svelte';
   import { getKsp } from '@dragonglass/telemetry/svelte';
@@ -33,49 +38,62 @@
   import { fmtMag, fmtBytes, fmtDuration, siPrefix } from '../../util/units';
 
   const ksp = getKsp();
+  // The HUD is purely driven by the wire: if `info` is set, the popup
+  // renders; otherwise it doesn't. There's no hover bookkeeping on this
+  // side — the mod decides when to clear the topic state (see
+  // `NovaPartInfoCloser` C#-side, which polls the cursor against the
+  // parts catalog rect and Dragonglass's CEF-UI raycast filter and
+  // clears only when both say "no").
   let info = $state<NovaPartInfo | null>(null);
-
   const unsub = ksp.subscribe(NovaPartInfoTopic, (frame) => {
     info = decodePartInfo(frame);
   });
   onDestroy(unsub);
 
-  // ----- Smart placement -----------------------------------------
+  // ----- Placement ------------------------------------------------
 
-  const ANCHOR_OFFSET_X = 22;   // gap between cursor and popup edge
-  const ANCHOR_OFFSET_Y = -8;   // small upward bias so the popup head
-                                // sits roughly even with the icon
   const VIEWPORT_MARGIN = 12;
 
   let popupEl: HTMLDivElement | null = $state(null);
   let placed = $state<{ x: number; y: number; flipped: boolean } | null>(null);
 
-  // Re-place whenever the popup mounts or the anchor changes. The
-  // measure → flip flow runs after the popup has rendered with its
-  // natural intrinsic size; on the very first paint we hide the popup
-  // with `placed === null` so it doesn't flash at the unmeasured
-  // position.
+  // Position the popup flush against the icon's right edge by default;
+  // flip to the icon's left edge if the right side would clip the
+  // viewport. Vertically anchor to the icon's top edge, clamping into
+  // the viewport. The popup-edge / icon-edge invariant means the cursor
+  // can travel along that boundary without leaving either rect.
+  //
+  // The wire delivers the icon rect in Unity screen-space (physical
+  // pixels); CSS / `getBoundingClientRect()` work in logical pixels.
+  // Divide by DPR once at the boundary so every comparison below
+  // stays in CSS-pixel space — mirrors how `PunchThroughProvider`
+  // multiplies its own `getBoundingClientRect()` by DPR when encoding
+  // for the native compositor.
   $effect(() => {
     if (!info || !popupEl) {
       placed = null;
       return;
     }
-    const ax = info.anchorX;
-    const ay = info.anchorY;
-    // Force a layout read.
+    const dpr = window.devicePixelRatio || 1;
+    const iconX = info.iconX / dpr;
+    const iconY = info.iconY / dpr;
+    const iconW = info.iconW / dpr;
+    // iconH is on the wire (for future vertical-flip use) but the
+    // current placement anchors to icon top + clamps to viewport, so
+    // we don't need the icon's height here.
     const rect = popupEl.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
-    let x = ax + ANCHOR_OFFSET_X;
+    let x = iconX + iconW;
     let flipped = false;
     if (x + rect.width + VIEWPORT_MARGIN > vw) {
-      x = ax - ANCHOR_OFFSET_X - rect.width;
+      x = iconX - rect.width;
       flipped = true;
     }
     x = Math.max(VIEWPORT_MARGIN, x);
 
-    let y = ay + ANCHOR_OFFSET_Y;
+    let y = iconY;
     if (y + rect.height + VIEWPORT_MARGIN > vh) {
       y = vh - rect.height - VIEWPORT_MARGIN;
     }
@@ -457,15 +475,26 @@
     position: fixed;
     width: 340px;
     z-index: 1200;
-    pointer-events: none;
+    /* Interactable + flush against the icon, so the cursor can travel
+       from icon to popup without crossing dead space. The opaque
+       background makes the popup register as "DG UI" with Dragonglass's
+       CEF-alpha raycast filter — `NovaPartInfoCloser` uses that test to
+       keep the popup open while the cursor is over it, so no hover
+       signal needs to cross the HUD boundary. */
+    pointer-events: auto;
     opacity: 0;
     transform: translateY(-4px);
     background: var(--bg-panel-strong);
     border: 1px solid var(--line-accent);
-    box-shadow:
-      0 0 22px rgba(126, 245, 184, 0.06),
-      inset 0 0 0 1px rgba(126, 245, 184, 0.045),
-      0 14px 32px rgba(0, 0, 0, 0.55);
+    /* No outward box-shadows. They'd render alpha>0 pixels in CEF
+       outside the popup's box (the green glow and dark drop shadow
+       both spread ~22-32 CSS px outward), and Dragonglass's
+       HudRaycastFilter treats any non-zero alpha as "DG UI" — which
+       would steal raycasts away from the parts-list icons directly
+       under the halo and prevent their OnPointerEnter/click events
+       from firing. The inset 1px stays inside the box and is safe;
+       the accent border + interior glow are enough definition. */
+    box-shadow: inset 0 0 0 1px rgba(126, 245, 184, 0.045);
     color: var(--fg);
     font-family: var(--font-mono);
     font-size: 11px;
@@ -623,29 +652,10 @@
     font-size: 10.5px;
     line-height: 1.42;
     border-bottom: 1px solid var(--line);
-    /* Stock descriptions are author-written prose; keep them legible
-       without inflating the popup. Clamp at 4 lines, fade the tail so
-       the truncation reads as intentional. */
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    position: relative;
-  }
-  .pip__desc::after {
-    /* Bottom fade — only visible if the description was clamped, since
-       a 1-line description renders no overflow under the gradient
-       endpoint. The gradient lives in the last line's space, so short
-       text just hides under transparent stops. */
-    content: '';
-    position: absolute;
-    inset: auto 14px 12px 14px;
-    height: 1.42em;
-    background: linear-gradient(to bottom,
-      transparent 0,
-      rgba(4, 7, 16, 0.94) 100%);
-    pointer-events: none;
+    /* No line-clamp: stock descriptions are author-written prose and
+       some run 6+ lines (engine flavour text, science-instrument
+       blurbs). Let the popup grow to fit; the smart-flip placement
+       logic in PartInfoPopup.svelte already clamps to the viewport. */
   }
 
   /* GROUPS ---------------------------------------------------------- */

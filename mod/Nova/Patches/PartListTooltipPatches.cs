@@ -1,5 +1,4 @@
 using HarmonyLib;
-using KSP.UI;
 using KSP.UI.Screens;
 using KSP.UI.Screens.Editor;
 using Nova.Telemetry;
@@ -46,48 +45,63 @@ internal static class PartListTooltipController_OnPointerEnter_Patch {
     if (icon == null || icon.isEmptySlot || !icon.isPart) return false;
     var partInfo = icon.partInfo;
     if (partInfo == null) return false;
+    // Don't open a hover while the player is holding a part — the
+    // popup would just be in the way of the placement gesture.
+    if (EditorLogic.SelectedPart != null) return false;
 
-    var pos = eventData.position;
-    double anchorX = pos.x;
-    double anchorY = Screen.height - pos.y;
-    NovaPartInfoTopic.SetHover(partInfo, anchorX, anchorY);
+    // Send the icon's full screen-space rect (browser coords, top-down Y)
+    // so the UI can flush the popup against the icon's right edge —
+    // adjacent enough that the cursor can travel from icon to popup
+    // without crossing empty space — and flip the popup to the icon's
+    // left edge if the right side would clip the viewport.
+    //
+    // `GetWorldCorners` returns world-space coords; we project through
+    // the canvas's camera (null for Screen Space - Overlay, populated
+    // for Screen Space - Camera) to get screen pixels.
+    var iconRt = icon.GetComponent<RectTransform>();
+    double iconX, iconY, iconW, iconH;
+    if (iconRt != null) {
+      var canvas = iconRt.GetComponentInParent<Canvas>();
+      var canvasCam = (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+          ? canvas.worldCamera : null;
+      var corners = new Vector3[4]; // BL, TL, TR, BR
+      iconRt.GetWorldCorners(corners);
+      var bl = RectTransformUtility.WorldToScreenPoint(canvasCam, corners[0]);
+      var br = RectTransformUtility.WorldToScreenPoint(canvasCam, corners[3]);
+      var tl = RectTransformUtility.WorldToScreenPoint(canvasCam, corners[1]);
+      iconX = bl.x;
+      iconY = Screen.height - tl.y;       // browser top = screen.height - unity top
+      iconW = br.x - bl.x;
+      iconH = tl.y - bl.y;                // unity y increases upward
+    } else {
+      // Should never happen on an EditorPartIcon, but fall back to a
+      // zero-sized rect at the cursor so the popup still opens somewhere
+      // reasonable.
+      var pos = eventData.position;
+      iconX = pos.x;
+      iconY = Screen.height - pos.y;
+      iconW = 0;
+      iconH = 0;
+    }
+
+    NovaPartInfoTopic.SetHover(partInfo, iconX, iconY, iconW, iconH);
 
     return false; // skip stock tooltip spawn
   }
 }
 
-// `PartListTooltipController` does NOT override `OnPointerExit` —
-// only `OnPointerEnter` and `OnPointerClick`. The exit handler is
-// inherited from `PinnableTooltipController`, so targeting it through
-// the derived type would silently re-resolve to the base method and
-// affect every pinnable tooltip in KSP (navball, action group editor,
-// etc.). Patch the base class explicitly and gate on instance type.
-//
-// Returning `true` so stock's despawn path still runs for non-parts-list
-// callers. For parts-list controllers, stock's despawn is a no-op since
-// the spawn was suppressed by the OnPointerEnter prefix above — so
-// letting it run costs nothing.
-[HarmonyPatch(typeof(PinnableTooltipController), nameof(PinnableTooltipController.OnPointerExit))]
-internal static class PinnableTooltipController_OnPointerExit_Patch {
-  [HarmonyPrefix]
-  static void Prefix(PinnableTooltipController __instance) {
-    if (__instance is PartListTooltipController) {
-      NovaPartInfoTopic.ClearHover();
-    }
-  }
-}
+// Note: there's intentionally no `OnPointerExit` patch. Closing the
+// popup is owned by `NovaPartInfoCloser`, which polls the cursor each
+// frame and clears only when the cursor leaves both the parts catalog
+// rect AND DG's CEF UI. Wiring close-on-exit here would (a) reintroduce
+// the rapid-toggle flicker we saw when Unity re-evaluated hover state
+// after a CEF composite, and (b) defeat the popup-interactable design
+// by closing the moment the cursor crossed from icon onto the popup.
 
-// Right-click on a part icon would normally extend the stock tooltip
-// into its "extended info" / pin state. Nova's popup isn't pinnable in
-// v1 — suppress the click handler so the underlying icon's own onClick
-// (variant select / purchase / pick) still runs but stock's
-// tooltip-pin path is short-circuited. Future pin support would flip
-// a `pinned` bit on the topic and route the click through to Nova UI
-// instead of the stock master controller.
-[HarmonyPatch(typeof(PartListTooltipController), nameof(PartListTooltipController.OnPointerClick))]
-internal static class PartListTooltipController_OnPointerClick_Patch {
-  [HarmonyPrefix]
-  static bool Prefix() {
-    return false;
-  }
-}
+// No `OnPointerClick` patch: stock's `PartListTooltipController.
+// OnPointerClick` bails on its first line if the master controller's
+// `currentTooltip` is null, and we never spawn the stock tooltip — so
+// it's already a no-op for us. Patching it (returning false) would
+// only get in the way of any other handlers Unity's EventSystem
+// dispatches to the same GameObject, including the icon's own
+// pick/grab path.

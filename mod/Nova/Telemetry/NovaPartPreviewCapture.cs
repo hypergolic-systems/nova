@@ -1,5 +1,5 @@
 using System;
-using System.Runtime.InteropServices;
+using Dragonglass.Hud;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
@@ -33,12 +33,13 @@ namespace Nova.Telemetry;
 // removes the stream. Re-entering the editor recreates everything
 // fresh.
 //
-// The P/Invoke surface targets the same DgHudNative binary
-// Dragonglass.Hud ships — `Dragonglass_Hud/Plugins/DgHudNative.{dylib,
-// dll}`. Dragonglass.Hud's own `NativeBridge` is `internal`, so Nova
-// declares its own DllImport wrappers for the two calls it needs
-// (PushStreamFrame, RemoveStream). Both managed wrappers bind to the
-// same native symbol — no conflict, no duplicate load.
+// Calls go through `Dragonglass.Hud.NativeBridge` rather than declaring
+// our own [DllImport]. Mono's PInvoke resolver is per-assembly: it
+// looks for the native library relative to the *declaring* DLL, so a
+// [DllImport("DgHudNative")] in Nova.dll would search GameData/Nova/
+// while the binary actually lives under GameData/Dragonglass_Hud/Plugins/.
+// DG's NativeBridge has the library bound from the right context, so
+// piggybacking on it gets us the correct dlopen() for free.
 [KSPAddon(KSPAddon.Startup.EditorAny, false)]
 public class NovaPartPreviewCapture : MonoBehaviour {
   private const string LogPrefix = "[Nova/PartPreview] ";
@@ -100,7 +101,13 @@ public class NovaPartPreviewCapture : MonoBehaviour {
     _camera.farClipPlane     = 295f;
     _camera.cullingMask      = 1 << _layerId;
     _camera.clearFlags       = CameraClearFlags.Color;
-    _camera.backgroundColor  = new Color(0f, 0f, 0f, 0f); // transparent — keeps slot edges clean
+    // Opaque dark navy matching the popup's interior (`--bg`).
+    // The stream texture composites into the chroma-keyed CEF rect; a
+    // transparent backdrop would let the KSP scene behind CEF show
+    // through anywhere the part doesn't cover, so the backdrop has to
+    // be opaque. Same approach stock's tooltip uses (its clear color
+    // is set in the Unity inspector to a similar dark shade).
+    _camera.backgroundColor  = new Color(4f / 255f, 7f / 255f, 16f / 255f, 1f);
     _camera.allowHDR         = false;
     _camera.enabled          = false;                     // manual Render only
 
@@ -115,16 +122,17 @@ public class NovaPartPreviewCapture : MonoBehaviour {
   }
 
   /// <summary>
-  /// Begin rendering the supplied `AvailablePart`'s prefab into the
-  /// preview stream. Replaces any previously active part.
+  /// Set the part whose `iconPrefab` should be rendered into the
+  /// preview stream. `Update()` will pick it up next frame, render
+  /// it, push the result to the native plugin, and (on the first
+  /// successful push) notify `NovaPartInfoTopic` to flip its
+  /// preview-ready state — only then does the topic emit a wire
+  /// frame, so the UI never mounts `<PunchThrough>` against a
+  /// missing texture.
   /// </summary>
   public void SetActivePart(AvailablePart ap) {
-    if (!_started) {
-      Debug.LogWarning(LogPrefix + "SetActivePart called before Start completed");
-      return;
-    }
-    if (ap == null || ap.iconPrefab == null) {
-      Debug.LogWarning(LogPrefix + "SetActivePart: no iconPrefab for " + (ap?.name ?? "<null>"));
+    if (!_started || ap == null || ap.iconPrefab == null) {
+      DestroyClone();
       return;
     }
     DestroyClone();
@@ -142,17 +150,19 @@ public class NovaPartPreviewCapture : MonoBehaviour {
   }
 
   /// <summary>
-  /// Stop pushing frames and drop the native plugin's stream so the
-  /// compositor immediately stops drawing the slot.
+  /// Stop rendering new frames. We DELIBERATELY don't call
+  /// `DgHudNative_RemoveStream` here: removing the stream texture from
+  /// the plugin's cache before the UI's `<PunchThrough>` rect leaves
+  /// the DOM would leave a chroma rect with no texture, and the plugin
+  /// would composite that as the chroma fill (visible magenta flash on
+  /// close). The cached texture stays valid until `OnDestroy` runs at
+  /// scene exit; while no rect references it, no compositing happens,
+  /// so the cached bytes are effectively invisible. On the next hover
+  /// the new part's frame replaces the cached texture under the same
+  /// id, so there's no stale-content risk either.
   /// </summary>
   public void ClearActivePart() {
     DestroyClone();
-    try {
-      DgHudNative_RemoveStream(StreamIdHash);
-    } catch (DllNotFoundException) {
-      // No Dragonglass native plugin available — preview already won't
-      // render, nothing to unregister. Swallow rather than spam.
-    }
   }
 
   void Update() {
@@ -163,7 +173,6 @@ public class NovaPartPreviewCapture : MonoBehaviour {
     // catalog icons, so a stationary frame here looks the same as the
     // static icon — animation is just the Y rotation.
     _clone.transform.localRotation = Quaternion.Euler(-15f, _yaw, 0f);
-
     _camera.Render();
 
     var prev = RenderTexture.active;
@@ -179,11 +188,19 @@ public class NovaPartPreviewCapture : MonoBehaviour {
     unsafe {
       IntPtr ptr = (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(raw);
       try {
-        DgHudNative_PushStreamFrame(StreamIdHash, Size, Size, ptr);
+        NativeBridge.DgHudNative_PushStreamFrame(StreamIdHash, Size, Size, ptr);
         _pushCount++;
         if (_pushCount == 1 || _pushCount == 60) {
           Debug.Log(LogPrefix + "push #" + _pushCount + " idHash=0x"
               + StreamIdHash.ToString("x8") + " " + Size + "x" + Size);
+        }
+        // First successful push for this clone — the texture is now in
+        // the plugin's cache, so the topic can release its pending
+        // hover frame to the UI. The topic ignores the call if hover
+        // has since been cleared, or if a later clone has reset the
+        // counter again.
+        if (_pushCount == 1) {
+          NovaPartInfoTopic.NotifyPreviewReady();
         }
       } catch (DllNotFoundException) {
         Debug.LogWarning(LogPrefix + "DgHudNative not loaded; disabling preview capture");
@@ -198,7 +215,7 @@ public class NovaPartPreviewCapture : MonoBehaviour {
   void OnDestroy() {
     DestroyClone();
     try {
-      DgHudNative_RemoveStream(StreamIdHash);
+      NativeBridge.DgHudNative_RemoveStream(StreamIdHash);
     } catch (DllNotFoundException) {
       // Plugin missing — nothing to clean up native-side.
     }
@@ -249,16 +266,4 @@ public class NovaPartPreviewCapture : MonoBehaviour {
     return h;
   }
 
-  // --- P/Invoke surface (subset of DgHudNative; Dragonglass.Hud's own
-  // NativeBridge is `internal` so we declare the calls we need here.
-  // Same Lib name → same dlopen() in Mono → no double-load.)
-
-  private const string Lib = "DgHudNative";
-
-  [DllImport(Lib)]
-  private static extern void DgHudNative_PushStreamFrame(
-    uint idHash, int width, int height, IntPtr rgbaBytes);
-
-  [DllImport(Lib)]
-  private static extern void DgHudNative_RemoveStream(uint idHash);
 }

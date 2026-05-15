@@ -963,9 +963,8 @@ export const NovaStorageTopic = (partId: string): Topic<NovaStorageFrame> =>
 // (thrust, capacity, EC draw at full intensity) — the runtime/LP fields
 // the per-part topic carries are meaningless before the part is placed.
 //
-// The anchor (`anchorX`, `anchorY`) is in browser pixels: the C# patch
-// already converts from Unity's Y-up screen coords. The UI smart-flips
-// near the right/bottom edges so the popup never clips.
+// The icon rect (`iconX/Y/W/H`) is the parts-list icon's screen-space
+// bounding box in browser pixels (C# converts from Unity's Y-up).
 //
 // `propellants` list (Engine / NuclearEngine / Rcs / FuelCell): each
 // entry is `[resourceName, volumeRatio]`; ratios are author-side volumes,
@@ -1012,7 +1011,10 @@ export type NovaInfoComponentFrame =
   | NovaInfoThermometerFrame;
 
 // Wire frame for the singleton NovaPartInfo topic. Empty array = nothing
-// hovered; populated frame = open at the supplied anchor.
+// hovered; populated frame = open against the part icon's screen-space
+// rect. The UI flushes the popup left-edge against `iconX + iconW` (or
+// `iconX - popupWidth` on right-edge overflow) so the cursor can move
+// from icon to popup with no gap.
 export type NovaPartInfoFrame =
   | []
   | [
@@ -1022,8 +1024,10 @@ export type NovaPartInfoFrame =
       description: string,
       dryMassKg: number,
       costFunds: number,
-      anchorX: number,
-      anchorY: number,
+      iconX: number,
+      iconY: number,
+      iconW: number,
+      iconH: number,
       components: NovaInfoComponentFrame[],
     ];
 
@@ -1210,10 +1214,16 @@ export interface NovaPartInfo {
   /** Career-mode funds price; sandbox still surfaces it as a relative
    *  cost. */
   costFunds: number;
-  /** Browser-space anchor (the C# patch converts from Unity's Y-up).
-   *  Popup smart-flips itself near the right/bottom edge. */
-  anchorX: number;
-  anchorY: number;
+  /** Part icon's screen-space rect in browser coords (top-down Y).
+   *  The popup flushes against the icon's right edge (`iconX + iconW`)
+   *  and flips to its left edge (`iconX - popupWidth`) if right-side
+   *  overflow would clip the viewport. Width/height let the flip
+   *  preserve the same icon-edge → popup-edge invariant in either
+   *  direction. */
+  iconX: number;
+  iconY: number;
+  iconW: number;
+  iconH: number;
 
   engine:       EngineSpec[];
   nuclear:      NuclearSpec[];
@@ -1236,16 +1246,23 @@ export interface NovaPartInfo {
   thermometer:  ThermometerSpec[];
 }
 
+// The HUD is purely driven by this topic — no ops cross back. The mod
+// decides when to clear the topic state (see `NovaPartInfoCloser`
+// C#-side, which polls the cursor against the parts catalog rect and
+// Dragonglass's CEF-UI raycast filter).
 export const NovaPartInfoTopic: Topic<NovaPartInfoFrame> =
   topic<NovaPartInfoFrame>('NovaPartInfo');
 
 export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
   if (f.length === 0) return null;
   const [internalName, title, manufacturer, description,
-         dryMassKg, costFunds, anchorX, anchorY, components] = f;
+         dryMassKg, costFunds,
+         iconX, iconY, iconW, iconH,
+         components] = f;
   const out: NovaPartInfo = {
     internalName, title, manufacturer, description,
-    dryMassKg, costFunds, anchorX, anchorY,
+    dryMassKg, costFunds,
+    iconX, iconY, iconW, iconH,
     engine: [], nuclear: [], rcs: [], tank: [], battery: [],
     fuelCell: [], solar: [], rtg: [], wheel: [], radiator: [],
     light: [], command: [], probe: [], antenna: [], decoupler: [],

@@ -35,11 +35,30 @@ public sealed class NovaPartInfoTopic : Topic {
 
   public override string Name => "NovaPartInfo";
 
-  // Captured on hover. `_partInfo == null` means "no hover" — the topic
-  // emits the empty-array sentinel.
+  // Pending hover state — captured by `SetHover` on the Harmony patch
+  // path. `_partInfo == null` means "no hover" — the topic emits the
+  // empty-array sentinel. `_previewLive` flips to true only after the
+  // preview-capture addon has confirmed its first push for this part
+  // has landed in the native plugin; while it's false the topic still
+  // reports empty so the UI never mounts `<PunchThrough>` against a
+  // missing texture. The producer (the capture's Update loop) calls
+  // `NotifyPreviewReady` once the texture is cached — that's the only
+  // path that publishes a full frame to the wire.
+  //
+  // Icon rect (`_iconX/Y/W/H`) is the part icon's screen-space
+  // bounding box in browser coords (top-down Y). The UI uses it to
+  // anchor the popup flush against the icon's right or left edge.
   private AvailablePart _partInfo;
-  private double _anchorX;
-  private double _anchorY;
+  private double _iconX;
+  private double _iconY;
+  private double _iconW;
+  private double _iconH;
+  private bool _previewLive;
+
+  /// <summary>True iff a hover is currently active (the popup is open
+  /// or about to be). Used by `NovaPartInfoCloser` to decide whether
+  /// to run its per-frame "should the popup still be open?" check.</summary>
+  public bool HasHover => _partInfo != null;
 
   protected override void OnEnable() {
     Instance = this;
@@ -61,16 +80,33 @@ public sealed class NovaPartInfoTopic : Topic {
   /// hovers on the same part still mark dirty so the popup re-anchors
   /// if the icon has moved (sticky tooltip on a scrolling parts list).
   /// </summary>
-  public static void SetHover(AvailablePart partInfo, double anchorX, double anchorY) {
+  public static void SetHover(AvailablePart partInfo,
+                               double iconX, double iconY,
+                               double iconW, double iconH) {
     if (Instance == null || partInfo == null) return;
+    // Idempotent: same part re-fired is a no-op so the capture isn't
+    // restarted and the wire isn't re-dirtied. Unity's EventSystem
+    // can re-fire `OnPointerEnter` after CEF composites perturb its
+    // hover state, and we never want that to manifest as a visible
+    // glitch in the popup or the rotating preview.
+    if (Instance._partInfo == partInfo) {
+      // Refresh the icon rect anyway in case the parts list scrolled.
+      Instance._iconX = iconX;
+      Instance._iconY = iconY;
+      Instance._iconW = iconW;
+      Instance._iconH = iconH;
+      return;
+    }
     Instance._partInfo = partInfo;
-    Instance._anchorX = anchorX;
-    Instance._anchorY = anchorY;
-    Instance.MarkDirty();
-    // Drive the live 3-D preview that composites under the popup's
-    // <PunchThrough> slot. Null-safe — capture addon is editor-scoped,
-    // so this is a no-op outside the editor (where the popup also
-    // can't open today).
+    Instance._iconX = iconX;
+    Instance._iconY = iconY;
+    Instance._iconW = iconW;
+    Instance._iconH = iconH;
+    Instance._previewLive = false;
+    // Kick the preview capture to start rendering this part. We do
+    // NOT mark dirty here — the wire frame stays empty until the
+    // capture's first push lands in the native plugin and it calls
+    // `NotifyPreviewReady` below.
     NovaPartPreviewCapture.Instance?.SetActivePart(partInfo);
   }
 
@@ -80,14 +116,42 @@ public sealed class NovaPartInfoTopic : Topic {
   /// </summary>
   public static void ClearHover() {
     if (Instance == null) return;
-    if (Instance._partInfo == null) return;
+    if (Instance._partInfo == null && !Instance._previewLive) return;
     Instance._partInfo = null;
-    Instance.MarkDirty();
+    Instance._previewLive = false;
     NovaPartPreviewCapture.Instance?.ClearActivePart();
+    // Empty frame is always safe to publish — no rect, no texture
+    // needed, no magenta possible.
+    Instance.MarkDirty();
   }
 
+  /// <summary>
+  /// Called by `NovaPartPreviewCapture` after its first successful
+  /// `DgHudNative_PushStreamFrame` for the current hover. Marks the
+  /// topic dirty so the broadcaster releases the full hover frame to
+  /// the UI on its next tick — by which point the texture is already
+  /// cached in the native plugin, so the `<PunchThrough>` rect the
+  /// UI mounts has a texture to composite into immediately.
+  /// </summary>
+  public static void NotifyPreviewReady() {
+    if (Instance == null) return;
+    if (Instance._partInfo == null) return; // hover already cleared
+    if (Instance._previewLive) return;      // already published
+    Instance._previewLive = true;
+    Instance.MarkDirty();
+  }
+
+  // No inbound ops: the HUD is purely driven by the wire frame
+  // (`if info, render; else don't`). Closing the popup is driven
+  // from the C# side by `NovaPartInfoCloser`, which polls the
+  // cursor against the parts catalog rect and DG's CEF-UI raycast.
+
   public override void WriteData(StringBuilder sb) {
-    if (_partInfo == null || _partInfo.partPrefab == null) {
+    // Gate the wire frame on `_previewLive`: we don't release a hover
+    // frame to the UI until the preview capture has confirmed its
+    // first push, so the `<PunchThrough>` mount always lines up with
+    // a cached texture in the native plugin.
+    if (_partInfo == null || _partInfo.partPrefab == null || !_previewLive) {
       PartInfoFormatter.WriteEmpty(sb);
       return;
     }
@@ -154,7 +218,7 @@ public sealed class NovaPartInfoTopic : Topic {
       _partInfo.manufacturer ?? "",
       _partInfo.description ?? "",
       dryMassKg, cost,
-      _anchorX, _anchorY,
+      _iconX, _iconY, _iconW, _iconH,
       components,
       dockingInfo);
   }

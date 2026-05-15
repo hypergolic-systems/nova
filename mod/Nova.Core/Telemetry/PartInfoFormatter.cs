@@ -23,8 +23,14 @@ namespace Nova.Core.Telemetry;
 // Wire format (positional array). Empty array clears the popup:
 //   []
 //   | [internalName, displayTitle, manufacturer, description,
-//      dryMassKg, costFunds, anchorX, anchorY,
+//      dryMassKg, costFunds,
+//      iconX, iconY, iconW, iconH,
 //      [ [kind, ...], ... ]]
+//
+// The icon rect (`iconX/Y/W/H`) is the part-list icon's screen-space
+// bounding box in browser coords (top-down Y). The UI flushes the popup
+// against the icon's right edge by default, flips to the left edge if
+// the right side would clip the viewport.
 //
 // Single-char kind prefix per Nova component family. Same letter as
 // `PartFormatter` where the kind already exists there (so the kind
@@ -77,8 +83,10 @@ public static class PartInfoFormatter {
                             string description,
                             double dryMassKg,
                             double costFunds,
-                            double anchorX,
-                            double anchorY,
+                            double iconX,
+                            double iconY,
+                            double iconW,
+                            double iconH,
                             IEnumerable<VirtualComponent> components,
                             DockingPortInfo dockingInfo) {
     JsonWriter.Begin(sb, '[');
@@ -90,8 +98,10 @@ public static class PartInfoFormatter {
     JsonWriter.Sep(sb, ref first); JsonWriter.WriteString(sb, description ?? "");
     JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, dryMassKg);
     JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, costFunds);
-    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, anchorX);
-    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, anchorY);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconX);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconY);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconW);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconH);
 
     JsonWriter.Sep(sb, ref first);
     WriteComponents(sb, components, dockingInfo);
