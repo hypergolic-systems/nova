@@ -26,6 +26,12 @@
     <DebugSymbols>true</DebugSymbols>
     <MonoSymbolFile>true</MonoSymbolFile>
 
+    <!-- NovaPartPreviewCapture needs a single unsafe block to pin the
+         Texture2D raw bytes via NativeArrayUnsafeUtility before pushing
+         to the DgHudNative plugin. Same flag Dragonglass.Hud uses for
+         the equivalent portrait-streaming path. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
     <!-- KSP/Unity stubs live at $(repoRoot)/stubs/ -->
     <KspStubs>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'stubs'))</KspStubs>
     <!-- Dragonglass DLLs vendored by `just sync-dragonglass-stubs` -->

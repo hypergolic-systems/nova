@@ -67,6 +67,11 @@ public sealed class NovaPartInfoTopic : Topic {
     Instance._anchorX = anchorX;
     Instance._anchorY = anchorY;
     Instance.MarkDirty();
+    // Drive the live 3-D preview that composites under the popup's
+    // <PunchThrough> slot. Null-safe — capture addon is editor-scoped,
+    // so this is a no-op outside the editor (where the popup also
+    // can't open today).
+    NovaPartPreviewCapture.Instance?.SetActivePart(partInfo);
   }
 
   /// <summary>
@@ -78,6 +83,7 @@ public sealed class NovaPartInfoTopic : Topic {
     if (Instance._partInfo == null) return;
     Instance._partInfo = null;
     Instance.MarkDirty();
+    NovaPartPreviewCapture.Instance?.ClearActivePart();
   }
 
   public override void WriteData(StringBuilder sb) {

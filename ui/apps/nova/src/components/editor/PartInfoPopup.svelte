@@ -21,6 +21,7 @@
 
   import { onDestroy } from 'svelte';
   import { getKsp } from '@dragonglass/telemetry/svelte';
+  import { PunchThrough } from '@dragonglass/instruments';
   import {
     NovaPartInfoTopic,
     decodePartInfo,
@@ -174,26 +175,15 @@
   >
     <div class="pip__rule pip__rule--head" aria-hidden="true"></div>
 
-    <!-- HEADER : thumbnail slot · title · manufacturer · mass · cost -->
+    <!-- HEADER : 3-D part preview slot · title · manufacturer · mass · cost.
+         The thumbnail is a live KSP-rendered rotating part composited into
+         the chroma-keyed <PunchThrough> rect by Dragonglass's native plugin.
+         Stream id "novaPartPreview" is retargeted by NovaPartInfoTopic.SetHover
+         on the C# side; the popup unmount on hover-end implicitly drops the
+         <PunchThrough> registration so the compositor stops drawing the slot. -->
     <header class="pip__head">
       <div class="pip__thumb" aria-hidden="true">
-        <svg viewBox="0 0 64 64" preserveAspectRatio="xMidYMid meet">
-          <!-- Crosshair grid: a marker for the reserved 3-D thumbnail
-               slot. Reads as "instrument viewport pending art" rather
-               than a generic empty box. -->
-          <rect x="0.5" y="0.5" width="63" height="63"
-                fill="none" stroke="var(--line-bright)" stroke-width="1" />
-          <line x1="0" y1="32" x2="64" y2="32"
-                stroke="var(--line)" stroke-width="0.5" />
-          <line x1="32" y1="0" x2="32" y2="64"
-                stroke="var(--line)" stroke-width="0.5" />
-          <circle cx="32" cy="32" r="8"
-                  fill="none" stroke="var(--line-accent)" stroke-width="0.75"
-                  stroke-dasharray="2 1.5" opacity="0.55" />
-          <text x="32" y="35" text-anchor="middle"
-                font-family="var(--font-display)" font-size="9"
-                letter-spacing="0.15em" fill="var(--fg-mute)">3D</text>
-        </svg>
+        <PunchThrough id="novaPartPreview" />
       </div>
 
       <div class="pip__head-text">
@@ -535,23 +525,22 @@
   /* HEADER ----------------------------------------------------------- */
   .pip__head {
     display: grid;
-    grid-template-columns: 64px 1fr;
+    grid-template-columns: 96px 1fr;
     gap: 12px;
     padding: 12px 14px 10px;
   }
+  /* Slot is 96 CSS px so the rotating preview reads at a glance; at
+     DPR=2 the encoded rect lands at 192 physical pixels, matching the
+     capture-side RenderTexture 1:1. */
   .pip__thumb {
-    width: 64px;
-    height: 64px;
+    width: 96px;
+    height: 96px;
     background: rgba(4, 7, 16, 0.6);
     border: 1px solid var(--line);
     box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .pip__thumb > svg {
-    width: 100%;
-    height: 100%;
+    /* PunchThrough fills the slot with its chroma color; the inner
+       backdrop is only visible during the one-frame window between
+       popup mount and the native plugin's first composite. */
   }
   .pip__head-text {
     min-width: 0;
