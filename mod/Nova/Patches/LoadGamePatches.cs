@@ -76,19 +76,28 @@ public static class LoadGamePatches {
   [HarmonyPrefix]
   [HarmonyPatch(typeof(LoadGameDialog), "PersistentLoadGame")]
   public static bool PersistentLoadGame_Prefix(LoadGameDialog __instance) {
-    var saves = AccessTools.Method(typeof(List<>).MakeGenericType(ProfileType), "get_Count") != null
-      ? Activator.CreateInstance(typeof(List<>).MakeGenericType(ProfileType)) as System.Collections.IList
-      : null;
+    if (ProfileType == null) {
+      NovaLog.LogWarning("[LoadGame] PersistentLoadGame: PlayerProfileInfo inner type not found — falling back to stock");
+      return true;
+    }
+
+    var saves = Activator.CreateInstance(typeof(List<>).MakeGenericType(ProfileType))
+      as System.Collections.IList;
 
     var directory = (string)AccessTools.Field(typeof(LoadGameDialog), "directory").GetValue(__instance);
     var savesPath = KSPUtil.ApplicationRootPath + directory;
+    NovaLog.Log($"[LoadGame] PersistentLoadGame: scanning {savesPath}");
 
+    int scanned = 0, added = 0;
     if (Directory.Exists(savesPath)) {
       foreach (var subDir in new DirectoryInfo(savesPath).GetDirectories()) {
         if (ExcludedDirs.Contains(subDir.Name)) continue;
-
+        scanned++;
         var nvsPath = Path.Combine(subDir.FullName, "persistent.nvs");
-        if (!File.Exists(nvsPath)) continue;
+        if (!File.Exists(nvsPath)) {
+          NovaLog.Log($"[LoadGame]   skip {subDir.Name}: no persistent.nvs");
+          continue;
+        }
 
         var info = Activator.CreateInstance(ProfileType);
         AccessTools.Field(ProfileType, "name").SetValue(info, subDir.Name);
@@ -106,12 +115,17 @@ public static class LoadGamePatches {
           AccessTools.Field(ProfileType, "lastWriteTime")
             .SetValue(info, new FileInfo(nvsPath).LastWriteTimeUtc.Ticks);
         } catch (Exception e) {
+          NovaLog.LogWarning($"[LoadGame]   {subDir.Name}: {e.GetType().Name} {e.Message}");
           AccessTools.Field(ProfileType, "errorAccess").SetValue(info, true);
           AccessTools.Field(ProfileType, "errorDetails").SetValue(info, e.Message);
         }
         saves.Add(info);
+        added++;
       }
+    } else {
+      NovaLog.LogWarning($"[LoadGame] saves dir does not exist: {savesPath}");
     }
+    NovaLog.Log($"[LoadGame] PersistentLoadGame: scanned {scanned} dirs, added {added} entries");
 
     AccessTools.Field(typeof(LoadGameDialog), "saves").SetValue(__instance, saves);
     AccessTools.Field(typeof(LoadGameDialog), "selectedGame").SetValue(__instance, "");
