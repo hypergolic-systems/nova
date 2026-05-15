@@ -88,11 +88,15 @@ public static class Program {
     }
     Console.WriteLine("[load] vessel '" + load.VesselName + "' (" + load.VesselGuid + ") at UT=" + load.UniversalTime);
 
-    // --craft loads a single VAB/SPH design and stays static (no LP
-    // solve, no boiloff). --save runs the LP and advances UT. The flag
-    // gates both the runner's tick body and the telemetry server's
-    // scene emission so the UI mounts EditorHud vs FlightHud.
-    bool isEditor = !string.IsNullOrEmpty(options.CraftPath);
+    // Editor mode is an explicit flag — `--edit` puts the runner in
+    // a static VAB/SPH design pose (no LP solve, no boiloff, no UT
+    // advance) regardless of which file type loaded the vessel. The
+    // common case (LV-N reactor on a .nvc — testing flight-only state
+    // machines) wants --craft *without* editor mode, so we don't infer
+    // from extension. The flag gates both the runner tick body and
+    // the telemetry server's scene emission so the UI mounts
+    // EditorHud vs FlightHud accordingly.
+    bool isEditor = options.Editor;
 
     var context = new SimVesselContext();
     var runner = new SimRunner(load.Vessel, context,
@@ -149,6 +153,7 @@ internal sealed class Options {
   public int WsPort = 9877;
   public int UdpPort = 9876;
   public double Warp = 1.0;
+  public bool Editor = false;
   public bool ShowHelp;
 
   public const string UsageText =
@@ -162,6 +167,9 @@ Vessel source (exactly one of):
   --save  <path.nvs>   Load a full save file.
 
 Optional:
+  --edit               Editor mode — static vessel pose, no LP solve,
+                       no UT advance. Mounts EditorHud on the UI side.
+                       Default: flight mode.
   --ws-port <n>        WebSocket telemetry port. Default: 9877.
   --udp-port <n>       UDP eval port. Default: 9876.
   --warp <factor>      Time-warp multiplier. Default: 1.0.
@@ -179,6 +187,7 @@ Optional:
         case "--ksp-path": o.KspPath  = RequireValue(args, ref i, a); break;
         case "--craft":    o.CraftPath = RequireValue(args, ref i, a); break;
         case "--save":     o.SavePath  = RequireValue(args, ref i, a); break;
+        case "--edit":     o.Editor   = true; break;
         case "--ws-port":  o.WsPort    = int.Parse(RequireValue(args, ref i, a)); break;
         case "--udp-port": o.UdpPort   = int.Parse(RequireValue(args, ref i, a)); break;
         case "--warp":     o.Warp      = double.Parse(RequireValue(args, ref i, a),

@@ -132,6 +132,34 @@ export type NovaDecouplerFrame = [
   ejectionForce: number,
 ];
 
+// LV-N NTR reactor. `state` maps to ReactorState enum below; `throttleSetpoint`
+// is what the slew is currently chasing (player input, gated by MinThrottle,
+// or 0 when shutdown is queued). `currentThrustKn` is reactor-state-gated
+// (zero outside Throttled) — same wire-physical-observables rule as other
+// kinds. `lh2FlowKgs` is the actual delivered LH₂ mass flow last solve.
+export type NovaNuclearFrame = [
+  'N',
+  state: number,
+  coreTempK: number,
+  throttleActual: number,
+  throttleSetpoint: number,
+  currentThrustKn: number,
+  maxThrustKn: number,
+  lh2FlowKgs: number,
+  thermalPowerW: number,
+  shutdownRequested: 0 | 1,
+];
+
+// Mirrors Nova.Core.Components.Propulsion.ReactorState. Order matters —
+// the wire value is the int cast of the C# enum.
+export enum ReactorState {
+  Cold      = 0,
+  Warming   = 1,
+  Idle      = 2,
+  Throttled = 3,
+  Cooling   = 4,
+}
+
 // One progressive observation record on disk. The wire shape mirrors
 // the proto fields. Direct vs interpolated is determined by which set
 // of trailing fields is populated:
@@ -238,7 +266,8 @@ export type NovaComponentFrame =
   | NovaProbeFrame
   | NovaFuelCellFrame
   | NovaRtgFrame
-  | NovaDecouplerFrame;
+  | NovaDecouplerFrame
+  | NovaNuclearFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -680,6 +709,35 @@ export interface DecouplerState {
   ejectionForce: number;
 }
 
+export interface NuclearReactorState {
+  /** Cold / Warming / Idle / Throttled / Cooling. Drives the on/off
+   *  button label and panel chrome. */
+  state: ReactorState;
+  /** Live core temperature, K. */
+  coreTempK: number;
+  /** Slewed reactor throttle, 0..1. Lags `throttleSetpoint` by up to
+   *  10 s at SlewRatePerSec = 0.1/s. */
+  throttleActual: number;
+  /** What the slew is chasing — typically `vessel.mainThrottle` when
+   *  in Throttled and 0 otherwise. */
+  throttleSetpoint: number;
+  /** Reactor-state-gated thrust output (kN). Zero outside Throttled. */
+  currentThrustKn: number;
+  /** Rated thrust, kN. */
+  maxThrustKn: number;
+  /** LH₂ mass flow last solve, kg/s. Non-zero in Warming/Idle/Throttled
+   *  (idle cooling), zero in Cold/Cooling. */
+  lh2FlowKgs: number;
+  /** Fission heat being produced this tick (W). Computed C#-side from
+   *  the state + slewed throttle, so the cfg's IdlePowerW / MaxPowerW
+   *  calibration stays the single source of truth. */
+  thermalPowerW: number;
+  /** Latched flag: a SetReactorActive(false) op while in Throttled
+   *  arms this; the state machine auto-sequences down to Cooling once
+   *  the slew lands at 0. */
+  shutdownRequested: boolean;
+}
+
 export interface NovaPart {
   id: string;
   resources: NovaResourceFlow[];
@@ -694,6 +752,7 @@ export interface NovaPart {
   rtg: RtgState[];
   radiator: RadiatorState[];
   decoupler: DecouplerState[];
+  nuclear: NuclearReactorState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -840,6 +899,28 @@ export interface NovaPartOps {
    * `DecouplerState.full_separation`.
    */
   setFullSeparation(fullSeparation: boolean): void;
+
+  /**
+   * Flight-only. Toggle a nuclear engine's reactor.
+   *
+   * `true` from Cold begins the warmup sequence; `false` from Idle
+   * begins cooldown; `false` from Throttled latches `shutdownRequested`
+   * so the state machine auto-sequences down to Cooling once the
+   * throttle slews to 0. No-op on parts without a NovaNuclearEngineModule
+   * and on already-terminal states (Cooling, Cold while requesting off).
+   */
+  setReactorActive(active: boolean): void;
+
+  /**
+   * Flight-only intent — set the reactor's player-throttle setpoint
+   * (0..1). In real flight the in-game NovaNuclearEngineModule
+   * overwrites PlayerThrottle every FixedUpdate from the vessel's
+   * mainThrottle (keyboard input), so a UI op here is short-lived;
+   * the sim's headless runner has no FixedUpdate, so the value
+   * latches and the reactor's slew chases it. The UI uses this for
+   * the draggable TGT marker.
+   */
+  setReactorPlayerThrottle(throttle: number): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -1206,6 +1287,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     rtg: [],
     radiator: [],
     decoupler: [],
+    nuclear: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -1314,6 +1396,19 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           fullSeparation:  c[1] === 1,
           canFullSeparate: c[2] === 1,
           ejectionForce:   c[3],
+        });
+        break;
+      case 'N':
+        out.nuclear.push({
+          state:             c[1] as ReactorState,
+          coreTempK:         c[2],
+          throttleActual:    c[3],
+          throttleSetpoint:  c[4],
+          currentThrustKn:   c[5],
+          maxThrustKn:       c[6],
+          lh2FlowKgs:        c[7],
+          thermalPowerW:     c[8],
+          shutdownRequested: c[9] === 1,
         });
         break;
     }

@@ -112,11 +112,18 @@ public sealed class NovaEngineTopic : EngineTopic {
       Vector3 rel = es.Part.transform.position - vesselPos;
       Vector3 local = refT.InverseTransformDirection(rel);
 
-      byte status = Classify(es.Engine);
-      // Only burning engines have a meaningful throttle.
-      // NormalizedOutput already folds in propellant satisfaction.
+      // Engine.EngineStatus is virtual — NuclearEngine overrides to
+      // report shutdown/idle/burning based on reactor state (Cold ->
+      // shutdown, Warming/Idle/Cooling -> idle, Throttled -> burning/
+      // flameout). Detailed reactor state travels on the per-part
+      // NovaPartTopic "N" frame.
+      byte status = es.Engine.EngineStatus;
+      // Wire throttle is the reactor-gated thrust output fraction.
+      // For plain engines, ThrustOutputFraction == NormalizedOutput,
+      // so this matches the prior `Throttle * NormalizedOutput` shape
+      // (without the squaring quirk): just the achieved thrust fraction.
       float throttle = status == 0
-        ? Mathf.Clamp01((float)(es.Engine.Throttle * es.Engine.NormalizedOutput))
+        ? Mathf.Clamp01((float)es.Engine.ThrustOutputFraction)
         : 0f;
 
       var novaProps = new List<NovaPropellantFrame>(es.Propellants.Count);
@@ -239,10 +246,4 @@ public sealed class NovaEngineTopic : EngineTopic {
     }
   }
 
-  private static byte Classify(Engine e) {
-    if (e.Ignited && e.Flameout) return 1;                    // flameout
-    if (e.Ignited && e.NormalizedOutput > 0) return 0;        // burning
-    if (e.Ignited) return 4;                                  // idle (armed, throttle 0 / starved-but-not-flagged)
-    return 3;                                                 // shutdown (not yet staged or shut down)
-  }
 }

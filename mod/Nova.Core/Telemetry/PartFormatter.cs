@@ -46,6 +46,9 @@ namespace Nova.Core.Telemetry;
 //                           currentTempC, maxOperatingTempC, dTdtCps
 //   "X" Radiator          — currentCoolingW, maxCoolingW, isDeployed, isDeployable
 //   "D" Decoupler         — fullSeparation, canFullSeparate, ejectionForce
+//   "N" NuclearEngine     — state(0..4), coreTempK, throttleActual,
+//                           throttleSetpoint, currentThrustKn, maxThrustKn,
+//                           lh2FlowKgs, shutdownRequested
 public static class PartFormatter {
   // Stock Kerbin year in seconds; presentation unit for the RTG
   // decline rate (real math is in seconds, this is a UI conversion).
@@ -334,6 +337,27 @@ public static class PartFormatter {
         WriteBit(sb, decoupler.FullSeparation, ref f);
         WriteBit(sb, decoupler.CanFullSeparate, ref f);
         WriteNum(sb, decoupler.EjectionForce, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      // Order matters — NuclearEngine is a subclass of Engine, so it
+      // must be matched first. (Plain Engine has no per-part frame and
+      // falls through to the unhandled-kind path; its data flows on the
+      // NovaEngineTopic wire instead.)
+      case NuclearEngine reactor: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "N", ref f);
+        WriteNum(sb, (int)reactor.State, ref f);
+        WriteNum(sb, reactor.CoreTempK, ref f);
+        WriteNum(sb, reactor.ThrottleActual, ref f);
+        WriteNum(sb, reactor.TargetThrottle(), ref f);
+        WriteNum(sb, reactor.CurrentThrustKn, ref f);
+        WriteNum(sb, reactor.Thrust, ref f);
+        WriteNum(sb, reactor.Lh2FlowKgs, ref f);
+        WriteNum(sb, reactor.CurrentThermalPowerW, ref f);
+        WriteBit(sb, reactor.ShutdownRequested, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

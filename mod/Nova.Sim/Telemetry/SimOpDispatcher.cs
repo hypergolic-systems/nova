@@ -60,9 +60,43 @@ public static class SimOpDispatcher {
       case "setTankCustom":       SetTankCustom(partId, args, runner); return;
       case "setTankCooler":       SetTankCooler(partId, args, runner); return;
       case "setTankInsulation":   SetTankInsulation(partId, args, runner); return;
+      case "setReactorActive":    SetReactorActive(partId, args, runner); return;
+      case "setReactorPlayerThrottle": SetReactorPlayerThrottle(partId, args, runner); return;
       default:
         Warn("NovaPart/" + partId + " unknown op '" + op + "'");
         return;
+    }
+  }
+
+  private static void SetReactorActive(uint partId, List<object> args, SimRunner runner) {
+    if (args == null || args.Count < 1 || !(args[0] is bool active)) {
+      Warn("NovaPart/" + partId + " setReactorActive: expected [bool]");
+      return;
+    }
+    lock (runner.Lock) {
+      bool toggled = false;
+      foreach (var c in runner.Vessel.GetComponents(partId)) {
+        if (!(c is NuclearEngine reactor)) continue;
+        if (reactor.SetReactorActive(active)) toggled = true;
+      }
+      if (toggled) runner.Vessel.Invalidate();
+    }
+  }
+
+  private static void SetReactorPlayerThrottle(uint partId, List<object> args, SimRunner runner) {
+    if (args == null || args.Count < 1 || !(args[0] is double throttle)) {
+      Warn("NovaPart/" + partId + " setReactorPlayerThrottle: expected [double]");
+      return;
+    }
+    double clamped = System.Math.Max(0, System.Math.Min(1, throttle));
+    lock (runner.Lock) {
+      bool touched = false;
+      foreach (var c in runner.Vessel.GetComponents(partId)) {
+        if (!(c is NuclearEngine reactor)) continue;
+        reactor.PlayerThrottle = clamped;
+        touched = true;
+      }
+      if (touched) runner.Vessel.Invalidate();
     }
   }
 

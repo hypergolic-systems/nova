@@ -152,6 +152,16 @@ namespace Nova.Telemetry;
 //                                rather than over-engineer dynamic
 //                                Demand scaling — the LP rebuilds with
 //                                the new max EC / heat rates.
+//   "setReactorActive" [bool]   — toggle a nuclear engine's reactor.
+//                                Flight-only. True from Cold starts
+//                                warmup; false from Idle starts
+//                                cooldown; false from Throttled
+//                                latches `ShutdownRequested` so the
+//                                state machine auto-sequences down
+//                                through Idle to Cooling once the
+//                                throttle slews to 0. No-op on parts
+//                                without a NovaNuclearEngineModule
+//                                and on already-terminal states.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -262,6 +272,47 @@ public sealed class NovaPartTopic : Topic {
         if (module == null) return;
         if (deployed) module.Extend();
         else module.Retract();
+        return;
+      }
+      case "setReactorActive": {
+        if (args == null || args.Count < 1 || !(args[0] is bool active)) {
+          Debug.LogWarning(LogPrefix + Name + " setReactorActive: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.FLIGHT) {
+          Debug.Log(LogPrefix + Name + " setReactorActive rejected outside flight");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaNuclearEngineModule>();
+        var reactor = module?.Reactor;
+        if (reactor == null) return;
+        if (!reactor.SetReactorActive(active)) return;
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        vesselModule?.Virtual?.Invalidate();
+        MarkDirty();
+        return;
+      }
+      case "setReactorPlayerThrottle": {
+        // UI-drag input to the reactor throttle. In flight, the
+        // vessel's mainThrottle (keyboard) is the canonical input;
+        // NovaNuclearEngineModule.FixedUpdate rewrites PlayerThrottle
+        // every physics tick from `vessel.ctrlState.mainThrottle`, so
+        // a UI op set here would last only until the next tick and be
+        // visually jittery. Out-of-flight (e.g., the sim's headless
+        // runner has no FixedUpdate), the op latches and the reactor
+        // chases it. Acceptable behaviour: live drag controls in the
+        // sim, no-op in real flight.
+        if (args == null || args.Count < 1 || !(args[0] is double throttle)) {
+          Debug.LogWarning(LogPrefix + Name + " setReactorPlayerThrottle: expected [double]");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaNuclearEngineModule>();
+        var reactor = module?.Reactor;
+        if (reactor == null) return;
+        reactor.PlayerThrottle = System.Math.Max(0, System.Math.Min(1, throttle));
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        vesselModule?.Virtual?.Invalidate();
+        MarkDirty();
         return;
       }
       case "setFullSeparation": {

@@ -54,10 +54,13 @@ public class DeltaVSimulation {
             n.Jettisoned = true;
       }
 
-      // Activate engines in this stage.
+      // Activate engines in this stage. Engine.ActivateForBurn is
+      // virtual — the NuclearEngine subclass forces its state machine
+      // into Throttled with ThrottleActual = 1 so the reactor
+      // contributes to ΔV instead of sitting Cold.
       foreach (var enginePartId in stageDef.EnginePartIds) {
         foreach (var cmp in sim.GetComponents(enginePartId).OfType<Engine>())
-          cmp.Throttle = 1.0;
+          cmp.ActivateForBurn();
       }
 
       // Trigger: next stage's decoupler tiers are spent.

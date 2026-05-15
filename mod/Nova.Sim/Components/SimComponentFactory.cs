@@ -33,6 +33,7 @@ public static class SimComponentFactory {
     switch (moduleName) {
       case "NovaTankModule":            return CreateTankVolume(moduleNode);
       case "NovaEngineModule":          return CreateEngine(moduleNode);
+      case "NovaNuclearEngineModule":   return CreateNuclearEngine(moduleNode);
       case "NovaDecouplerModule":       return CreateDecoupler(moduleNode);
       case "NovaBatteryModule":         return CreateBattery(moduleNode);
       case "NovaFuelCellModule":        return CreateFuelCell(moduleNode);
@@ -113,6 +114,41 @@ public static class SimComponentFactory {
         * Math.PI / 180.0;
     }
     return engine;
+  }
+
+  public static NuclearEngine CreateNuclearEngine(ConfigNode node) {
+    var propNode = node.GetNodes("PROPELLANT").FirstOrDefault()
+      ?? throw new System.ArgumentException(
+          "NovaNuclearEngineModule: PROPELLANT { resource = ... } is required.");
+    var propResource = Resource.Get(propNode.GetValue("resource"));
+
+    var reactor = new NuclearEngine();
+    reactor.InitializeNuclear(
+      thrust:            D(node, "thrust"),
+      isp:               D(node, "isp"),
+      propellant:        propResource,
+      thermalMassJK:     D(node, "thermalMassJK"),
+      ambientK:          D(node, "ambientK"),
+      coldThresholdK:    D(node, "coldThresholdK"),
+      warmupDurationSec: D(node, "warmupDurationSec"),
+      idleTempK:         D(node, "idleTempK"),
+      operatingTempK:    D(node, "operatingTempK"),
+      spoolEndThrottle:  D(node, "spoolEndThrottle"),
+      idlePowerW:        D(node, "idlePowerW"),
+      maxPowerW:         D(node, "maxPowerW"),
+      coolingCoeffWK:    D(node, "coolingCoeffWK"),
+      inletTempK:        D(node, "inletTempK"),
+      cpH2JKgK:          D(node, "cpH2JKgK"),
+      slewRatePerSec:    D(node, "slewRatePerSec"),
+      decayTauSeconds:   D(node, "decayTauSeconds")
+    );
+    var gimbalRange = node.GetValue("gimbalRange");
+    if (gimbalRange != null) {
+      reactor.GimbalRangeRad =
+        double.Parse(gimbalRange, System.Globalization.CultureInfo.InvariantCulture)
+        * Math.PI / 180.0;
+    }
+    return reactor;
   }
 
   public static Battery CreateBattery(ConfigNode node) {

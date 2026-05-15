@@ -16,7 +16,9 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
 
   private Engine engine;
   private bool activated;
-  private float lastThrottle = -1;
+  // Protected so NovaNuclearEngineModule can read/write it from its
+  // ApplyPlayerThrottle override.
+  protected float lastThrottle = -1;
   private bool wasFlowing;
 
   private FXGroup runningGroup;
@@ -177,6 +179,19 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
     if (engine != null) engine.Ignited = true;
   }
 
+  // Hook for subclasses to receive the player throttle each FixedUpdate.
+  // Base behaviour: write directly to engine.Throttle (the LP demand).
+  // NovaNuclearEngineModule overrides to route the value to
+  // engine.PlayerThrottle so the NTR state machine consumes it. Returns
+  // true when the value differs from the prior frame — the caller
+  // invalidates the vessel solver on a change.
+  protected virtual bool ApplyPlayerThrottle(float throttle) {
+    if (throttle == lastThrottle) return false;
+    lastThrottle = throttle;
+    engine.Throttle = throttle;
+    return true;
+  }
+
   public void FixedUpdate() {
     // Apply gimbal pose every frame, regardless of activated state.
     // The QP zeroes the deflections when the engine isn't firing
@@ -202,9 +217,7 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
     // mainThrottle, matching how SolveAttitude zeroes attitude inputs.
     var throttle = (vm == null || vm.ControlAuthorizedThisTick)
         ? vessel.ctrlState.mainThrottle : 0f;
-    if (throttle != lastThrottle) {
-      lastThrottle = throttle;
-      engine.Throttle = throttle;
+    if (ApplyPlayerThrottle(throttle)) {
       vm?.Virtual?.Invalidate();
     }
 
@@ -212,8 +225,11 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
     // is a child of the gimbal pivot (when present), so `t.forward`
     // already reflects this frame's deflection — the lateral force
     // component falls out of the standard `AddForceAtPosition` call.
+    // ThrustOutputFraction is virtual on Engine: for plain engines it
+    // equals NormalizedOutput; for NuclearEngine it gates on reactor
+    // state so idle coolant flow doesn't render as thrust.
     if (part.Rigidbody != null) {
-      var thrustForce = (float)(engine.Thrust * engine.NormalizedOutput);
+      var thrustForce = (float)(engine.Thrust * engine.ThrustOutputFraction);
       for (int i = 0; i < thrustTransforms.Length; i++) {
         var t = thrustTransforms[i];
         part.AddForceAtPosition(
@@ -227,7 +243,10 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   public void Update() {
     if (!activated) return;
 
-    var output = (float)engine.NormalizedOutput;
+    // FX track thrust output, not propellant flow — the NTR's idle
+    // LH₂ venting is invisible and silent in reality (cool H₂), so
+    // its idle-cooling flow shouldn't drive the running/power groups.
+    var output = (float)engine.ThrustOutputFraction;
     var flowing = output > 0;
 
     runningGroup?.setActive(flowing);
@@ -241,15 +260,19 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
       powerGroup?.SetPower(powerPower);
     }
 
-    // Flameout: was flowing, now starved while throttle is still up.
-    // Surface to the virtual component so NovaEngineTopic samples it
-    // from a single source. Cleared when the engine recovers (next
-    // frame where flow ≥ epsilon) or when throttle drops to zero.
-    bool flamedOut = wasFlowing && !flowing && engine.Throttle > 0;
+    // Flameout: was flowing, now starved while the player still wants
+    // thrust. `lastThrottle` holds the player input (via the virtual
+    // ApplyPlayerThrottle hook) — not the engine's internal LP demand,
+    // which a subclass like NovaNuclearEngineModule may drive
+    // separately (idle coolant flow, etc). Surface to the virtual
+    // component so NovaEngineTopic samples it from a single source;
+    // NuclearEngine.OnPostSolve also writes Flameout authoritatively
+    // for the wire, so this FX-side flag is harmless redundancy there.
+    bool flamedOut = wasFlowing && !flowing && lastThrottle > 0;
     if (flamedOut) {
       flameoutGroup?.Burst();
       engine.Flameout = true;
-    } else if (flowing || engine.Throttle <= 0) {
+    } else if (flowing || lastThrottle <= 0) {
       engine.Flameout = false;
     }
     wasFlowing = flowing;
@@ -270,9 +293,12 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
     }
   }
 
-  // IEngineStatus implementation
-  public bool isOperational => engine != null && engine.Throttle > 0;
-  public float normalizedOutput => engine != null ? (float)engine.NormalizedOutput : 0f;
-  public float throttleSetting => engine != null ? (float)engine.Throttle : 0f;
-  public string engineName => "Nova";
+  // IEngineStatus implementation. Virtual so NovaNuclearEngineModule
+  // can re-shape `isOperational` / `normalizedOutput` around reactor
+  // state (its idle-coolant flow makes engine.Throttle non-zero even
+  // when not producing thrust).
+  public virtual bool isOperational => engine != null && engine.Throttle > 0;
+  public virtual float normalizedOutput => engine != null ? (float)engine.NormalizedOutput : 0f;
+  public virtual float throttleSetting => engine != null ? (float)engine.Throttle : 0f;
+  public virtual string engineName => "Nova";
 }

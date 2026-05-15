@@ -176,17 +176,18 @@ message Stage {
 message PartState {
   uint32 id = 1;
   // Only components with mutable runtime state.
-  TankVolumeState     tank_volume    = 4;
-  BatteryState        battery        = 5;
-  bool                activated      = 6;  // Part.state == ACTIVE (engine staged, etc.)
-  FuelCellState       fuel_cell      = 7;
-  ReactionWheelState  reaction_wheel = 8;
-  DataStorageState    data_storage   = 9;
-  ThermometerState    thermometer    = 10;
-  RtgState            rtg            = 11;
-  RadiatorState       radiator       = 12;
-  ProbeState          probe          = 13;
-  DecouplerState      decoupler      = 14;
+  TankVolumeState     tank_volume     = 4;
+  BatteryState        battery         = 5;
+  bool                activated       = 6;  // Part.state == ACTIVE (engine staged, etc.)
+  FuelCellState       fuel_cell       = 7;
+  ReactionWheelState  reaction_wheel  = 8;
+  DataStorageState    data_storage    = 9;
+  ThermometerState    thermometer     = 10;
+  RtgState            rtg             = 11;
+  RadiatorState       radiator        = 12;
+  ProbeState          probe           = 13;
+  DecouplerState      decoupler       = 14;
+  NuclearEngineState  nuclear_engine  = 15;
 }
 
 message TankVolumeState {
@@ -250,6 +251,21 @@ message RtgState {
 // deployable folding rads round-trip the player's toggle.
 message RadiatorState {
   bool is_deployed = 1;
+}
+
+// NTR (LV-N) reactor state. The reactor sits in one of five state-
+// machine phases, with a slewed throttle and a temperature that's
+// integrated by the per-tick heat balance (fission/decay heat in,
+// LH2 convection + radiative out). `shutdown_requested` is a latched
+// flag: raised in THROTTLED, consumed when the slew + state machine
+// drops to IDLE, triggering IDLE→COOLING without another op.
+message NuclearEngineState {
+  // Cast-equivalent of Nova.Core.Components.Propulsion.ReactorState.
+  // 0=COLD 1=WARMING 2=IDLE 3=THROTTLED 4=COOLING.
+  int32  state              = 1;
+  double core_temp_k        = 2;
+  double throttle_actual    = 3;
+  bool   shutdown_requested = 4;
 }
 
 // Per-decoupler editor-tunable state. Resource crossfeed lists (allowed

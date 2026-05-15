@@ -27,6 +27,28 @@ public class Engine : VirtualComponent {
   // stage continue to fire.
   public double NormalizedOutput => device?.Activity ?? 0;
 
+  // Thrust-producing output fraction this tick — what the part module
+  // multiplies Thrust by to apply to the rigidbody, and what the engine
+  // map wire emits as the throttle field. For a normal liquid engine,
+  // any solver flow is thrust-producing, so this just equals
+  // NormalizedOutput. The NuclearEngine subclass gates this by reactor
+  // state so its idle-coolant LH₂ flow doesn't render as thrust.
+  public virtual double ThrustOutputFraction => NormalizedOutput;
+
+  // Status byte for the engine-map wire (NovaEngineTopic).
+  //   0 burning, 1 flameout, 2 failed (reserved), 3 shutdown, 4 idle.
+  // The NuclearEngine subclass overrides to reflect reactor state
+  // (warming and cooling read as idle on the engine map; details
+  // travel on the per-part NovaPartTopic "N" frame).
+  public virtual byte EngineStatus {
+    get {
+      if (Ignited && Flameout) return 1;
+      if (Ignited && NormalizedOutput > 0) return 0;
+      if (Ignited) return 4;
+      return 3;
+    }
+  }
+
   // Fraction of requested Throttle actually achieved (1.0 = fully
   // supplied; 0 = fully starved). Useful for telemetry that wants
   // satisfaction independent of the throttle setting.
@@ -112,5 +134,16 @@ public class Engine : VirtualComponent {
 
   public override void OnPreSolve() {
     if (device != null) device.Demand = Throttle;
+  }
+
+  // Hook for DeltaVSimulation. The DV sim wants every staged engine
+  // firing at full throttle for the duration. For a plain liquid
+  // engine that's just `Throttle = 1`; the NuclearEngine subclass
+  // overrides to force its state machine into Throttled with
+  // ThrottleActual = 1 (otherwise the reactor would sit Cold and
+  // contribute nothing to ΔV).
+  public virtual void ActivateForBurn() {
+    Throttle = 1.0;
+    Ignited = true;
   }
 }

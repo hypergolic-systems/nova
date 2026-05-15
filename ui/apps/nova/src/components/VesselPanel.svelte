@@ -18,6 +18,7 @@
   import ScienceView from './science/ScienceView.svelte';
   import SystemView from './system/SystemView.svelte';
   import ThermalView from './thermal/ThermalView.svelte';
+  import NukView from './nuk/NukView.svelte';
 
   const MIN_W = 300;
   const MIN_H = 260;
@@ -32,7 +33,7 @@
   const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
   const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
 
-  type TabId = 'system' | 'power' | 'thermal' | 'tank' | 'science';
+  type TabId = 'system' | 'power' | 'thermal' | 'nuk' | 'tank' | 'science';
 
   interface Tab {
     id: TabId;
@@ -48,6 +49,7 @@
     { id: 'system',     short: 'SYS', label: 'Systems'   },
     { id: 'power',      short: 'PWR', label: 'Power'     },
     { id: 'thermal',    short: 'THM', label: 'Thermal'   },
+    { id: 'nuk',        short: 'NUK', label: 'Nuclear'   },
     { id: 'tank',       short: 'TNK', label: 'Tanks'     },
     { id: 'science',    short: 'SCI', label: 'Science'   },
   ];
@@ -100,6 +102,8 @@
       <PowerView parts={() => useNovaParts(() => flight.vesselId)} />
     {:else if activeTab === 'thermal' && flight.vesselId}
       <ThermalView vesselId={flight.vesselId} />
+    {:else if activeTab === 'nuk' && flight.vesselId}
+      <NukView vesselId={flight.vesselId} />
     {:else if activeTab === 'tank' && flight.vesselId}
       <TanksView vesselId={flight.vesselId} />
     {:else if activeTab === 'science' && flight.vesselId}

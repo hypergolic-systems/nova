@@ -23,6 +23,7 @@ public static class ComponentFactory {
   private static readonly Dictionary<string, string> moduleNameToType = new() {
     ["NovaTankModule"] = "TankVolume",
     ["NovaEngineModule"] = "Engine",
+    ["NovaNuclearEngineModule"] = "NuclearEngine",
     ["NovaDecouplerModule"] = "Decoupler",
     ["NovaBatteryModule"] = "Battery",
     ["NovaFuelCellModule"] = "FuelCell",
@@ -64,6 +65,7 @@ public static class ComponentFactory {
     var typeName = ResolveTypeName(moduleName);
     return typeName switch {
       "Engine" => CreateEngine(moduleNode),
+      "NuclearEngine" => CreateNuclearEngine(moduleNode),
       "TankVolume" => CreateTankVolume(moduleNode),
       "Battery" => CreateBattery(moduleNode),
       "FuelCell" => CreateFuelCell(moduleNode),
@@ -121,6 +123,43 @@ public static class ComponentFactory {
     if (gimbalRange != null)
       engine.GimbalRangeRad = double.Parse(gimbalRange) * System.Math.PI / 180.0;
     return engine;
+  }
+
+  // NTR (LV-N) reactor. Every value is config-declared — see
+  // configs/overrides/propulsion/liquidEngineLV-N.cfg for the canonical
+  // numbers. Single propellant (LH₂) by construction; the cfg writer
+  // is trusted to declare exactly that. Per the "factories are thin
+  // parsers" memory: no formulas, no defaults, no policy.
+  public static NuclearEngine CreateNuclearEngine(ConfigNode node) {
+    var propNode = node.GetNodes("PROPELLANT").FirstOrDefault()
+      ?? throw new System.ArgumentException(
+          "NovaNuclearEngineModule: PROPELLANT { resource = ... } is required.");
+    var propResource = Resource.Get(propNode.GetValue("resource"));
+
+    var reactor = new NuclearEngine();
+    reactor.InitializeNuclear(
+      thrust:            double.Parse(node.GetValue("thrust")),
+      isp:               double.Parse(node.GetValue("isp")),
+      propellant:        propResource,
+      thermalMassJK:     double.Parse(node.GetValue("thermalMassJK")),
+      ambientK:          double.Parse(node.GetValue("ambientK")),
+      coldThresholdK:    double.Parse(node.GetValue("coldThresholdK")),
+      warmupDurationSec: double.Parse(node.GetValue("warmupDurationSec")),
+      idleTempK:         double.Parse(node.GetValue("idleTempK")),
+      operatingTempK:    double.Parse(node.GetValue("operatingTempK")),
+      spoolEndThrottle:  double.Parse(node.GetValue("spoolEndThrottle")),
+      idlePowerW:        double.Parse(node.GetValue("idlePowerW")),
+      maxPowerW:         double.Parse(node.GetValue("maxPowerW")),
+      coolingCoeffWK:    double.Parse(node.GetValue("coolingCoeffWK")),
+      inletTempK:        double.Parse(node.GetValue("inletTempK")),
+      cpH2JKgK:          double.Parse(node.GetValue("cpH2JKgK")),
+      slewRatePerSec:    double.Parse(node.GetValue("slewRatePerSec")),
+      decayTauSeconds:   double.Parse(node.GetValue("decayTauSeconds"))
+    );
+    var gimbalRange = node.GetValue("gimbalRange");
+    if (gimbalRange != null)
+      reactor.GimbalRangeRad = double.Parse(gimbalRange) * System.Math.PI / 180.0;
+    return reactor;
   }
 
   public static TankVolume CreateTankVolume(ConfigNode node) {
