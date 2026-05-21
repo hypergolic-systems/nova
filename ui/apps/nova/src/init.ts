@@ -1,4 +1,12 @@
-import { mount } from 'svelte';
+// Shared once-only init for every Nova scene entry. Module-cache
+// semantics mean this file's top-level runs exactly once across all
+// entries that import it — `flight.ts`, `editor.ts`, `rnd.ts` all
+// pull it in, but the capabilities call lands once.
+//
+// Lives separately from any one entry so DG's per-scene dynamic-
+// import can land any of them first — the entry that wins the race
+// still triggers init via the import side-effect chain.
+
 import { getKsp } from '@dragonglass/telemetry/svelte';
 import {
   GameTopic,
@@ -7,9 +15,6 @@ import {
   CAP_EDITOR_STAGING,
   CAP_EDITOR_TOOLBAR,
 } from '@dragonglass/telemetry/core';
-import Hud from './Hud.svelte';
-
-mount(Hud, { target: document.getElementById('app') ?? document.body });
 
 // Capabilities Nova owns:
 //   flight/ui      — Nova draws navball, staging, tapes; DG suppresses

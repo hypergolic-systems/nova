@@ -153,8 +153,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Dragonglass — hard runtime dep. Telemetry for topic types,
-         Hud for SidecarHost.OverrideEntry. Private=False because
+    <!-- Dragonglass — hard runtime dep. Telemetry for topic types
+         (SceneMapTopic for UI scene registration, NovaPart wire), Hud
+         for NativeBridge (part-preview punch-through stream pushed
+         via DgHudNative_PushStreamFrame). Private=False because
          Dragonglass installs these; Nova does not ship them. -->
     <Reference Include="Dragonglass.Hud">
       <HintPath>$(DragonglassStubs)/Dragonglass.Hud.dll</HintPath>

@@ -14,10 +14,12 @@
   import VesselPanel from './components/VesselPanel.svelte';
   import FlightTopBar from './components/FlightTopBar.svelte';
 
-  // Layout classes (.hud, .navslot, .staging-stack, .navball-cluster) and
-  // the per-instrument SVG styling are defined in flight.css inside
-  // @dragonglass/instruments and bundled into Dragonglass's runtime.css,
-  // which the sidecar shell auto-links. No CSS import needed here.
+  // Layout classes (.hud, .navslot, .staging-stack, .navball-cluster)
+  // and per-instrument SVG styling come from @dragonglass/instruments/
+  // flight.css. Dragonglass's runtime.css no longer ships them (those
+  // styles moved out with the stock-UI removal in dragonglass@f1339cc1),
+  // so Nova adopts the sheet itself in `flight.ts` via the CSS Module
+  // import pattern from docs/mod-ui.md. No CSS import needed here.
 
   const s = useFlightData();
   const ops = useFlightOps();
