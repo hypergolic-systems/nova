@@ -188,6 +188,7 @@ message PartState {
   ProbeState          probe           = 13;
   DecouplerState      decoupler       = 14;
   NuclearEngineState  nuclear_engine  = 15;
+  EngineState         engine          = 16;
 }
 
 message TankVolumeState {
@@ -266,6 +267,20 @@ message NuclearEngineState {
   double core_temp_k        = 2;
   double throttle_actual    = 3;
   bool   shutdown_requested = 4;
+  // Staging-activated flag — see EngineState.active. Set when the
+  // engine is staged (NovaEngineModule.OnActive); orthogonal to the
+  // reactor state machine, which separately gates effective thrust.
+  bool   active             = 5;
+}
+
+// Plain (non-nuclear) engine state. The only persistent bit on a
+// liquid engine is its staging-activated flag — once staged, the
+// engine is in the player's throttle chain across ticks, saves, and
+// vessel reloads. Without this, a quicksave mid-burn or an unload/
+// reload would strand the engine back in the unstaged state and
+// mainThrottle would stop being applied.
+message EngineState {
+  bool active = 1;
 }
 
 // Per-decoupler editor-tunable state. Resource crossfeed lists (allowed

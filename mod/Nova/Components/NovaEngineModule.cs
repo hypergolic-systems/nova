@@ -15,7 +15,6 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   [KSPField] public string gimbalTransformName = "Gimbal";
 
   private Engine engine;
-  private bool activated;
   // Protected so NovaNuclearEngineModule can read/write it from its
   // ApplyPlayerThrottle override.
   protected float lastThrottle = -1;
@@ -175,8 +174,9 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   }
 
   public override void OnActive() {
-    activated = true;
-    if (engine != null) engine.Ignited = true;
+    if (engine == null) return;
+    engine.Active = true;
+    engine.Ignited = true;
   }
 
   // Hook for subclasses to receive the player throttle each FixedUpdate.
@@ -209,7 +209,7 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
           * Quaternion.AngleAxis(yawDeg, Vector3.up);
     }
 
-    if (!activated) return;
+    if (engine == null || !engine.Active) return;
 
     var vm = vessel.FindVesselModuleImplementing<NovaVesselModule>();
     // StoredCommands gate — when the vessel-level authorization fails
@@ -241,7 +241,7 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   }
 
   public void Update() {
-    if (!activated) return;
+    if (engine == null || !engine.Active) return;
 
     // FX track thrust output, not propellant flow — the NTR's idle
     // LH₂ venting is invisible and silent in reality (cool H₂), so
@@ -301,4 +301,6 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   public virtual float normalizedOutput => engine != null ? (float)engine.NormalizedOutput : 0f;
   public virtual float throttleSetting => engine != null ? (float)engine.Throttle : 0f;
   public virtual string engineName => "Nova";
+
+  public override bool IsStageable() => true;
 }

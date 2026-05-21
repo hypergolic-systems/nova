@@ -285,6 +285,7 @@ public class NuclearEngine : Engine {
       Thrust = Thrust,
       Isp = Isp,
       Throttle = Throttle,
+      Active = Active,
       GimbalRangeRad = GimbalRangeRad,
       GimbalPitchDeflection = GimbalPitchDeflection,
       GimbalYawDeflection = GimbalYawDeflection,
@@ -899,6 +900,7 @@ public class NuclearEngine : Engine {
       CoreTempK = CoreTempK,
       ThrottleActual = ThrottleActual,
       ShutdownRequested = ShutdownRequested,
+      Active = Active,
     };
   }
 
@@ -910,6 +912,7 @@ public class NuclearEngine : Engine {
     State = loaded == ReactorState.Idle ? ReactorState.Throttled : loaded;
     ThrottleActual = state.NuclearEngine.ThrottleActual;
     ShutdownRequested = state.NuclearEngine.ShutdownRequested;
+    Active = state.NuclearEngine.Active;
     slewBaselineThrottle = ThrottleActual;
     slewBaselineUT = Vessel?.Systems?.Clock?.UT ?? 0;
     lastSlewTarget = TargetThrottle();

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
 using Nova.Core.Systems;
 
@@ -20,6 +21,14 @@ public class Engine : VirtualComponent {
   public double GimbalRangeRad;
   public double GimbalPitchDeflection;
   public double GimbalYawDeflection;
+
+  // Staging-activated flag — true once the part has been staged and
+  // the engine has been added to the player's throttle chain. Set in
+  // NovaEngineModule.OnActive; persists through saves so a quicksave/
+  // reload mid-burn (or vessel unload/reload) doesn't strand an
+  // activated engine. Orthogonal to the reactor state machine on the
+  // NuclearEngine subclass, which separately gates effective thrust.
+  public bool Active;
 
   public bool Ignited;
   public bool Flameout;
@@ -114,6 +123,7 @@ public class Engine : VirtualComponent {
       Isp = Isp,
       Throttle = Throttle,
       Class = Class,
+      Active = Active,
       GimbalRangeRad = GimbalRangeRad,
       GimbalPitchDeflection = GimbalPitchDeflection,
       GimbalYawDeflection = GimbalYawDeflection,
@@ -153,5 +163,14 @@ public class Engine : VirtualComponent {
   public virtual void ActivateForBurn() {
     Throttle = 1.0;
     Ignited = true;
+  }
+
+  public override void Save(PartState state) {
+    state.Engine = new EngineState { Active = Active };
+  }
+
+  public override void Load(PartState state) {
+    if (state.Engine == null) return;
+    Active = state.Engine.Active;
   }
 }
