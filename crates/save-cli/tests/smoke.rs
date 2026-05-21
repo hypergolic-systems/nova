@@ -66,12 +66,12 @@ fn dump_craft_roundtrip() {
         id: 0,
         part_name: "mk1pod_v2".into(),
         parent_index: -1,
-        relative_pos: Some(Vec3 {
+        org_pos: Some(Vec3 {
             x: 0.0,
             y: 0.0,
             z: 0.0,
         }),
-        relative_rot: None,
+        org_rot: None,
         attachment: None,
         symmetry: None,
         tank_volume: None,

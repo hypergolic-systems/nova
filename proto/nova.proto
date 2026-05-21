@@ -97,8 +97,8 @@ message PartStructure {
   uint32 id = 1;              // index in craft, persistentId in save
   string part_name = 2;       // prefab lookup key
   int32  parent_index = 3;    // -1 for root
-  Vec3   relative_pos = 4;    // position relative to root part (root = origin)
-  Quat   relative_rot = 5;    // rotation relative to root part (root = identity)
+  Vec3   org_pos = 4;         // canonical root-relative position (== stock Part.orgPos)
+  Quat   org_rot = 5;         // canonical root-relative rotation (== stock Part.orgRot)
   Attachment attachment = 6;  // null for root part
   Symmetry   symmetry = 7;    // null for non-symmetric parts
   // Only components with editor-configurable structure.

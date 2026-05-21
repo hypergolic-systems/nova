@@ -250,12 +250,12 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
     };
     println!("{p0}[{}] {} ({parent})", part.id, part.part_name);
 
-    if let Some(rp) = &part.relative_pos {
-        println!("{p2}RelPos: ({:.3}, {:.3}, {:.3})", rp.x, rp.y, rp.z);
+    if let Some(rp) = &part.org_pos {
+        println!("{p2}OrgPos: ({:.3}, {:.3}, {:.3})", rp.x, rp.y, rp.z);
     }
-    if let Some(r) = &part.relative_rot {
+    if let Some(r) = &part.org_rot {
         println!(
-            "{p2}RelRot: ({:.6}, {:.6}, {:.6}, {:.6})",
+            "{p2}OrgRot: ({:.6}, {:.6}, {:.6}, {:.6})",
             r.x, r.y, r.z, r.w
         );
     }

@@ -134,10 +134,10 @@ public static class NovaPartInstantiator {
       var ps = structure.Parts[i];
       var part = parts[i];
 
-      if (ps.RelativePos != null)
-        part.orgPos = new Vector3(ps.RelativePos.X, ps.RelativePos.Y, ps.RelativePos.Z);
-      if (ps.RelativeRot != null)
-        part.orgRot = new Quaternion(ps.RelativeRot.X, ps.RelativeRot.Y, ps.RelativeRot.Z, ps.RelativeRot.W);
+      if (ps.OrgPos != null)
+        part.orgPos = new Vector3(ps.OrgPos.X, ps.OrgPos.Y, ps.OrgPos.Z);
+      if (ps.OrgRot != null)
+        part.orgRot = new Quaternion(ps.OrgRot.X, ps.OrgRot.Y, ps.OrgRot.Z, ps.OrgRot.W);
 
       part.partTransform = part.transform;
       part.packed = true;

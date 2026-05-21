@@ -40,18 +40,31 @@ public static class NovaVesselBuilder {
         ? partIndex[part.parent]
         : -1;
 
-      // Save root-relative position/rotation. Compute from transforms since
-      // orgPos/orgRot may be stale or zero for editor-built parts.
+      // Save canonical root-relative pose (== stock Part.orgPos/orgRot).
+      //   - In flight, Vessel.Initialize → findVesselParts has set orgPos to
+      //     the editor-canonical rest pose; physics doesn't mutate it. Using
+      //     it directly means drift accumulated by joint compliance during
+      //     flight is discarded on save (stock semantics).
+      //   - In editor, parts haven't been through Initialize so orgPos is
+      //     typically zero/stale. Derive from transforms instead — editor
+      //     placements are themselves canonical (no physics).
       var root = parts[0];
-      var relPos = root.transform.InverseTransformPoint(part.transform.position);
-      var relRot = Quaternion.Inverse(root.transform.rotation) * part.transform.rotation;
+      Vector3 orgPos;
+      Quaternion orgRot;
+      if (HighLogic.LoadedSceneIsFlight) {
+        orgPos = part.orgPos;
+        orgRot = part.orgRot;
+      } else {
+        orgPos = root.transform.InverseTransformPoint(part.transform.position);
+        orgRot = Quaternion.Inverse(root.transform.rotation) * part.transform.rotation;
+      }
       var id = idSelector(part);
       var ps = new Proto.PartStructure {
         Id = id,
         PartName = part.partInfo.name,
         ParentIndex = parentIdx,
-        RelativePos = new Proto.Vec3 { X = relPos.x, Y = relPos.y, Z = relPos.z },
-        RelativeRot = new Proto.Quat { X = relRot.x, Y = relRot.y, Z = relRot.z, W = relRot.w },
+        OrgPos = new Proto.Vec3 { X = orgPos.x, Y = orgPos.y, Z = orgPos.z },
+        OrgRot = new Proto.Quat { X = orgRot.x, Y = orgRot.y, Z = orgRot.z, W = orgRot.w },
       };
       var partState = new Proto.PartState {
         Id = id,
