@@ -77,10 +77,12 @@ public sealed class NovaScienceArchiveTopic : Topic {
   // Solar-system order, each body paired with its orbital parent's
   // name ("" for the Sun, which references itself in stock).
   // Defensive: the topic broadcaster ticks during the KSP loading
-  // scene, before `FlightGlobals.Bodies` is fully populated. Skip
-  // bodies whose name field hasn't been wired yet rather than NRE.
+  // scene, before the `FlightGlobals` MonoBehaviour itself exists.
+  // Going through `FlightGlobals.Bodies` (= `fetch.bodies`) NREs in
+  // that window because `fetch` is null; reach through `fetch` so the
+  // null-check actually catches the case the original guard intended.
   private static IEnumerable<(string name, string parent)> ResolveBodies() {
-    var bodies = FlightGlobals.Bodies;
+    var bodies = FlightGlobals.fetch?.bodies;
     if (bodies == null) yield break;
     for (int i = 0; i < bodies.Count; i++) {
       var body = bodies[i];
