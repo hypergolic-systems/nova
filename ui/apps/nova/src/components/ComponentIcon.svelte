@@ -12,9 +12,16 @@
     | 'wheel'
     | 'light'
     | 'engine'
+    | 'nuclear'
+    | 'rcs'
     | 'tank'
     | 'fuelCell'
     | 'command'
+    | 'probe'
+    | 'antenna'
+    | 'decoupler'
+    | 'docking'
+    | 'crew'
     | 'dataStorage'
     | 'thermometer'
     | 'rtg'
@@ -152,6 +159,85 @@
       <path d="M 11 6 L 10.33 8.5 L 8.5 10.33 L 8.17 7.25 Z" />
       <path d="M 1 6 L 1.67 8.5 L 3.5 10.33 L 3.83 7.25 Z" />
     </g>
+  {:else if kind === 'nuclear'}
+    <!-- Nuclear engine: the engine bell silhouette with a small
+         radiation trefoil seated in the combustion chamber. The bell
+         is a touch narrower than the plain engine icon so the trefoil
+         has room to breathe at the top. -->
+    <path d="M4 2.5 L8 2.5 L10.6 11 L1.4 11 Z"
+          stroke="currentColor" fill="none"
+          stroke-width="0.9" stroke-linejoin="round" />
+    <circle cx="6" cy="4.6" r="0.65" fill="currentColor" />
+    <g fill="currentColor">
+      <path d="M 4.9 3.3 L 6 2.9 L 7.1 3.3 L 6 4.2 Z" />
+      <path d="M 8.2 5.4 L 7.7 6.6 L 6.6 5.0 Z" />
+      <path d="M 3.8 5.4 L 4.3 6.6 L 5.4 5.0 Z" />
+    </g>
+  {:else if kind === 'rcs'}
+    <!-- RCS thruster cluster: four small outward-facing nozzles in a
+         plus pattern around a central manifold. Reads as "multi-axis
+         thruster array" — distinct from the single-bell `engine`. -->
+    <circle cx="6" cy="6" r="1.1" fill="currentColor" />
+    <g stroke="currentColor" fill="none" stroke-width="0.85" stroke-linejoin="round">
+      <path d="M5 2.4 L7 2.4 L7.4 0.9 L4.6 0.9 Z" />
+      <path d="M5 9.6 L7 9.6 L7.4 11.1 L4.6 11.1 Z" />
+      <path d="M2.4 5 L2.4 7 L0.9 7.4 L0.9 4.6 Z" />
+      <path d="M9.6 5 L9.6 7 L11.1 7.4 L11.1 4.6 Z" />
+    </g>
+  {:else if kind === 'probe'}
+    <!-- Compact probe core: a small body with a single antenna stub on
+         top. Deliberately smaller silhouette than `command` so the
+         visual hierarchy reads "probe < pod". -->
+    <rect x="3.4" y="4.4" width="5.2" height="4.6" rx="0.5"
+          stroke="currentColor" fill="none" stroke-width="0.9" />
+    <line x1="6" y1="1.4" x2="6" y2="4.2"
+          stroke="currentColor" stroke-width="0.9" stroke-linecap="round" />
+    <line x1="4.5" y1="2.1" x2="7.5" y2="2.1"
+          stroke="currentColor" stroke-width="0.85" stroke-linecap="round" />
+    <line x1="4.6" y1="9.9" x2="7.4" y2="9.9"
+          stroke="currentColor" stroke-width="0.7" stroke-linecap="round" />
+  {:else if kind === 'antenna'}
+    <!-- Parabolic dish on a short mast with a feed horn at the focal
+         point. The dish is drawn as a wide-open arc; the feed is a
+         tiny perpendicular tick that sells the optics. -->
+    <path d="M2 6 Q6 1.5 10 6"
+          stroke="currentColor" fill="none"
+          stroke-width="0.95" stroke-linecap="round" />
+    <line x1="6" y1="3.6" x2="6" y2="5.0"
+          stroke="currentColor" stroke-width="0.85" stroke-linecap="round" />
+    <circle cx="6" cy="5.2" r="0.55" fill="currentColor" />
+    <line x1="6" y1="6"   x2="6" y2="10.6"
+          stroke="currentColor" stroke-width="0.95" stroke-linecap="round" />
+    <line x1="4.4" y1="10.8" x2="7.6" y2="10.8"
+          stroke="currentColor" stroke-width="0.95" stroke-linecap="round" />
+  {:else if kind === 'decoupler'}
+    <!-- Two stacked rectangles separated by a thin gap with outward
+         chevrons on the seam — reads as "separation event". -->
+    <rect x="2.2" y="1.6" width="7.6" height="3.6"
+          stroke="currentColor" fill="none" stroke-width="0.9" />
+    <rect x="2.2" y="6.8" width="7.6" height="3.6"
+          stroke="currentColor" fill="none" stroke-width="0.9" />
+    <g stroke="currentColor" fill="none" stroke-width="0.85" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="0.8,6 2,5.4 0.8,4.8" />
+      <polyline points="11.2,6 10,5.4 11.2,4.8" />
+    </g>
+  {:else if kind === 'docking'}
+    <!-- Docking port: outer ring with four capture petals at cardinal
+         positions inside, evoking an APAS-style soft-capture interface. -->
+    <circle cx="6" cy="6" r="4" stroke="currentColor" fill="none" stroke-width="0.95" />
+    <circle cx="6" cy="6" r="1.5" stroke="currentColor" fill="none" stroke-width="0.85" />
+    <g stroke="currentColor" stroke-width="0.95" stroke-linecap="round">
+      <line x1="6"   y1="2.6" x2="6"   y2="3.8" />
+      <line x1="6"   y1="8.2" x2="6"   y2="9.4" />
+      <line x1="2.6" y1="6"   x2="3.8" y2="6" />
+      <line x1="8.2" y1="6"   x2="9.4" y2="6" />
+    </g>
+  {:else if kind === 'crew'}
+    <!-- Single torso silhouette: round head over a trapezoidal body.
+         Deliberately abstract — reads as "person" without committing
+         to a specific suit or pose. -->
+    <circle cx="6" cy="3.5" r="1.7" fill="currentColor" />
+    <path d="M2.7 11 L3.6 6.6 L8.4 6.6 L9.3 11 Z" fill="currentColor" />
   {/if}
 </svg>
 

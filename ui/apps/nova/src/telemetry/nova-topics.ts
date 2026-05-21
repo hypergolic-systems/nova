@@ -969,7 +969,7 @@ export const NovaStorageTopic = (partId: string): Topic<NovaStorageFrame> =>
 // `propellants` list (Engine / NuclearEngine / Rcs / FuelCell): each
 // entry is `[resourceName, volumeRatio]`; ratios are author-side volumes,
 // not mass.
-export type NovaInfoEngineFrame      = ['E', thrustKn: number, ispS: number, gimbalDeg: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoEngineFrame      = ['E', engineClass: string, thrustKn: number, ispS: number, gimbalDeg: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoNuclearFrame     = ['N', thrustKn: number, ispS: number, idleTempK: number, opTempK: number, idlePowerW: number, maxPowerW: number, warmupSec: number, slewPerSec: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoRcsFrame         = ['M', thrusterPowerKn: number, thrusterCount: number, ispS: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoTankFrame        = ['T', volumeL: number, maxRateLps: number, slices: [resource: string, capacityL: number, tier: number][]];
@@ -1011,10 +1011,14 @@ export type NovaInfoComponentFrame =
   | NovaInfoThermometerFrame;
 
 // Wire frame for the singleton NovaPartInfo topic. Empty array = nothing
-// hovered; populated frame = open against the part icon's screen-space
-// rect. The UI flushes the popup left-edge against `iconX + iconW` (or
-// `iconX - popupWidth` on right-edge overflow) so the cursor can move
-// from icon to popup with no gap.
+// hovered; populated frame = open against the parts catalog's right
+// edge. The icon rect (`iconX/Y/W/H`) gives the icon's screen-space
+// bounding box; the catalog rect (`catalogLeftX/RightX`) bounds the
+// outer parts catalog panel in the same coord space. The UI anchors the
+// popup flush against `catalogRightX`, flipping to `catalogLeftX -
+// popupWidth` if the right side would clip the viewport. `isPinned`
+// is the sticky flag toggled by right-click in C#; the UI mirrors it as
+// a pin glyph in the title bar but has no other state effect.
 export type NovaPartInfoFrame =
   | []
   | [
@@ -1028,6 +1032,9 @@ export type NovaPartInfoFrame =
       iconY: number,
       iconW: number,
       iconH: number,
+      catalogLeftX: number,
+      catalogRightX: number,
+      isPinned: 0 | 1,
       components: NovaInfoComponentFrame[],
     ];
 
@@ -1043,6 +1050,10 @@ export interface PropellantSpec {
 }
 
 export interface EngineSpec {
+  /** Cfg-declared label (Booster / Sustainer / Vacuum / Ionic / ...).
+   *  Surfaced in the part-info marquee as the class line; the value is
+   *  whatever the engine cfg supplied — the UI does not infer. */
+  class: string;
   thrustKn: number;
   ispS: number;
   /** 0 for non-gimbaling engines (UI hides the row). */
@@ -1050,7 +1061,7 @@ export interface EngineSpec {
   propellants: PropellantSpec[];
 }
 
-export interface NuclearSpec extends EngineSpec {
+export interface NuclearSpec extends Omit<EngineSpec, 'class'> {
   /** Steady-state idle core temperature (K) when reactor is on but
    *  throttle is 0. */
   idleTempK: number;
@@ -1215,15 +1226,23 @@ export interface NovaPartInfo {
    *  cost. */
   costFunds: number;
   /** Part icon's screen-space rect in browser coords (top-down Y).
-   *  The popup flushes against the icon's right edge (`iconX + iconW`)
-   *  and flips to its left edge (`iconX - popupWidth`) if right-side
-   *  overflow would clip the viewport. Width/height let the flip
-   *  preserve the same icon-edge → popup-edge invariant in either
-   *  direction. */
+   *  Used for the vertical anchor and as a fallback if the catalog
+   *  rect is unavailable. */
   iconX: number;
   iconY: number;
   iconW: number;
   iconH: number;
+  /** Parts catalog panel's left/right edges in the same coord space.
+   *  The popup anchors flush against `catalogRightX` (with a small gap)
+   *  and flips to `catalogLeftX - popupWidth` if the right side would
+   *  clip the viewport — so neighbouring icons stay visible while the
+   *  popup is open. */
+  catalogLeftX: number;
+  catalogRightX: number;
+  /** Sticky flag toggled by right-clicking the part icon (in C#). The
+   *  UI mirrors it as a pin glyph in the title bar; no other UI-side
+   *  effect — the C# side owns the close decision. */
+  isPinned: boolean;
 
   engine:       EngineSpec[];
   nuclear:      NuclearSpec[];
@@ -1258,11 +1277,13 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
   const [internalName, title, manufacturer, description,
          dryMassKg, costFunds,
          iconX, iconY, iconW, iconH,
+         catalogLeftX, catalogRightX, isPinned,
          components] = f;
   const out: NovaPartInfo = {
     internalName, title, manufacturer, description,
     dryMassKg, costFunds,
     iconX, iconY, iconW, iconH,
+    catalogLeftX, catalogRightX, isPinned: isPinned === 1,
     engine: [], nuclear: [], rcs: [], tank: [], battery: [],
     fuelCell: [], solar: [], rtg: [], wheel: [], radiator: [],
     light: [], command: [], probe: [], antenna: [], decoupler: [],
@@ -1274,8 +1295,9 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
     switch (c[0]) {
       case 'E':
         out.engine.push({
-          thrustKn: c[1], ispS: c[2], gimbalDeg: c[3],
-          propellants: decodePropellants(c[4]),
+          class: c[1],
+          thrustKn: c[2], ispS: c[3], gimbalDeg: c[4],
+          propellants: decodePropellants(c[5]),
         });
         break;
       case 'N':

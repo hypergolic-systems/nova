@@ -25,19 +25,24 @@ namespace Nova.Core.Telemetry;
 //   | [internalName, displayTitle, manufacturer, description,
 //      dryMassKg, costFunds,
 //      iconX, iconY, iconW, iconH,
+//      catalogLeftX, catalogRightX, isPinned,
 //      [ [kind, ...], ... ]]
 //
 // The icon rect (`iconX/Y/W/H`) is the part-list icon's screen-space
-// bounding box in browser coords (top-down Y). The UI flushes the popup
-// against the icon's right edge by default, flips to the left edge if
-// the right side would clip the viewport.
+// bounding box in browser coords (top-down Y). The catalog rect
+// (`catalogLeftX/RightX`) is the parts catalog panel's left/right edges
+// in the same coord space — the UI anchors the popup flush against the
+// catalog's right edge, flipping to the left edge if it would clip the
+// viewport. `isPinned` is the sticky flag; while true the closer
+// suppresses auto-hide and SetHover only changes target on right-click.
 //
 // Single-char kind prefix per Nova component family. Same letter as
 // `PartFormatter` where the kind already exists there (so the kind
 // stays a stable identifier across topics); each frame's *fields* are
 // the design specs for that kind:
 //
-//   "E" Engine        — thrustKn, ispS, gimbalDeg, [[resource, ratio], ...]
+//   "E" Engine        — engineClass, thrustKn, ispS, gimbalDeg,
+//                       [[resource, ratio], ...]
 //   "N" NuclearEngine — thrustKn, ispS, idleTempK, opTempK,
 //                       idlePowerW, maxPowerW, warmupSec, slewPerSec,
 //                       [[resource, ratio], ...]
@@ -87,6 +92,9 @@ public static class PartInfoFormatter {
                             double iconY,
                             double iconW,
                             double iconH,
+                            double catalogLeftX,
+                            double catalogRightX,
+                            bool isPinned,
                             IEnumerable<VirtualComponent> components,
                             DockingPortInfo dockingInfo) {
     JsonWriter.Begin(sb, '[');
@@ -102,6 +110,9 @@ public static class PartInfoFormatter {
     JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconY);
     JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconW);
     JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, iconH);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, catalogLeftX);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteDouble(sb, catalogRightX);
+    JsonWriter.Sep(sb, ref first); JsonWriter.WriteBoolAsBit(sb, isPinned);
 
     JsonWriter.Sep(sb, ref first);
     WriteComponents(sb, components, dockingInfo);
@@ -167,6 +178,8 @@ public static class PartInfoFormatter {
         JsonWriter.Begin(sb, '[');
         bool f = true;
         WriteKind(sb, "E", ref f);
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.WriteString(sb, e.Class ?? "");
         WriteNum(sb, e.Thrust, ref f);
         WriteNum(sb, e.Isp, ref f);
         // GimbalRangeRad → degrees for the wire (every UI tooltip /

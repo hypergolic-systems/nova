@@ -30,8 +30,6 @@ namespace Nova.Patches;
 // pixels with Y measured **up from bottom**. The browser uses Y
 // **down from top**. Flip here so the topic's wire value is already
 // browser-space (matches every other Nova → UI coord on the wire).
-internal static class PartListTooltipPatches { }
-
 [HarmonyPatch(typeof(PartListTooltipController), nameof(PartListTooltipController.OnPointerEnter))]
 internal static class PartListTooltipController_OnPointerEnter_Patch {
   [HarmonyPrefix]
@@ -48,21 +46,94 @@ internal static class PartListTooltipController_OnPointerEnter_Patch {
     // Don't open a hover while the player is holding a part — the
     // popup would just be in the way of the placement gesture.
     if (EditorLogic.SelectedPart != null) return false;
+    // While pinned, hover does not retarget. Stock right-click sticky
+    // semantics: only an explicit right-click on a different icon
+    // re-pins to that part — see the `OnPointerClick` patch below.
+    var topic = NovaPartInfoTopic.Instance;
+    if (topic != null && topic.IsPinned) return false;
 
-    // Send the icon's full screen-space rect (browser coords, top-down Y)
-    // so the UI can flush the popup against the icon's right edge —
-    // adjacent enough that the cursor can travel from icon to popup
-    // without crossing empty space — and flip the popup to the icon's
-    // left edge if the right side would clip the viewport.
+    PartListTooltipPatches.PublishHover(icon, eventData, partInfo);
+
+    return false; // skip stock tooltip spawn
+  }
+}
+
+[HarmonyPatch(typeof(PartListTooltipController), nameof(PartListTooltipController.OnPointerClick))]
+internal static class PartListTooltipController_OnPointerClick_Patch {
+  // Right-click → sticky pin toggle. Stock's
+  // `PinnableTooltipController.OnPointerClick` toggles pin on any
+  // click; we narrow to right-click only because left-click is the
+  // editor's part-placement gesture and stealing it would break the
+  // primary editor interaction.
+  //
+  // Cases:
+  //   no hover            → SetHover on the icon, then TogglePin (pins)
+  //   hovered, not pinned → if same part: TogglePin (pins)
+  //                         if other part: SetHover (re-target), TogglePin
+  //   hovered, pinned     → if same part: TogglePin (unpins)
+  //                         if other part: SetHover (re-target stays pinned)
+  //                                       — handled by ClearHover then SetHover
+  //                                         since SetHover ignores pinned-state retarget
+  //                                         when we explicitly call it here.
+  [HarmonyPrefix]
+  static bool Prefix(PartListTooltipController __instance, PointerEventData eventData) {
+    if (eventData.button != PointerEventData.InputButton.Right) return true; // left-click → stock
+    var icon = AccessTools.Field(typeof(PartListTooltipController), "editorPartIcon")
+        ?.GetValue(__instance) as EditorPartIcon;
+    if (icon == null || icon.isEmptySlot || !icon.isPart) return false;
+    var partInfo = icon.partInfo;
+    if (partInfo == null) return false;
+    if (EditorLogic.SelectedPart != null) return false;
+
+    var topic = NovaPartInfoTopic.Instance;
+    if (topic == null) return false;
+
+    var current = topic.CurrentPart;
+    if (current == partInfo) {
+      // Same icon: pure toggle.
+      NovaPartInfoTopic.TogglePin();
+    } else if (current == null) {
+      // Nothing currently shown: open + pin.
+      PartListTooltipPatches.PublishHover(icon, eventData, partInfo);
+      NovaPartInfoTopic.TogglePin();
+    } else {
+      // Different icon: retarget. If pinned, unpin first so SetHover
+      // takes effect (pinned-state retarget is blocked by the hover
+      // patch's IsPinned guard), then re-pin to the new part.
+      bool wasPinned = topic.IsPinned;
+      if (wasPinned) NovaPartInfoTopic.Unpin();
+      PartListTooltipPatches.PublishHover(icon, eventData, partInfo);
+      // Toggle to pinned regardless of previous state — right-click on
+      // a different icon always lands in the pinned state.
+      if (!topic.IsPinned) NovaPartInfoTopic.TogglePin();
+    }
+    return false; // skip base (no extended-info, no stock pin path)
+  }
+}
+
+internal static class PartListTooltipPatches {
+  // Shared icon-rect → SetHover path. Used by both the hover patch
+  // and the right-click patch (when the latter has to open a popup
+  // before pinning).
+  internal static void PublishHover(EditorPartIcon icon,
+                                     PointerEventData eventData,
+                                     AvailablePart partInfo) {
+    // Send the icon's full screen-space rect (browser coords, top-down
+    // Y) plus the parts catalog panel's left/right edges in the same
+    // coord space. The UI anchors the popup flush against the catalog's
+    // right edge by default and flips to the catalog's left edge if it
+    // would clip the viewport — neighbouring icons stay visible no
+    // matter which icon was hovered.
     //
     // `GetWorldCorners` returns world-space coords; we project through
     // the canvas's camera (null for Screen Space - Overlay, populated
     // for Screen Space - Camera) to get screen pixels.
     var iconRt = icon.GetComponent<RectTransform>();
     double iconX, iconY, iconW, iconH;
+    Camera canvasCam = null;
     if (iconRt != null) {
       var canvas = iconRt.GetComponentInParent<Canvas>();
-      var canvasCam = (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+      canvasCam = (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
           ? canvas.worldCamera : null;
       var corners = new Vector3[4]; // BL, TL, TR, BR
       iconRt.GetWorldCorners(corners);
@@ -74,9 +145,6 @@ internal static class PartListTooltipController_OnPointerEnter_Patch {
       iconW = br.x - bl.x;
       iconH = tl.y - bl.y;                // unity y increases upward
     } else {
-      // Should never happen on an EditorPartIcon, but fall back to a
-      // zero-sized rect at the cursor so the popup still opens somewhere
-      // reasonable.
       var pos = eventData.position;
       iconX = pos.x;
       iconY = Screen.height - pos.y;
@@ -84,9 +152,29 @@ internal static class PartListTooltipController_OnPointerEnter_Patch {
       iconH = 0;
     }
 
-    NovaPartInfoTopic.SetHover(partInfo, iconX, iconY, iconW, iconH);
+    // Catalog rect: from the EditorPartList singleton's RectTransform
+    // (stable across scroll — its outer panel doesn't move when the
+    // scroll content does). Fall back to icon edges if the singleton
+    // isn't around (e.g. R&D building), so the popup still places
+    // somewhere reasonable.
+    double catalogLeftX = iconX;
+    double catalogRightX = iconX + iconW;
+    var partList = EditorPartList.Instance;
+    if (partList != null) {
+      var listRt = partList.GetComponent<RectTransform>();
+      if (listRt != null) {
+        var corners = new Vector3[4];
+        listRt.GetWorldCorners(corners);
+        var bl = RectTransformUtility.WorldToScreenPoint(canvasCam, corners[0]);
+        var br = RectTransformUtility.WorldToScreenPoint(canvasCam, corners[3]);
+        catalogLeftX = bl.x;
+        catalogRightX = br.x;
+      }
+    }
 
-    return false; // skip stock tooltip spawn
+    NovaPartInfoTopic.SetHover(partInfo,
+        iconX, iconY, iconW, iconH,
+        catalogLeftX, catalogRightX);
   }
 }
 
@@ -97,11 +185,3 @@ internal static class PartListTooltipController_OnPointerEnter_Patch {
 // the rapid-toggle flicker we saw when Unity re-evaluated hover state
 // after a CEF composite, and (b) defeat the popup-interactable design
 // by closing the moment the cursor crossed from icon onto the popup.
-
-// No `OnPointerClick` patch: stock's `PartListTooltipController.
-// OnPointerClick` bails on its first line if the master controller's
-// `currentTooltip` is null, and we never spawn the stock tooltip — so
-// it's already a no-op for us. Patching it (returning false) would
-// only get in the way of any other handlers Unity's EventSystem
-// dispatches to the same GameObject, including the icon's own
-// pick/grab path.

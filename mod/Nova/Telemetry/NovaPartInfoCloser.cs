@@ -38,8 +38,20 @@ public sealed class NovaPartInfoCloser : MonoBehaviour {
 
     // The player picking up a part for placement closes the hover —
     // the popup would just be in the way of the placement gesture.
+    // Applies even when pinned: holding a part to place is a stronger
+    // signal than "I want to keep reading the panel."
     if (EditorLogic.SelectedPart != null) {
       NovaPartInfoTopic.ClearHover();
+      return;
+    }
+
+    // Pinned popup: suppress the auto-hide test. Esc collapses pin →
+    // unpinned-with-hover; the next frame's normal auto-hide test
+    // then runs and decides whether to keep the popup open based on
+    // cursor-over-UI. Right-click toggles the pin via the
+    // `OnPointerClick` Harmony patch.
+    if (topic.IsPinned) {
+      if (Input.GetKeyDown(KeyCode.Escape)) NovaPartInfoTopic.Unpin();
       return;
     }
 

@@ -10,6 +10,13 @@ public class Engine : VirtualComponent {
   public double Isp; // s (vacuum)
   public double Throttle;
 
+  // Engine class label declared in the cfg ("Booster", "Sustainer",
+  // "Vacuum", "Ionic", ...). The catalogue is open — anything the cfg
+  // writer chooses ends up on the wire verbatim. Surfaced in the editor
+  // part-info popup as the marquee class line; never inferred from Isp /
+  // propellant heuristics.
+  public string Class;
+
   public double GimbalRangeRad;
   public double GimbalPitchDeflection;
   public double GimbalYawDeflection;
@@ -106,6 +113,7 @@ public class Engine : VirtualComponent {
       Thrust = Thrust,
       Isp = Isp,
       Throttle = Throttle,
+      Class = Class,
       GimbalRangeRad = GimbalRangeRad,
       GimbalPitchDeflection = GimbalPitchDeflection,
       GimbalYawDeflection = GimbalYawDeflection,

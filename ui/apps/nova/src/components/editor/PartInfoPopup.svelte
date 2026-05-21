@@ -2,22 +2,19 @@
   // Replaces KSP's stock `PartListTooltip`. Subscribes to the singleton
   // `NovaPartInfoTopic`; when the C# Harmony patch on
   // `PartListTooltipController.OnPointerEnter` fires, the topic emits a
-  // populated frame and the popup opens at the supplied anchor.
-  // Mouseout → empty frame → popup vanishes.
+  // populated frame and the popup opens anchored to the parts catalog's
+  // right edge (not the icon's edge — neighbouring icons stay visible).
+  // Right-click on the icon toggles pin (stock-style sticky); the C# side
+  // owns the pin flag and we mirror it as a glyph in the title bar.
   //
-  // Layout:
-  //   Header — thumbnail slot (reserved for Dragonglass-rendered 3-D
-  //            view, see follow-up) · title · manufacturer · mass · cost
-  //   Body   — description paragraph
-  //   Stack  — one group per Nova component kind. Group order is fixed
-  //            so a part with multiple kinds always reads the same way
-  //            (propulsion → power → control → structural → science).
-  //
-  // Placement: the C# patch sends the part icon's screen-space rect.
-  // The popup's left edge is flushed against the icon's right edge by
-  // default; if that would clip the viewport, it flips so the popup's
-  // right edge is flushed against the icon's left edge. Vertically the
-  // popup top aligns with the icon top, clamped into the viewport.
+  // Layout (top-to-bottom):
+  //   1. Title bar      — diamond glyph · title · pin glyph
+  //   2. Marquee block  — 3-D preview · class line + 2-3 marquee stats
+  //   3. Meta strip     — manufacturer · dry mass · cost
+  //   4. Description    — flavour text, no clamp
+  //   5. Detail groups  — one section per Nova component kind, the
+  //                       18-px tile rendering the same SVG icon that
+  //                       appears in the flight vessel panel.
   //
   // The popup renders opaque so Dragonglass's raycast filter sees it
   // as "DG UI" — that's how `NovaPartInfoCloser` C#-side decides to
@@ -36,14 +33,9 @@
   } from '../../telemetry/nova-topics';
   import { resourceMeta } from '../resource/resource-codes';
   import { fmtMag, fmtBytes, fmtDuration, siPrefix } from '../../util/units';
+  import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
 
   const ksp = getKsp();
-  // The HUD is purely driven by the wire: if `info` is set, the popup
-  // renders; otherwise it doesn't. There's no hover bookkeeping on this
-  // side — the mod decides when to clear the topic state (see
-  // `NovaPartInfoCloser` C#-side, which polls the cursor against the
-  // parts catalog rect and Dragonglass's CEF-UI raycast filter and
-  // clears only when both say "no").
   let info = $state<NovaPartInfo | null>(null);
   const unsub = ksp.subscribe(NovaPartInfoTopic, (frame) => {
     info = decodePartInfo(frame);
@@ -53,42 +45,40 @@
   // ----- Placement ------------------------------------------------
 
   const VIEWPORT_MARGIN = 12;
+  // Gap between the catalog's right edge and the popup's left edge.
+  // Small enough that the cursor's transit from icon → popup is short,
+  // large enough that the catalog's outer chrome doesn't visually merge
+  // with the popup's accent stripe.
+  const CATALOG_GAP = 10;
 
   let popupEl: HTMLDivElement | null = $state(null);
   let placed = $state<{ x: number; y: number; flipped: boolean } | null>(null);
 
-  // Position the popup flush against the icon's right edge by default;
-  // flip to the icon's left edge if the right side would clip the
-  // viewport. Vertically anchor to the icon's top edge, clamping into
-  // the viewport. The popup-edge / icon-edge invariant means the cursor
-  // can travel along that boundary without leaving either rect.
+  // Anchor flush against the catalog's right edge by default; flip to the
+  // catalog's left side if the right side would clip the viewport. Vertical
+  // anchor is still the icon's top so the popup tracks the hovered icon
+  // when the player scans the catalog with the popup pinned.
   //
-  // The wire delivers the icon rect in Unity screen-space (physical
-  // pixels); CSS / `getBoundingClientRect()` work in logical pixels.
-  // Divide by DPR once at the boundary so every comparison below
-  // stays in CSS-pixel space — mirrors how `PunchThroughProvider`
-  // multiplies its own `getBoundingClientRect()` by DPR when encoding
-  // for the native compositor.
+  // The wire delivers all anchors in Unity screen pixels; CSS works in
+  // logical pixels. Divide by DPR once at the boundary so every
+  // comparison below stays in CSS-pixel space.
   $effect(() => {
     if (!info || !popupEl) {
       placed = null;
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const iconX = info.iconX / dpr;
     const iconY = info.iconY / dpr;
-    const iconW = info.iconW / dpr;
-    // iconH is on the wire (for future vertical-flip use) but the
-    // current placement anchors to icon top + clamps to viewport, so
-    // we don't need the icon's height here.
+    const catRight = info.catalogRightX / dpr;
+    const catLeft  = info.catalogLeftX  / dpr;
     const rect = popupEl.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
-    let x = iconX + iconW;
+    let x = catRight + CATALOG_GAP;
     let flipped = false;
     if (x + rect.width + VIEWPORT_MARGIN > vw) {
-      x = iconX - rect.width;
+      x = catLeft - rect.width - CATALOG_GAP;
       flipped = true;
     }
     x = Math.max(VIEWPORT_MARGIN, x);
@@ -104,10 +94,6 @@
 
   // ----- Formatting helpers --------------------------------------
 
-  // Mass: tonnes for ≥1 kg ⋅ 1000 (i.e. ≥1 t), kg otherwise. Tonnes
-  // get 2-decimal precision under 100 t, 1 decimal under 1000 t, none
-  // beyond. Sub-kg edge case (massless decorative parts) collapses to
-  // "—" so we don't render "0.000 kg" for a flag.
   function fmtMass(kg: number): string {
     if (!Number.isFinite(kg) || kg <= 0) return '—';
     if (kg >= 1000) {
@@ -119,17 +105,11 @@
     return `${Math.round(kg)} kg`;
   }
 
-  // Funds: KSP-style integer with thousand separators. The funds glyph
-  // (₣) is appended as a small unit, matching how other Nova readouts
-  // separate magnitude from unit.
   function fmtFunds(funds: number): string {
     if (!Number.isFinite(funds) || funds < 0) return '—';
     return Math.round(funds).toLocaleString('en-US');
   }
 
-  // Watts / Joules with SI prefix from `units.ts`. Picks the prefix off
-  // the value's own magnitude rather than a reference pair — the popup
-  // shows isolated specs, not paired stored/cap values.
   function fmtPower(w: number): string {
     if (!Number.isFinite(w) || w === 0) return '0 W';
     const p = siPrefix(w);
@@ -144,8 +124,6 @@
     if (!Number.isFinite(bps) || bps <= 0) return '0 B/s';
     return `${fmtBytes(bps)}/s`;
   }
-  // Litres: keep raw to 3 figs at the upper end so tank readouts ("14 400 L"
-  // for a 14.4 m³ slice) read naturally. SI-prefix only past kL.
   function fmtVolume(litres: number): string {
     if (!Number.isFinite(litres) || litres <= 0) return '0 L';
     if (litres >= 1_000_000) return `${fmtMag(litres / 1_000_000)} ML`;
@@ -167,17 +145,274 @@
     [InsulationTier.ZBO]:      'ZBO',
   };
 
-  // RTG decay decimation per Kerbin year: how many ten-day-step decays
-  // (0.1% per step on a 32 032-day half-life baseline) fit in a year.
-  // Closed-form (1 − stepDrop)^stepsPerYear shows the player how much
-  // their EOL power slips per Kerbin year without forcing them to do
-  // the half-life math.
   function rtgEolFraction(halfLifeDays: number): number {
     if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0) return 0;
     const stepDays = halfLifeDays * Math.log(1 - 0.001) / Math.log(0.5);
     const stepsPerKerbinYear = (426 * 6 * 3600) / 86400 / Math.abs(stepDays);
     return Math.pow(1 - 0.001, stepsPerKerbinYear);
   }
+
+  // Propellant family glyph for the marquee: single propellant returns
+  // its short code; two propellants join with " + " so the marquee line
+  // stays one row. The detail section below still shows the full chip
+  // strip with ratios. Resource codes come from the same `resourceMeta`
+  // table the chips use, so the marquee glyph is colour-anchored.
+  function propellantFamily(p: PropellantSpec[]): string {
+    if (!p || p.length === 0) return '—';
+    return p.map(e => resourceMeta(e.resource).code).join(' + ');
+  }
+
+  // ----- Component kind → SVG icon mapping ------------------------
+  //
+  // The wire kind char is the canonical key (see PartInfoFormatter on
+  // the C# side); the SVG icon shapes live in ComponentIcon.svelte and
+  // are shared with the flight vessel panel. Same shape = same component
+  // in both editor and flight, which is the whole point of replacing the
+  // single-char monogram tiles with these icons.
+
+  const KIND_ICON: Record<string, ComponentKind> = {
+    E: 'engine',
+    N: 'nuclear',
+    M: 'rcs',
+    T: 'tank',
+    B: 'battery',
+    F: 'fuelCell',
+    S: 'solar',
+    R: 'rtg',
+    W: 'wheel',
+    X: 'radiator',
+    L: 'light',
+    C: 'command',
+    P: 'probe',
+    A: 'antenna',
+    D: 'decoupler',
+    K: 'docking',
+    Y: 'crew',
+    Z: 'dataStorage',
+    H: 'thermometer',
+  };
+
+  // ----- Marquee picker ------------------------------------------
+  //
+  // Pick the part's primary kind by precedence and build the marquee
+  // block's class line + up to three big-typeset stats. Compound parts
+  // (e.g. command pod with battery + wheel) still get a single marquee
+  // anchored on the headline kind — the detail sections below cover
+  // every component. Structural parts fall through to a STRUCTURAL
+  // marquee so the slot doesn't read as broken.
+
+  type MarqueeStat = { label: string; value: string };
+  type Marquee = { kind: ComponentKind | null; classLine: string; stats: MarqueeStat[] };
+
+  function summarize(i: NovaPartInfo): Marquee {
+    if (i.nuclear.length > 0) {
+      const n = i.nuclear[0];
+      return {
+        kind: 'nuclear',
+        classLine: 'NUCLEAR ENGINE',
+        stats: [
+          { label: 'THRUST', value: `${fmtMag(n.thrustKn)} kN` },
+          { label: 'ISP',    value: `${fmtMag(n.ispS)} s` },
+          { label: 'PWR',    value: `${fmtPower(n.idlePowerW)} → ${fmtPower(n.maxPowerW)}` },
+        ],
+      };
+    }
+    if (i.engine.length > 0) {
+      const e = i.engine[0];
+      const cls = (e.class || '').toUpperCase();
+      return {
+        kind: 'engine',
+        classLine: cls ? `${cls} ENGINE` : 'ENGINE',
+        stats: [
+          { label: 'THRUST', value: `${fmtMag(e.thrustKn)} kN` },
+          { label: 'ISP',    value: `${fmtMag(e.ispS)} s` },
+          { label: 'PROP',   value: propellantFamily(e.propellants) },
+        ],
+      };
+    }
+    if (i.rcs.length > 0) {
+      const r = i.rcs[0];
+      return {
+        kind: 'rcs',
+        classLine: 'RCS THRUSTERS',
+        stats: [
+          { label: 'TOTAL', value: `${fmtMag(r.thrusterPowerKn * r.thrusterCount)} kN (${r.thrusterCount}×)` },
+          { label: 'ISP',   value: `${fmtMag(r.ispS)} s` },
+          { label: 'PROP',  value: propellantFamily(r.propellants) },
+        ],
+      };
+    }
+    if (i.tank.length > 0) {
+      const t = i.tank[0];
+      const sliceSummary = t.slices.length === 1
+        ? resourceMeta(t.slices[0].resource).code
+        : `${t.slices.length} slices`;
+      return {
+        kind: 'tank',
+        classLine: 'FUEL TANK',
+        stats: [
+          { label: 'VOLUME', value: fmtVolume(t.volumeL) },
+          { label: 'RATE',   value: `${fmtMag(t.maxRateLps)} L/s` },
+          { label: 'STORE',  value: sliceSummary },
+        ],
+      };
+    }
+    if (i.solar.length > 0) {
+      const s = i.solar[0];
+      return {
+        kind: 'solar',
+        classLine: 'SOLAR ARRAY',
+        stats: [
+          { label: 'OUTPUT', value: `${fmtPower(s.chargeRateW)} @ 1AU` },
+          { label: 'TRACK',  value: s.isTracking ? 'yes' : (s.isDeployable ? 'deploy' : 'fixed') },
+        ],
+      };
+    }
+    if (i.rtg.length > 0) {
+      const r = i.rtg[0];
+      const eolY = rtgEolFraction(r.halfLifeDays);
+      return {
+        kind: 'rtg',
+        classLine: 'RTG',
+        stats: [
+          { label: 'BOL',       value: fmtPower(r.referencePowerW) },
+          { label: 'HALF-LIFE', value: `${fmtMag(r.halfLifeDays / 365.25)} yr` },
+          { label: 'EOL Y+1',   value: `${(eolY * 100).toFixed(1)}%` },
+        ],
+      };
+    }
+    if (i.fuelCell.length > 0) {
+      const f = i.fuelCell[0];
+      return {
+        kind: 'fuelCell',
+        classLine: 'FUEL CELL',
+        stats: [
+          { label: 'OUTPUT', value: fmtPower(f.maxOutputW) },
+          { label: 'LH₂',    value: `${fmtMag(f.lh2RateKgs * 1000)} g/s` },
+          { label: 'LOX',    value: `${fmtMag(f.loxRateKgs * 1000)} g/s` },
+        ],
+      };
+    }
+    if (i.battery.length > 0) {
+      const b = i.battery[0];
+      return {
+        kind: 'battery',
+        classLine: 'BATTERY',
+        stats: [
+          { label: 'CAPACITY', value: fmtEnergy(b.capacityJ) },
+          { label: 'RATE',     value: `${fmtPower(b.maxRateW)} ⇋` },
+        ],
+      };
+    }
+    if (i.wheel.length > 0) {
+      const w = i.wheel[0];
+      const maxAxis = Math.max(w.pitchTorqueKnm, w.yawTorqueKnm, w.rollTorqueKnm);
+      return {
+        kind: 'wheel',
+        classLine: 'REACTION WHEEL',
+        stats: [
+          { label: 'TORQUE', value: `${fmtMag(maxAxis)} kN·m` },
+          { label: 'EC',     value: fmtPower(w.electricRateW) },
+        ],
+      };
+    }
+    if (i.radiator.length > 0) {
+      const x = i.radiator[0];
+      return {
+        kind: 'radiator',
+        classLine: 'RADIATOR',
+        stats: [
+          { label: 'COOLING', value: fmtPower(x.vacuumCoolingW) },
+          { label: 'PUMP',    value: x.ecPerWattCooling > 0 ? 'active' : 'passive' },
+        ],
+      };
+    }
+    if (i.antenna.length > 0) {
+      const a = i.antenna[0];
+      return {
+        kind: 'antenna',
+        classLine: 'ANTENNA',
+        stats: [
+          { label: 'TX',  value: fmtPower(a.txPowerW) },
+          { label: 'MAX', value: fmtRate(a.maxRateBps) },
+          { label: 'REF', value: fmtDistance(a.refDistanceM) },
+        ],
+      };
+    }
+    if (i.command.length > 0) {
+      const c = i.command[0];
+      const crew = i.crew[0]?.crewCapacity ?? 0;
+      const stats: MarqueeStat[] = [];
+      if (crew > 0) stats.push({ label: 'CREW', value: `${crew}` });
+      stats.push({ label: 'IDLE', value: fmtPower(c.idleDrawW) });
+      return { kind: 'command', classLine: 'COMMAND POD', stats };
+    }
+    if (i.probe.length > 0) {
+      const p = i.probe[0];
+      return {
+        kind: 'probe',
+        classLine: 'PROBE CORE',
+        stats: [
+          { label: 'SAS',  value: `lv ${p.sasLevel}` },
+          { label: 'IDLE', value: fmtPower(p.idleDrawW) },
+        ],
+      };
+    }
+    if (i.decoupler.length > 0) {
+      const d = i.decoupler[0];
+      return {
+        kind: 'decoupler',
+        classLine: 'DECOUPLER',
+        stats: [
+          { label: 'FORCE', value: `${fmtMag(d.ejectionForceKn)} kN` },
+          { label: 'TYPE',  value: d.canFullSeparate ? 'separator' : 'radial' },
+        ],
+      };
+    }
+    if (i.docking.length > 0) {
+      const k = i.docking[0];
+      return {
+        kind: 'docking',
+        classLine: 'DOCKING PORT',
+        stats: [{ label: 'SIZE', value: k.nodeType || '—' }],
+      };
+    }
+    if (i.crew.length > 0) {
+      const c = i.crew[0];
+      return {
+        kind: 'crew',
+        classLine: 'CREW CABIN',
+        stats: [{ label: 'CAPACITY', value: `${c.crewCapacity}` }],
+      };
+    }
+    if (i.light.length > 0) {
+      const l = i.light[0];
+      return {
+        kind: 'light',
+        classLine: 'LIGHT',
+        stats: [{ label: 'DRAW', value: fmtPower(l.drawW) }],
+      };
+    }
+    if (i.storage.length > 0) {
+      const z = i.storage[0];
+      return {
+        kind: 'dataStorage',
+        classLine: 'DATA STORAGE',
+        stats: [{ label: 'CAPACITY', value: fmtBytes(z.capacityBytes) }],
+      };
+    }
+    if (i.thermometer.length > 0) {
+      const h = i.thermometer[0];
+      return {
+        kind: 'thermometer',
+        classLine: 'INSTRUMENT',
+        stats: [{ label: 'EC', value: fmtPower(h.ecRateW) }],
+      };
+    }
+    return { kind: null, classLine: 'STRUCTURAL', stats: [] };
+  }
+
+  const marquee = $derived(info ? summarize(info) : null);
 </script>
 
 {#if info}
@@ -186,51 +421,74 @@
     class="pip"
     class:pip--flipped={placed?.flipped}
     class:pip--placed={placed !== null}
+    class:pip--pinned={info.isPinned}
     style:left="{(placed?.x ?? -9999)}px"
     style:top="{(placed?.y ?? -9999)}px"
     role="tooltip"
     aria-live="polite"
   >
-    <div class="pip__rule pip__rule--head" aria-hidden="true"></div>
+    <!-- TITLE BAR ------------------------------------------------ -->
+    <header class="pip__titlebar">
+      <span class="pip__diamond" aria-hidden="true">◇</span>
+      <h2 class="pip__title">{info.title}</h2>
+      <span class="pip__pin" aria-hidden="true" title={info.isPinned ? 'Pinned (right-click icon to unpin)' : 'Right-click icon to pin'}>
+        {#if info.isPinned}
+          <!-- Filled push-pin glyph: head + stem -->
+          <svg viewBox="0 0 12 12" class="pip__pin-svg">
+            <path d="M3.4 1.5 L8.6 1.5 L7.6 4.8 L9.1 7.0 L2.9 7.0 L4.4 4.8 Z" fill="currentColor"/>
+            <line x1="6" y1="7" x2="6" y2="10.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+          </svg>
+        {:else}
+          <svg viewBox="0 0 12 12" class="pip__pin-svg">
+            <path d="M3.4 1.5 L8.6 1.5 L7.6 4.8 L9.1 7.0 L2.9 7.0 L4.4 4.8 Z" stroke="currentColor" fill="none" stroke-width="0.9" stroke-linejoin="round"/>
+            <line x1="6" y1="7" x2="6" y2="10.6" stroke="currentColor" stroke-width="0.9" stroke-linecap="round"/>
+          </svg>
+        {/if}
+      </span>
+    </header>
 
-    <!-- HEADER : 3-D part preview slot · title · manufacturer · mass · cost.
-         The thumbnail is a live KSP-rendered rotating part composited into
-         the chroma-keyed <PunchThrough> rect by Dragonglass's native plugin.
-         Stream id "novaPartPreview" is retargeted by NovaPartInfoTopic.SetHover
-         on the C# side; the popup unmount on hover-end implicitly drops the
-         <PunchThrough> registration so the compositor stops drawing the slot. -->
-    <header class="pip__head">
+    <!-- MARQUEE : 3-D preview · class line + headline stats -------- -->
+    <div class="pip__marquee">
       <div class="pip__thumb" aria-hidden="true">
         <PunchThrough id="novaPartPreview" />
       </div>
 
-      <div class="pip__head-text">
-        <h2 class="pip__title">{info.title}</h2>
-        <div class="pip__manuf">{info.manufacturer || '—'}</div>
-        <div class="pip__head-stats">
-          <span class="pip__stat">
-            <span class="pip__stat-label">DRY</span>
-            <span class="pip__stat-value">{fmtMass(info.dryMassKg)}</span>
-          </span>
-          <span class="pip__stat-sep" aria-hidden="true"></span>
-          <span class="pip__stat">
-            <span class="pip__stat-label">COST</span>
-            <span class="pip__stat-value pip__stat-value--funds">
-              {fmtFunds(info.costFunds)}<em>₣</em>
-            </span>
-          </span>
+      <div class="pip__marquee-stats">
+        <div class="pip__class">
+          {#if marquee?.kind}
+            <span class="pip__class-icon"><ComponentIcon kind={marquee.kind} /></span>
+          {/if}
+          <span class="pip__class-text">{marquee?.classLine ?? ''}</span>
         </div>
+        <div class="pip__class-rule" aria-hidden="true"></div>
+        {#if marquee && marquee.stats.length > 0}
+          <dl class="pip__marquee-grid">
+            {#each marquee.stats as s (s.label)}
+              <dt>{s.label}</dt>
+              <dd>{s.value}</dd>
+            {/each}
+          </dl>
+        {/if}
       </div>
-    </header>
+    </div>
+
+    <!-- META STRIP : manufacturer · dry · cost --------------------- -->
+    <div class="pip__meta">
+      <span class="pip__meta-slot">{info.manufacturer || '—'}</span>
+      <span class="pip__meta-sep" aria-hidden="true">·</span>
+      <span class="pip__meta-slot pip__meta-slot--num">{fmtMass(info.dryMassKg)}</span>
+      <span class="pip__meta-sep" aria-hidden="true">·</span>
+      <span class="pip__meta-slot pip__meta-slot--num">{fmtFunds(info.costFunds)}<em>₣</em></span>
+    </div>
 
     {#if info.description}
       <p class="pip__desc">{info.description}</p>
     {/if}
 
-    <!-- COMPONENT GROUPS -------------------------------------------- -->
+    <!-- COMPONENT GROUPS ------------------------------------------ -->
     <div class="pip__groups">
       {#each info.engine as e, i (i)}
-        {@render group('E', 'ENGINE', null)}
+        {@render group('E', e.class ? `${e.class.toUpperCase()} ENGINE` : 'ENGINE', null)}
         <div class="pip__grid">
           {@render kv('THRUST', `${fmtMag(e.thrustKn)} kN`)}
           {@render kv('ISP',    `${fmtMag(e.ispS)} s`)}
@@ -427,9 +685,12 @@
       {/each}
     </div>
 
-    {#snippet group(kind: string, label: string, hint: string | null)}
+    {#snippet group(kindChar: string, label: string, hint: string | null)}
+      {@const iconKind = KIND_ICON[kindChar]}
       <div class="pip__group-head">
-        <span class="pip__mono">{kind}</span>
+        <span class="pip__icon-tile">
+          {#if iconKind}<ComponentIcon kind={iconKind} />{/if}
+        </span>
         <span class="pip__group-label">{label}</span>
         {#if hint}
           <span class="pip__group-hint">{hint}</span>
@@ -468,32 +729,20 @@
 {/if}
 
 <style>
-  /* Outer shell. Width-locked at 340px so component groups read with
-     consistent column widths — the popup is a spec-sheet, not a
-     fluid window. */
+  /* Outer shell. Width-locked at 340px so the marquee + detail
+     sections share consistent column widths. */
   .pip {
     position: fixed;
     width: 340px;
     z-index: 1200;
-    /* Interactable + flush against the icon, so the cursor can travel
-       from icon to popup without crossing dead space. The opaque
-       background makes the popup register as "DG UI" with Dragonglass's
-       CEF-alpha raycast filter — `NovaPartInfoCloser` uses that test to
-       keep the popup open while the cursor is over it, so no hover
-       signal needs to cross the HUD boundary. */
     pointer-events: auto;
     opacity: 0;
     transform: translateY(-4px);
     background: var(--bg-panel-strong);
     border: 1px solid var(--line-accent);
-    /* No outward box-shadows. They'd render alpha>0 pixels in CEF
-       outside the popup's box (the green glow and dark drop shadow
-       both spread ~22-32 CSS px outward), and Dragonglass's
-       HudRaycastFilter treats any non-zero alpha as "DG UI" — which
-       would steal raycasts away from the parts-list icons directly
-       under the halo and prevent their OnPointerEnter/click events
-       from firing. The inset 1px stays inside the box and is safe;
-       the accent border + interior glow are enough definition. */
+    /* No outward box-shadows — they'd render alpha>0 pixels in CEF
+       outside the popup's box and steal raycasts away from icons under
+       the halo. Inset 1px stays inside the box and is safe. */
     box-shadow: inset 0 0 0 1px rgba(126, 245, 184, 0.045);
     color: var(--fg);
     font-family: var(--font-mono);
@@ -508,9 +757,7 @@
     opacity: 1;
     transform: translateY(0);
   }
-  /* Reading-edge stripe — left edge by default, right when the popup
-     has flipped to the cursor's left side. Sits on the side closest to
-     the part icon so the eye is led from icon → readout. */
+  /* Reading-edge stripe — left edge by default, right when flipped. */
   .pip::before {
     content: '';
     position: absolute;
@@ -526,124 +773,178 @@
     left: auto;
     right: 0;
   }
-  /* Decorative head rule with a notch — small "this is a readout, not a
-     window" marker. */
-  .pip__rule--head {
-    height: 18px;
-    border-bottom: 1px solid var(--line);
+
+  /* TITLE BAR ----------------------------------------------------- */
+  .pip__titlebar {
+    display: grid;
+    grid-template-columns: 14px 1fr 18px;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 12px;
     background:
       linear-gradient(90deg,
-        transparent 0,
-        rgba(126, 245, 184, 0.05) 50%,
+        rgba(126, 245, 184, 0.07) 0,
+        rgba(126, 245, 184, 0.03) 60%,
         transparent 100%);
-    position: relative;
+    border-bottom: 1px solid var(--line);
   }
-  .pip__rule--head::after {
-    content: '◇';
-    position: absolute;
-    top: 50%;
-    right: 8px;
-    transform: translateY(-50%);
+  .pip__diamond {
     color: var(--accent);
     font-family: var(--font-display);
-    font-size: 9px;
+    font-size: 10px;
     text-shadow: 0 0 4px var(--accent-glow);
     letter-spacing: 0.2em;
   }
+  .pip__title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 14px;
+    line-height: 1.05;
+    letter-spacing: 0.04em;
+    color: var(--fg);
+    text-shadow: 0 0 6px rgba(126, 245, 184, 0.08);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pip__pin {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: var(--fg-mute);
+    opacity: 0.55;
+    transition: color 120ms, opacity 120ms;
+  }
+  .pip--pinned .pip__pin {
+    color: var(--accent);
+    opacity: 1;
+    text-shadow: 0 0 4px var(--accent-glow);
+  }
+  .pip__pin-svg {
+    width: 12px;
+    height: 12px;
+    overflow: visible;
+    vector-effect: non-scaling-stroke;
+  }
 
-  /* HEADER ----------------------------------------------------------- */
-  .pip__head {
+  /* MARQUEE ------------------------------------------------------- */
+  .pip__marquee {
     display: grid;
     grid-template-columns: 96px 1fr;
     gap: 12px;
     padding: 12px 14px 10px;
   }
-  /* Slot is 96 CSS px so the rotating preview reads at a glance; at
-     DPR=2 the encoded rect lands at 192 physical pixels, matching the
-     capture-side RenderTexture 1:1. */
   .pip__thumb {
     width: 96px;
     height: 96px;
     background: rgba(4, 7, 16, 0.6);
     border: 1px solid var(--line);
     box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.6);
-    /* PunchThrough fills the slot with its chroma color; the inner
-       backdrop is only visible during the one-frame window between
-       popup mount and the native plugin's first composite. */
   }
-  .pip__head-text {
+  .pip__marquee-stats {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
   }
-  .pip__title {
-    margin: 0;
+  .pip__class {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--accent);
+  }
+  .pip__class-icon {
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+    color: var(--accent);
+    text-shadow: 0 0 4px var(--accent-glow);
+  }
+  .pip__class-text {
     font-family: var(--font-display);
-    font-size: 17px;
-    line-height: 1.05;
-    letter-spacing: 0.04em;
-    color: var(--fg);
-    text-shadow: 0 0 6px rgba(126, 245, 184, 0.08);
-    /* Two-line clamp keeps long part titles from blowing out the head
-       (some stock parts run 40+ chars). */
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .pip__manuf {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    color: var(--fg-dim);
-    text-transform: uppercase;
+    font-size: 13px;
     letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    text-shadow: 0 0 6px var(--accent-glow);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .pip__head-stats {
-    margin-top: 4px;
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
+  .pip__class-rule {
+    height: 1px;
+    background: linear-gradient(90deg, var(--line-accent), transparent);
+    margin: 2px 0 4px;
   }
-  .pip__stat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 5px;
+  .pip__marquee-grid {
+    margin: 0;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 8px;
+    row-gap: 3px;
   }
-  .pip__stat-label {
+  .pip__marquee-grid dt {
     font-family: var(--font-mono);
     font-size: 7px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
     color: var(--fg-dim);
+    align-self: baseline;
+    padding-top: 2px;
   }
-  .pip__stat-value {
+  .pip__marquee-grid dd {
+    margin: 0;
     font-family: var(--font-display);
-    font-size: 13px;
-    color: var(--accent);
-    text-shadow: 0 0 6px var(--accent-glow);
+    font-size: 12px;
+    line-height: 1.1;
+    color: var(--fg);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .pip__stat-value--funds em {
+
+  /* META STRIP --------------------------------------------------- */
+  .pip__meta {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 14px 8px;
+    border-bottom: 1px solid var(--line);
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .pip__meta-slot {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+  }
+  .pip__meta-slot--num {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+  .pip__meta-slot em {
     font-style: normal;
-    font-size: 8px;
+    font-size: 7.5px;
     margin-left: 2px;
     color: var(--fg-dim);
     letter-spacing: 0.1em;
   }
-  .pip__stat-sep {
-    width: 1px;
-    align-self: stretch;
-    background: var(--line);
-    margin: 1px 0;
+  .pip__meta-sep {
+    color: var(--fg-mute);
+    flex: 0 0 auto;
   }
 
-  /* DESCRIPTION ----------------------------------------------------- */
+  /* DESCRIPTION -------------------------------------------------- */
   .pip__desc {
     margin: 0;
     padding: 8px 14px 12px;
@@ -652,13 +953,9 @@
     font-size: 10.5px;
     line-height: 1.42;
     border-bottom: 1px solid var(--line);
-    /* No line-clamp: stock descriptions are author-written prose and
-       some run 6+ lines (engine flavour text, science-instrument
-       blurbs). Let the popup grow to fit; the smart-flip placement
-       logic in PartInfoPopup.svelte already clamps to the viewport. */
   }
 
-  /* GROUPS ---------------------------------------------------------- */
+  /* GROUPS ------------------------------------------------------- */
   .pip__groups {
     display: flex;
     flex-direction: column;
@@ -673,23 +970,22 @@
   .pip__group-head:first-child {
     border-top: none;
   }
-  /* Single-char monogram tile per component kind. Reads as a typographic
-     anchor for the group; the kind letter is the same character we use
-     on the wire so the tile doubles as a wire-format key. */
-  .pip__mono {
+  /* Section icon tile — same chrome as the previous monogram tile
+     (border, glow, accent background) so the visual hierarchy stays
+     consistent; the centre now hosts a 12-px SVG from ComponentIcon
+     instead of a single display-font letter. The 12-px child sitting
+     in an 18-px frame gives a small breathing margin on each side. */
+  .pip__icon-tile {
     flex: 0 0 18px;
     width: 18px;
     height: 18px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--font-display);
-    font-size: 11px;
     color: var(--accent);
-    text-shadow: 0 0 6px var(--accent-glow);
     background: rgba(126, 245, 184, 0.08);
     border: 1px solid var(--line-accent);
-    letter-spacing: 0;
+    text-shadow: 0 0 6px var(--accent-glow);
   }
   .pip__group-label {
     flex: 0 1 auto;
@@ -712,7 +1008,7 @@
     white-space: nowrap;
   }
 
-  /* KEY-VALUE GRID ------------------------------------------------- */
+  /* KEY-VALUE GRID --------------------------------------------- */
   .pip__grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -748,7 +1044,7 @@
     white-space: nowrap;
   }
 
-  /* TANK SLICES ---------------------------------------------------- */
+  /* TANK SLICES ------------------------------------------------- */
   .pip__slices {
     list-style: none;
     margin: 0;
@@ -788,7 +1084,7 @@
     text-transform: uppercase;
   }
 
-  /* PROPELLANT CHIPS ----------------------------------------------- */
+  /* PROPELLANT CHIPS ------------------------------------------- */
   .pip__prop {
     display: flex;
     align-items: center;
@@ -837,7 +1133,7 @@
     user-select: none;
   }
 
-  /* DECOUPLER CROSSFEED -------------------------------------------- */
+  /* DECOUPLER CROSSFEED ---------------------------------------- */
   .pip__crossfeed {
     display: flex;
     align-items: center;

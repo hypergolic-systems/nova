@@ -46,19 +46,41 @@ public sealed class NovaPartInfoTopic : Topic {
   // path that publishes a full frame to the wire.
   //
   // Icon rect (`_iconX/Y/W/H`) is the part icon's screen-space
-  // bounding box in browser coords (top-down Y). The UI uses it to
-  // anchor the popup flush against the icon's right or left edge.
+  // bounding box in browser coords (top-down Y). The catalog rect
+  // (`_catalogLeftX/RightX`) bounds the parts catalog panel in the
+  // same coord space; the UI anchors the popup flush against the
+  // catalog's right edge (or left, on flip) instead of the icon's
+  // edge so neighbouring icons stay visible while the popup is open.
+  //
+  // `_pinned` is the sticky flag toggled by right-click. While pinned,
+  // `NovaPartInfoCloser` suppresses auto-hide, and `SetHover` for a
+  // different part re-targets the pin to that part (stock-style
+  // right-click-on-different-icon behaviour). The UI mirrors the flag
+  // for a pin glyph in the title bar; it has no other effect on the UI
+  // since the C# side owns the close decision.
   private AvailablePart _partInfo;
   private double _iconX;
   private double _iconY;
   private double _iconW;
   private double _iconH;
+  private double _catalogLeftX;
+  private double _catalogRightX;
   private bool _previewLive;
+  private bool _pinned;
 
   /// <summary>True iff a hover is currently active (the popup is open
   /// or about to be). Used by `NovaPartInfoCloser` to decide whether
   /// to run its per-frame "should the popup still be open?" check.</summary>
   public bool HasHover => _partInfo != null;
+
+  /// <summary>True iff the popup is pinned (sticky). Used by
+  /// `NovaPartInfoCloser` to suppress its auto-hide test.</summary>
+  public bool IsPinned => _pinned;
+
+  /// <summary>The currently-hovered part, or null if none. Used by the
+  /// `OnPointerClick` patch to compare against the icon under the cursor
+  /// before deciding whether to toggle-pin or re-pin to a new part.</summary>
+  public AvailablePart CurrentPart => _partInfo;
 
   protected override void OnEnable() {
     Instance = this;
@@ -75,14 +97,18 @@ public sealed class NovaPartInfoTopic : Topic {
 
   /// <summary>
   /// Open the popup on the given `AvailablePart` anchored at the
-  /// browser-space screen point (Y measured from top). Called from the
-  /// `PartListTooltipController` prefix patch; idempotent — repeated
-  /// hovers on the same part still mark dirty so the popup re-anchors
-  /// if the icon has moved (sticky tooltip on a scrolling parts list).
+  /// browser-space screen point (Y measured from top), with the
+  /// catalog panel's left/right edges for catalog-edge anchoring.
+  /// Called from the `PartListTooltipController` prefix patch;
+  /// idempotent — repeated hovers on the same part still refresh
+  /// the anchor rects in case the parts list has scrolled. While
+  /// pinned, `SetHover` for a different part re-pins to that part
+  /// (matches stock right-click-on-different-icon behaviour).
   /// </summary>
   public static void SetHover(AvailablePart partInfo,
                                double iconX, double iconY,
-                               double iconW, double iconH) {
+                               double iconW, double iconH,
+                               double catalogLeftX, double catalogRightX) {
     if (Instance == null || partInfo == null) return;
     // Idempotent: same part re-fired is a no-op so the capture isn't
     // restarted and the wire isn't re-dirtied. Unity's EventSystem
@@ -90,11 +116,13 @@ public sealed class NovaPartInfoTopic : Topic {
     // hover state, and we never want that to manifest as a visible
     // glitch in the popup or the rotating preview.
     if (Instance._partInfo == partInfo) {
-      // Refresh the icon rect anyway in case the parts list scrolled.
+      // Refresh the anchor rects anyway in case the parts list scrolled.
       Instance._iconX = iconX;
       Instance._iconY = iconY;
       Instance._iconW = iconW;
       Instance._iconH = iconH;
+      Instance._catalogLeftX = catalogLeftX;
+      Instance._catalogRightX = catalogRightX;
       return;
     }
     Instance._partInfo = partInfo;
@@ -102,6 +130,8 @@ public sealed class NovaPartInfoTopic : Topic {
     Instance._iconY = iconY;
     Instance._iconW = iconW;
     Instance._iconH = iconH;
+    Instance._catalogLeftX = catalogLeftX;
+    Instance._catalogRightX = catalogRightX;
     Instance._previewLive = false;
     // Kick the preview capture to start rendering this part. We do
     // NOT mark dirty here — the wire frame stays empty until the
@@ -112,17 +142,47 @@ public sealed class NovaPartInfoTopic : Topic {
 
   /// <summary>
   /// Clear the popup. Called from the `OnPointerExit` prefix and from
-  /// scene-change hooks; harmless when nothing is hovered.
+  /// scene-change hooks; harmless when nothing is hovered. Also clears
+  /// the pinned flag — a clear is unconditional, no sticky overrides.
   /// </summary>
   public static void ClearHover() {
     if (Instance == null) return;
-    if (Instance._partInfo == null && !Instance._previewLive) return;
+    if (Instance._partInfo == null && !Instance._previewLive && !Instance._pinned) return;
     Instance._partInfo = null;
     Instance._previewLive = false;
+    Instance._pinned = false;
     NovaPartPreviewCapture.Instance?.ClearActivePart();
     // Empty frame is always safe to publish — no rect, no texture
     // needed, no magenta possible.
     Instance.MarkDirty();
+  }
+
+  /// <summary>
+  /// Toggle the pinned (sticky) flag. Only valid when a hover is
+  /// active; called from the `OnPointerClick` prefix patch on
+  /// right-click. While pinned, `NovaPartInfoCloser` suppresses
+  /// auto-hide; SetHover for a different part re-pins to that part.
+  /// Marks dirty so the UI can update its pin glyph immediately.
+  /// </summary>
+  public static void TogglePin() {
+    if (Instance == null) return;
+    if (Instance._partInfo == null) return;
+    Instance._pinned = !Instance._pinned;
+    if (Instance._previewLive) Instance.MarkDirty();
+  }
+
+  /// <summary>
+  /// Force-unpin without clearing the hover. Esc handler in
+  /// `NovaPartInfoCloser` calls this so Esc collapses pin → unpinned-
+  /// with-hover; the closer's normal auto-hide test runs on the next
+  /// frame and decides whether to keep the popup open based on
+  /// cursor-over-UI.
+  /// </summary>
+  public static void Unpin() {
+    if (Instance == null) return;
+    if (!Instance._pinned) return;
+    Instance._pinned = false;
+    if (Instance._previewLive) Instance.MarkDirty();
   }
 
   /// <summary>
@@ -219,6 +279,7 @@ public sealed class NovaPartInfoTopic : Topic {
       _partInfo.description ?? "",
       dryMassKg, cost,
       _iconX, _iconY, _iconW, _iconH,
+      _catalogLeftX, _catalogRightX, _pinned,
       components,
       dockingInfo);
   }

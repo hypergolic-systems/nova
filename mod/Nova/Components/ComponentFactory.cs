@@ -113,6 +113,13 @@ public static class ComponentFactory {
                      double.Parse(n.GetValue("ratio"))))
         .ToList()
     );
+    // `engineClass` is required — surfaced on the editor part-info popup
+    // as the marquee class line. Catalogue is open (Booster / Sustainer /
+    // Vacuum / Ionic / ...); the factory doesn't validate values, only
+    // existence. Same policy as thrust/isp — no defaults.
+    engine.Class = node.GetValue("engineClass")
+      ?? throw new System.ArgumentException(
+          "NovaEngineModule: 'engineClass' is required (e.g. Booster, Sustainer, Vacuum, Ionic).");
     // Gimbal config: optional. cfg specifies degrees (matches stock
     // ModuleGimbal); we store radians on the component because every
     // downstream consumer (sin / cos for the side-force calc) needs
