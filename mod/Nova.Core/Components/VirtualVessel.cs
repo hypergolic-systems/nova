@@ -227,6 +227,14 @@ public class VirtualVessel {
 
   private const int MaxTickIterations = 100;
 
+  // How many iters before the cap to start capturing the min-ValidUntil
+  // source for the iter-cap diagnostic log. Small enough to be free in
+  // the happy path (which converges in 1-3 iters); large enough that a
+  // spinning loop captures *some* offender before the bail. Five iters
+  // worth of MaxTickDt + AllComponents walk is negligible against a
+  // call that's about to log + force-advance anyway.
+  private const int CaptureBeforeCap = 5;
+
   // Floor for the per-iteration step in Tick. A device's `ValidUntil` can
   // legitimately land within FP precision of the current simulationTime
   // (e.g. a wheel-buffer forecast where slack/rate < ulp(simTime) makes
@@ -285,10 +293,19 @@ public class VirtualVessel {
     foreach (var c in AllComponents()) c.OnTickBegin();
 
     var iterations = 0;
+    // Iter-cap diagnostic state. Only populated in the final iters
+    // before the cap fires (see CaptureBeforeCap below) so the happy
+    // path doesn't pay for an extra MaxTickDt + AllComponents walk per
+    // iter. Captured *during* the iter rather than at bail time
+    // because the offending component's Update reset-to-Infinity
+    // contract wipes the bad ValidUntil before we'd see it post-loop.
+    string lastMinSource = null;
+    double lastMinValidUntil = double.PositiveInfinity;
 
     while (simulationTime < targetTime) {
       if (++iterations > MaxTickIterations) {
-        Log?.Invoke($"Tick() exceeded {MaxTickIterations} iterations, forcing advance. simTime={simulationTime} target={targetTime} nextExpiry={nextExpiry}");
+        var systemsDt = systems.MaxTickDt();
+        Log?.Invoke($"Tick() exceeded {MaxTickIterations} iterations, forcing advance. simTime={simulationTime} target={targetTime} nextExpiry={nextExpiry} systemsDt={systemsDt} lastMinSource={lastMinSource} lastMinValidUntil={lastMinValidUntil}");
         // Force-advance: bump both simulationTime and the shared
         // clock so Contents lerps reflect the target time.
         systems.AdvanceClock(targetTime - simulationTime);
@@ -307,6 +324,27 @@ public class VirtualVessel {
       }
 
       nextExpiry = ComputeNextExpiry(simulationTime);
+
+      // Diagnostic capture: only in the final iters before the cap so
+      // the happy path (which converges in 1-3 iters) doesn't pay an
+      // extra MaxTickDt + AllComponents walk per iter. Captured BEFORE
+      // FireComponentUpdates because the offender's Update will reset
+      // its own ValidUntil to +Infinity and erase the evidence.
+      if (iterations > MaxTickIterations - CaptureBeforeCap) {
+        lastMinValidUntil = double.PositiveInfinity;
+        lastMinSource = null;
+        var systemsDtNow = systems.MaxTickDt();
+        if (!double.IsPositiveInfinity(systemsDtNow)) {
+          lastMinValidUntil = simulationTime + systemsDtNow;
+          lastMinSource = "systems[" + systemsDtNow + "]";
+        }
+        foreach (var cmp in AllComponents()) {
+          if (cmp.ValidUntil < lastMinValidUntil) {
+            lastMinValidUntil = cmp.ValidUntil;
+            lastMinSource = cmp.Name;
+          }
+        }
+      }
 
       // Floor the step at MinTickStep ahead of simulationTime — a
       // ValidUntil within FP precision of `now` would otherwise land

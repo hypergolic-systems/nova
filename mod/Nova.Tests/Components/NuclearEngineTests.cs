@@ -116,6 +116,31 @@ public class NuclearEngineTests {
     Assert.IsFalse(r.Ignited);
   }
 
+  // Regression: a Cold reactor sitting on the pad must NOT schedule a
+  // re-solve at `now` every tick. Pre-fix, ComputeThermalRateAndEvent
+  // fell through to the tier-based branch with Contents=0, computed a
+  // spurious −82 kW "radiative cooling" rate, and returned dt = 0
+  // (target contents == current contents) → ValidUntil = now → the
+  // VirtualVessel loop spun to its 100-iter cap every FixedUpdate.
+  // In-game this showed as continuous "Tick() exceeded 100 iterations"
+  // log spam and visible 4× slowdown on a vessel that should have been
+  // free-coasting at full speed.
+  [TestMethod]
+  public void Cold_DoesNotScheduleNowExpiry_AcrossManyTicks() {
+    var r = MakeReactor();
+    var v = BuildVessel(r, MakeLh2Tank());
+    // Mirror the in-flight cadence: 200 FixedUpdates × 0.02s = 4s.
+    // The bug fired 100 iters per call, so any spin shows up as
+    // SolveCount blowing past the tick count by ~100×.
+    int beforeSolves = v.SolveCount;
+    for (int i = 0; i < 200; i++) v.Tick((i + 1) * 0.02);
+    int solves = v.SolveCount - beforeSolves;
+    Assert.AreEqual(ReactorState.Cold, r.State, "reactor must stay Cold");
+    Assert.IsTrue(solves < 10,
+        $"Cold reactor should solve at most a handful of times across 200 ticks " +
+        $"(no scheduled events); got {solves} solves — loop is spinning.");
+  }
+
   [TestMethod]
   public void SaveLoad_RoundTripsAllFields() {
     var src = MakeReactor();

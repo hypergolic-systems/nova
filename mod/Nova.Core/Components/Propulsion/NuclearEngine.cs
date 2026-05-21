@@ -594,6 +594,16 @@ public class NuclearEngine : Engine {
   private (double rateW, double validUntilUT) ComputeThermalRateAndEvent(double now) {
     if (ThermalMassJK <= 0) return (0, double.PositiveInfinity);
 
+    // Cold: no fission, no coolant flow. The core sits at ambient
+    // (Contents = 0). The tier-based code below would otherwise compute
+    // a spurious −82.5 kW "radiative cooling" rate against the already-
+    // floored buffer and schedule `ValidUntil = now` because dt =
+    // (tier*tierContentsJ − Contents) / rate = 0 / -rate = 0 — the
+    // VirtualVessel loop then spins to its 100-iter cap every
+    // FixedUpdate. Cold has nothing to forecast; activation flips the
+    // state machine and the next solve picks up the real schedule.
+    if (State == ReactorState.Cold) return (0, double.PositiveInfinity);
+
     // Warming overrides the tier-based heat balance with a forced
     // linear ramp at a FIXED rate (K/s). Buffer.Rate is constant;
     // ValidUntil fires when Contents reaches m × (IdleTempK − AmbientK),
