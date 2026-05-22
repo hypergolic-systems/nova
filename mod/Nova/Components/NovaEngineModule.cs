@@ -176,7 +176,6 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   public override void OnActive() {
     if (engine == null) return;
     engine.Active = true;
-    engine.Ignited = true;
   }
 
   // Hook for subclasses to receive the player throttle each FixedUpdate.

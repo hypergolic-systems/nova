@@ -150,6 +150,7 @@ public static class NovaSaveBuilder {
       Orbit = BuildOrbit(vessel.orbit),
       Position = BuildPosition(vessel),
       ActionGroups = BuildActionGroups(vessel),
+      MainThrottle = vessel.ctrlState?.mainThrottle ?? 0f,
     };
     return flight;
   }

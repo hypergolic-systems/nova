@@ -120,6 +120,56 @@ public class ReactionWheelTests {
     Assert.AreEqual(1234, dst.Buffer.Contents);
   }
 
+  // Per-axis throttles are per-tick inputs from NovaVesselModule.SolveAttitude.
+  // Load resets them to 0 so any solve that runs between Load and the next
+  // FixedUpdate doesn't drain the buffer against stale attitude demand from
+  // before the save.
+  [TestMethod]
+  public void Load_ResetsAxisThrottlesToZero() {
+    var src = MakeWheel(refillActive: false);
+    src.ThrottlePitch = 0.4; src.ThrottleYaw = -0.3; src.ThrottleRoll = 0.1;
+    var state = new Nova.Core.Persistence.Protos.PartState();
+    src.Save(state);
+
+    var dst = MakeWheel(refillActive: false);
+    dst.ThrottlePitch = 0.9; dst.ThrottleYaw = 0.9; dst.ThrottleRoll = 0.9;
+    dst.Load(state);
+    Assert.AreEqual(0.0, dst.ThrottlePitch, 1e-12);
+    Assert.AreEqual(0.0, dst.ThrottleYaw, 1e-12);
+    Assert.AreEqual(0.0, dst.ThrottleRoll, 1e-12);
+  }
+
+  // Regression: matched-vessel quickload re-runs Load() on the SAME wheel
+  // instance whose Buffer is already wired (Clock + refillDevice from
+  // Configure). Replacing Buffer in Load() would orphan that wiring,
+  // leaving a clockless Accumulator whose ValidUntil bakes in BaselineUT=0
+  // — and VirtualVessel.Tick would spin-DoSolve every FixedUpdate trying
+  // to advance past a stale ValidUntil that lives 18 000 sec in the past.
+  // Anchor on observable wiring (Clock attached, ValidUntil at or ahead
+  // of the live clock); a field-equality test on Contents alone passes
+  // both pre- and post-fix.
+  [TestMethod]
+  public void Load_OnMatchedVessel_PreservesBufferWiring() {
+    var w = MakeWheel(bufferContents: Capacity, refillActive: false);
+    var vessel = BuildVessel(w, MakeBattery(1e6, 5e5));
+    w.ThrottlePitch = 1.0;
+    vessel.Tick(2.0);  // settle the clock, prime forecasts
+    var preBuffer = w.Buffer;
+
+    var state = new Nova.Core.Persistence.Protos.PartState();
+    w.Save(state);
+    state.ReactionWheel.Buffer.Contents = 1500;  // mutated save
+    w.Load(state);
+
+    Assert.AreSame(preBuffer, w.Buffer, "Load must not replace the wired Buffer");
+    Assert.AreEqual(1500, w.Buffer.Contents, 1e-9, "Contents updated in place");
+
+    vessel.Tick(2.5);  // re-solve picks up new Contents and refreshes forecast
+    Assert.IsTrue(w.ValidUntil >= 2.0,
+      $"ValidUntil ({w.ValidUntil}) must be at or after current sim time " +
+      "after Load + Tick — a stale value would spin Tick until the next reload");
+  }
+
   // ---------- Buffer drain ----------
 
   [TestMethod]

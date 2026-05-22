@@ -167,10 +167,24 @@ public class ReactionWheel : VirtualComponent {
   public override void Load(PartState state) {
     if (state.ReactionWheel == null) return;
     RefillActive = state.ReactionWheel.RefillActive;
-    // Capacity is derived from ElectricRate (cfg). Contents from save.
-    Buffer = new Accumulator {
-      Capacity = BufferCapacityJoules,
-      Contents = state.ReactionWheel.Buffer?.Contents ?? BufferCapacityJoules,
-    };
+    // Per-axis throttles are per-tick inputs from NovaVesselModule
+    // SolveAttitude. Reset to 0 so any solve between Load and the next
+    // FixedUpdate doesn't drain the buffer against stale attitude
+    // demand from before the save.
+    ThrottlePitch = 0;
+    ThrottleYaw = 0;
+    ThrottleRoll = 0;
+    // Update the existing Buffer in place. Replacing it would orphan
+    // the Clock + refillDevice wiring set up by Buffer.Configure in
+    // OnBuildSystems, leaving the new Buffer with a null clock and an
+    // unregistered refill device. Without a clock, ValidUntil bakes in
+    // BaselineUT=0, so on a matched-vessel quickload the wheel reports
+    // a ValidUntil thousands of seconds in the past — VirtualVessel.Tick
+    // then sees nextExpiry < simulationTime every iteration and spins
+    // up to MaxTickIterations of DoSolve calls per FixedUpdate, taking
+    // the game to a slideshow until the next vessel reload.
+    Buffer ??= new Accumulator { Capacity = BufferCapacityJoules };
+    Buffer.Contents = state.ReactionWheel.Buffer?.Contents ?? BufferCapacityJoules;
+    Buffer.RefillActive = RefillActive;
   }
 }

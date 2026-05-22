@@ -557,8 +557,6 @@ public class NuclearEngine : Engine {
     double demandKgs = ComputeFlowDemandKgs();
     Throttle = MaxFlowKgs > 0 ? Math.Min(1.0, demandKgs / MaxFlowKgs) : 0;
     device.Demand = Throttle;
-
-    Ignited = State != ReactorState.Cold;
   }
 
   public override void OnPostSolve() {
@@ -780,7 +778,7 @@ public class NuclearEngine : Engine {
   // state for the duration of the burn so the ΔV math actually sees
   // the engine. Snap to Throttled at full throttle with a hot core.
   public override void ActivateForBurn() {
-    Ignited = true;
+    Active = true;
     State = ReactorState.Throttled;
     ShutdownRequested = false;
     PlayerThrottle = 1.0;
@@ -913,6 +911,11 @@ public class NuclearEngine : Engine {
     ThrottleActual = state.NuclearEngine.ThrottleActual;
     ShutdownRequested = state.NuclearEngine.ShutdownRequested;
     Active = state.NuclearEngine.Active;
+    // PlayerThrottle is a per-tick input from NovaNuclearEngineModule
+    // ApplyPlayerThrottle. Reset to 0 here so a solve between Load and
+    // the next FixedUpdate doesn't drive flow against a stale value
+    // from before the save.
+    PlayerThrottle = 0;
     slewBaselineThrottle = ThrottleActual;
     slewBaselineUT = Vessel?.Systems?.Clock?.UT ?? 0;
     lastSlewTarget = TargetThrottle();

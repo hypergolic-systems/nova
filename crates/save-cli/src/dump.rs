@@ -323,6 +323,17 @@ fn dump_part(part: &PartStructure, state: Option<&PartState>, indent: usize) {
             buf, rw.refill_active
         );
     }
+
+    if let Some(e) = state.and_then(|s| s.engine.as_ref()) {
+        println!("{p2}Engine: active={}", e.active);
+    }
+
+    if let Some(ne) = state.and_then(|s| s.nuclear_engine.as_ref()) {
+        println!(
+            "{p2}NuclearEngine: active={} state={} core_temp_k={:.1} throttle_actual={:.3} shutdown_requested={}",
+            ne.active, ne.state, ne.core_temp_k, ne.throttle_actual, ne.shutdown_requested
+        );
+    }
 }
 
 // --- Helpers ---------------------------------------------------------------

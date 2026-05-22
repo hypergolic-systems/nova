@@ -22,15 +22,19 @@ public class Engine : VirtualComponent {
   public double GimbalPitchDeflection;
   public double GimbalYawDeflection;
 
-  // Staging-activated flag — true once the part has been staged and
-  // the engine has been added to the player's throttle chain. Set in
-  // NovaEngineModule.OnActive; persists through saves so a quicksave/
-  // reload mid-burn (or vessel unload/reload) doesn't strand an
-  // activated engine. Orthogonal to the reactor state machine on the
-  // NuclearEngine subclass, which separately gates effective thrust.
+  // Engine is responding to the player's throttle — i.e. it has been
+  // staged (or the NTR's reactor-on toggle has put it in the throttle
+  // chain) and will *try* to produce thrust. The resource solver may
+  // still deny propellant (→ Flameout), but Active is the player-facing
+  // "on/off" bit. Set in NovaEngineModule.OnActive; persists through
+  // saves so a quicksave/reload mid-burn doesn't strand an activated
+  // engine. The NuclearEngine subclass treats Active as orthogonal to
+  // its reactor state machine, which separately gates effective thrust.
   public bool Active;
 
-  public bool Ignited;
+  // Set this tick when the engine wanted thrust (Active && Throttle>0)
+  // but the resource solver couldn't deliver propellant. Recomputed
+  // every solve; not persisted.
   public bool Flameout;
 
   // Effective throttle achieved this tick. Equals device.Activity,
@@ -58,10 +62,10 @@ public class Engine : VirtualComponent {
   // travel on the per-part NovaPartTopic "N" frame).
   public virtual byte EngineStatus {
     get {
-      if (Ignited && Flameout) return 1;
-      if (Ignited && NormalizedOutput > 0) return 0;
-      if (Ignited) return 4;
-      return 3;
+      if (!Active) return 3;
+      if (Flameout) return 1;
+      if (NormalizedOutput > 0) return 0;
+      return 4;
     }
   }
 
@@ -162,7 +166,7 @@ public class Engine : VirtualComponent {
   // contribute nothing to ΔV).
   public virtual void ActivateForBurn() {
     Throttle = 1.0;
-    Ignited = true;
+    Active = true;
   }
 
   public override void Save(PartState state) {
@@ -172,5 +176,11 @@ public class Engine : VirtualComponent {
   public override void Load(PartState state) {
     if (state.Engine == null) return;
     Active = state.Engine.Active;
+    // Throttle is a per-tick input — NovaEngineModule.FixedUpdate
+    // refreshes it from ctrlState.mainThrottle. Resetting to 0 here
+    // ensures any solve that runs between Load and the next
+    // FixedUpdate sees a stopped engine instead of stale throttle
+    // from before the save.
+    Throttle = 0;
   }
 }

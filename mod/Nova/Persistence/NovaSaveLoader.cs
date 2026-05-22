@@ -235,6 +235,13 @@ public static class NovaSaveLoader {
 
       // Action groups AFTER unpack
       ApplyActionGroups(vessel, flight.ActionGroups);
+
+      // Restore the player's throttle setpoint. Engines pull from
+      // ctrlState.mainThrottle each FixedUpdate; without this restore,
+      // a quicksave at full throttle reloads with the throttle slider
+      // visually at zero (stock KSP resets ctrlState on vessel reload).
+      if (vessel.ctrlState != null)
+        vessel.ctrlState.mainThrottle = flight.MainThrottle;
     }
 
     // Nova component state

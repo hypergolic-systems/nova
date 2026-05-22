@@ -398,6 +398,12 @@ message FlightState {
   OrbitalState  orbit = 1;
   PositionState position = 2;
   uint32 action_groups = 3;   // bitfield: SAS, RCS, Lights, Gear, Brakes, customs
+  // Stock KSP's per-vessel throttle setpoint (`vessel.ctrlState.mainThrottle`,
+  // 0..1). Engines read this each FixedUpdate to drive their LP demand.
+  // Persisted so a quickload mid-burn restores the throttle exactly; without
+  // this the engine's transient Throttle field would survive in memory but
+  // ctrlState would reset to 0, leaving the two out of sync for one tick.
+  float main_throttle = 4;
 }
 
 message OrbitalState {

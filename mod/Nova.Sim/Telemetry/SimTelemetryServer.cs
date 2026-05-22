@@ -411,11 +411,7 @@ public sealed class SimTelemetryServer : IDisposable {
         foreach (var c in virt.GetComponents(partId)) {
           if (!(c is Nova.Core.Components.Propulsion.Engine engine)) continue;
 
-          byte status;
-          if (engine.Ignited && engine.Flameout) status = 1;
-          else if (engine.Ignited && engine.NormalizedOutput > 0) status = 0;
-          else if (engine.Ignited) status = 4;
-          else status = 3;
+          byte status = engine.EngineStatus;
           float throttle = status == 0
               ? System.Math.Min(1f, System.Math.Max(0f, (float)(engine.Throttle * engine.NormalizedOutput)))
               : 0f;

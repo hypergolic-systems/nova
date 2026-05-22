@@ -113,7 +113,7 @@ public class NuclearEngineTests {
     Assert.AreEqual(ReactorState.Cold, r.State);
     Assert.AreEqual(0, r.ComputeFlowDemandKgs(), 1e-9);
     Assert.AreEqual(0, r.ThrustOutputFraction, 1e-9);
-    Assert.IsFalse(r.Ignited);
+    Assert.AreEqual((byte)3, r.EngineStatus);  // shutdown
   }
 
   // Regression: a Cold reactor sitting on the pad must NOT schedule a
@@ -171,6 +171,24 @@ public class NuclearEngineTests {
     // CoreTempK is loaded after OnBuildSystems via the pending-load
     // shim; without a vessel build we round-trip it on load by stashing
     // into the heat buffer when present.
+  }
+
+  // PlayerThrottle is a per-tick input from NovaNuclearEngineModule.
+  // ApplyPlayerThrottle. Load resets it to 0 so any solve that runs
+  // between Load and the next FixedUpdate doesn't push reactor demand
+  // against the pre-save throttle. ctrlState.mainThrottle is restored
+  // separately by NovaSaveLoader for the player's actual setpoint.
+  [TestMethod]
+  public void Load_ResetsPlayerThrottleToZero() {
+    var src = MakeReactor();
+    src.PlayerThrottle = 0.8;
+    var state = new Nova.Core.Persistence.Protos.PartState();
+    src.Save(state);
+
+    var dst = MakeReactor();
+    dst.PlayerThrottle = 0.5;
+    dst.Load(state);
+    Assert.AreEqual(0.0, dst.PlayerThrottle, 1e-12);
   }
 
   // ─── State-machine transitions ──────────────────────────────────────
