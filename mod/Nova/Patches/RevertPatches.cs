@@ -1,4 +1,5 @@
 using HarmonyLib;
+using KSP.UI.Screens;
 using Nova.Persistence;
 using Nova;
 
@@ -30,6 +31,17 @@ public static class RevertPatches {
 
     NovaLog.Log($"[Revert] Applying PostInit snapshot — UT={snapshot.UniversalTime:F1}, vessels={snapshot.Vessels.Count}");
     NovaSaveLoader.ApplyQuickload(snapshot);
+
+    // Reset the staging stack to "all stages remaining". Stock revert's
+    // scene reload runs FlightDriver.setStartupNewVessel which calls
+    // StageManager.BeginFlight as a side effect — that walks parts to
+    // find the highest inverseStage and sets currentStage = max + 1.
+    // Without this, vessel.currentStage retains its mid-flight value
+    // (decremented every time the player staged), so a freshly-reverted
+    // vessel can't be staged because KSP thinks every stage already
+    // fired. BeginFlight also flips canSeparate true and rebuilds the
+    // icon list so the staging UI re-displays the launch configuration.
+    StageManager.BeginFlight();
 
     // Stock revert was invoked from the pause menu, which relies on the
     // scene reload (HighLogic.LoadScene → scene tear-down) to close
