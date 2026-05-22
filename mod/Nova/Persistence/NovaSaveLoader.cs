@@ -222,7 +222,13 @@ public static class NovaSaveLoader {
         if (pos.Rotation != null) {
           vessel.srfRelRotation = new Quaternion(pos.Rotation.X, pos.Rotation.Y, pos.Rotation.Z, pos.Rotation.W);
           var body = vessel.orbitDriver.orbit.referenceBody;
-          vessel.transform.rotation = body.bodyTransform.rotation * vessel.srfRelRotation;
+          // SetRotation walks every part and sets partTransform.rotation
+          // = rot * orgRot, then propagates the vessel position to each
+          // part too — so the rigidbodies actually re-orient. Assigning
+          // `vessel.transform.rotation` alone only moves the parent
+          // transform and leaves the parts at their pre-revert rotation,
+          // which made the launchpad teleport keep the takeoff attitude.
+          vessel.SetRotation(body.bodyTransform.rotation * vessel.srfRelRotation);
         }
       }
 
