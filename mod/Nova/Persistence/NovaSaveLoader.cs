@@ -54,7 +54,7 @@ public static class NovaSaveLoader {
     return true;
   }
 
-  static bool ApplyQuickload(Proto.SaveFile save) {
+  public static bool ApplyQuickload(Proto.SaveFile save) {
     NovaScienceArchive.Reset();
     NovaScienceArchive.Instance.HydrateFrom(save.ScienceArchive);
 
@@ -250,6 +250,17 @@ public static class NovaSaveLoader {
       foreach (var partState in state.Parts)
         mod.Virtual.LoadPartState(partState.Id, partState);
       mod.Virtual.Invalidate();
+
+      // Now that every VirtualComponent has its restored runtime state,
+      // give each NovaPartModule a chance to sync its KSP-side rendered
+      // state (engine FX, deployment animation pose, RTG glow, light
+      // emissives, etc.) with the new component values. Update() handles
+      // per-frame visuals while Active/Deployed/etc. are true, but a
+      // load that flips Active true→false leaves the prior frame's FX
+      // state latched; this hook is the explicit "state changed under
+      // you, reconcile" callback.
+      foreach (var m in vessel.FindPartModulesImplementing<NovaPartModule>())
+        m.OnNovaStateRestored();
     }
   }
 

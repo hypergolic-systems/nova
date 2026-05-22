@@ -178,6 +178,23 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
     engine.Active = true;
   }
 
+  /// <summary>
+  /// Quickload / revert restored the underlying Engine state. Update()
+  /// only writes FX while `engine.Active` is true, so a once-firing
+  /// engine whose Active just flipped to false (revert-to-launch back
+  /// to PRELAUNCH) would leave its flame + audio latched on. Killing
+  /// the FX groups here is idempotent; Update() resumes them next
+  /// frame if Active is still true and thrust is flowing.
+  /// </summary>
+  public override void OnNovaStateRestored() {
+    if (engine == null) return;
+    if (!engine.Active) {
+      runningGroup?.setActive(false);
+      powerGroup?.setActive(false);
+      wasFlowing = false;
+    }
+  }
+
   // Hook for subclasses to receive the player throttle each FixedUpdate.
   // Base behaviour: write directly to engine.Throttle (the LP demand).
   // NovaNuclearEngineModule overrides to route the value to

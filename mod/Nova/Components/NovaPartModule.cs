@@ -32,6 +32,19 @@ public class NovaPartModule : PartModule {
     virtualComponentStatus = $"{string.Join(", ", Components.Select(c => c.Name))} ({(state == StartState.Editor ? "Editor" : "Flight")})";
   }
 
+  /// <summary>
+  /// Called by `NovaSaveLoader.ApplyVesselState` after `VirtualComponent.Load`
+  /// has updated every component on this part. Override to sync KSP-side
+  /// rendered/animated state with the freshly-restored VirtualComponent
+  /// state — engine FX, deployment animation pose, RTG glow, light
+  /// emissives, etc. Per-frame Update() handles steady-state visuals;
+  /// this hook handles "the underlying state just changed, refresh what
+  /// Update wouldn't catch this frame" — e.g. an engine that was firing
+  /// before the load is now Active=false but its FX latch on until
+  /// something explicitly disables them.
+  /// </summary>
+  public virtual void OnNovaStateRestored() {}
+
   internal ConfigNode GetPrefabModuleConfig() {
     return part.partInfo.partConfig.GetNodes("MODULE")
       .FirstOrDefault(n => n.GetValue("name") == GetType().Name);
