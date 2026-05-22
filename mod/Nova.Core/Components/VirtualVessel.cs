@@ -126,33 +126,31 @@ public class VirtualVessel {
   /// child staging node.
   /// </summary>
   private void WalkPartTree(StagingFlowSystem.Node stagingNode, uint partId) {
-    parts.TryGetValue(partId, out var partEntry);
+    var partEntry = parts[partId];
     var partDryMass = partDryMasses.TryGetValue(partId, out var mass) ? mass : 0;
 
-    if (partEntry != null) {
-      foreach (var cmp in partEntry.components) cmp.Vessel = this;
-      var decoupler = partEntry.components.OfType<Decoupler>().FirstOrDefault();
-      if (decoupler != null) {
-        var childNode = systems.Staging.AddNode();
-        childNode.Id = (long)partId;
-        childNode.DrainPriority = decoupler.Priority;
-        systems.Staging.AddEdge(stagingNode, childNode, decoupler.AllowedResources, decoupler.UpOnlyResources);
-        stagingNode = childNode;
-      }
-
-      var dockingPort = partEntry.components.OfType<DockingPort>().FirstOrDefault();
-      if (dockingPort != null) {
-        var childNode = systems.Staging.AddNode();
-        childNode.Id = (long)partId;
-        childNode.DrainPriority = dockingPort.Priority;
-        var allowed = dockingPort.AllowedResources.Count == 0 ? null : dockingPort.AllowedResources;
-        systems.Staging.AddEdge(stagingNode, childNode, allowed, dockingPort.UpOnlyResources);
-        stagingNode = childNode;
-      }
-
-      foreach (var cmp in partEntry.components)
-        cmp.OnBuildSystems(systems, stagingNode);
+    foreach (var cmp in partEntry.components) cmp.Vessel = this;
+    var decoupler = partEntry.components.OfType<Decoupler>().FirstOrDefault();
+    if (decoupler != null) {
+      var childNode = systems.Staging.AddNode();
+      childNode.Id = (long)partId;
+      childNode.DrainPriority = decoupler.Priority;
+      systems.Staging.AddEdge(stagingNode, childNode, decoupler.AllowedResources, decoupler.UpOnlyResources);
+      stagingNode = childNode;
     }
+
+    var dockingPort = partEntry.components.OfType<DockingPort>().FirstOrDefault();
+    if (dockingPort != null) {
+      var childNode = systems.Staging.AddNode();
+      childNode.Id = (long)partId;
+      childNode.DrainPriority = dockingPort.Priority;
+      var allowed = dockingPort.AllowedResources.Count == 0 ? null : dockingPort.AllowedResources;
+      systems.Staging.AddEdge(stagingNode, childNode, allowed, dockingPort.UpOnlyResources);
+      stagingNode = childNode;
+    }
+
+    foreach (var cmp in partEntry.components)
+      cmp.OnBuildSystems(systems, stagingNode);
 
     stagingNode.DryMass += partDryMass;
 
@@ -449,6 +447,13 @@ public class VirtualVessel {
 
   public void UpdatePartTree(Dictionary<uint, uint?> parentMap) {
     partTree = parentMap;
+    // Densify `parts`: every partTree key gets a Part, even componentless
+    // ones (transparent non-Nova parts, or parts whose name didn't resolve).
+    // WalkPartTree / Save / Load can then assume `parts[id]` exists.
+    foreach (var id in parentMap.Keys) {
+      if (!parts.ContainsKey(id))
+        parts[id] = new Part();
+    }
   }
 
   /// <summary>
@@ -493,13 +498,15 @@ public class VirtualVessel {
   /// </summary>
   public void MergeParts(Dictionary<uint, List<VirtualComponent>> otherParts,
       Dictionary<uint, string> partNames, Dictionary<uint, double> dryMasses) {
-    foreach (var kvp in otherParts) {
-      parts[kvp.Key] = new Part {
-        partName = partNames.TryGetValue(kvp.Key, out var name) ? name : "",
-        dryMass = dryMasses.TryGetValue(kvp.Key, out var mass) ? mass : 0,
-        components = kvp.Value,
+    // dryMasses.Keys is the authoritative "every merged part" set (built by the
+    // caller from the docked vessel's part list). Keep `parts` dense.
+    foreach (var partId in dryMasses.Keys) {
+      parts[partId] = new Part {
+        partName = partNames.TryGetValue(partId, out var name) ? name : "",
+        dryMass = dryMasses[partId],
+        components = otherParts.TryGetValue(partId, out var cmps) ? cmps : new List<VirtualComponent>(),
       };
-      partDryMasses[kvp.Key] = dryMasses.TryGetValue(kvp.Key, out var dm) ? dm : 0;
+      partDryMasses[partId] = dryMasses[partId];
     }
   }
 
@@ -512,11 +519,13 @@ public class VirtualVessel {
     var vessel = new VirtualVessel();
     vessel.partTree = parentMap;
     vessel.partDryMasses = new Dictionary<uint, double>(dryMasses);
-    foreach (var kvp in existingParts) {
-      vessel.parts[kvp.Key] = new Part {
-        partName = partNames.TryGetValue(kvp.Key, out var name) ? name : "",
-        dryMass = dryMasses.TryGetValue(kvp.Key, out var mass) ? mass : 0,
-        components = kvp.Value,
+    // `parts` is dense: one entry per part on the vessel, even if it has no
+    // NovaPartModule. Keeps Save/LoadPartState able to assume membership.
+    foreach (var partId in parentMap.Keys) {
+      vessel.parts[partId] = new Part {
+        partName = partNames.TryGetValue(partId, out var name) ? name : "",
+        dryMass = dryMasses.TryGetValue(partId, out var mass) ? mass : 0,
+        components = existingParts.TryGetValue(partId, out var cmps) ? cmps : new List<VirtualComponent>(),
       };
     }
     vessel.InitializeSolver(time);
@@ -524,15 +533,12 @@ public class VirtualVessel {
   }
 
   public void SavePartState(uint partId, PartState state) {
-    if (!parts.TryGetValue(partId, out var part)) return;
-    foreach (var cmp in part.components)
+    foreach (var cmp in parts[partId].components)
       cmp.Save(state);
   }
 
   public void LoadPartState(uint partId, PartState state) {
-    if (!parts.TryGetValue(partId, out var part))
-      throw new System.InvalidOperationException($"Part {partId} not found in VirtualVessel");
-    foreach (var cmp in part.components)
+    foreach (var cmp in parts[partId].components)
       cmp.Load(state);
   }
 

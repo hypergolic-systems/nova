@@ -474,9 +474,7 @@ public class NovaVesselModule : VesselModule {
         components = CreateComponentsFromPrefab(partInfo);
       var dryMassKg = partInfo.partPrefab.mass * 1000;
 
-      if (components.Count > 0)
-        vv.AddPart(part.persistentId, partName, dryMassKg, components);
-      vv.SetPartDryMass(part.persistentId, dryMassKg);
+      vv.AddPart(part.persistentId, partName, dryMassKg, components);
     }
 
     vv.UpdatePartTree(parentMap);
@@ -542,9 +540,7 @@ public class NovaVesselModule : VesselModule {
       var components = CreateComponentsFromPrefab(partInfo);
       var dryMassKg = partInfo.partPrefab.mass * 1000;
 
-      if (components.Count > 0)
-        vv.AddPart(id, partName, dryMassKg, components);
-      vv.SetPartDryMass(id, dryMassKg);
+      vv.AddPart(id, partName, dryMassKg, components);
     }
 
     vv.UpdatePartTree(parentMap);
