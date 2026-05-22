@@ -42,9 +42,10 @@ export default defineConfig({
   build: {
     lib: {
       entry: {
-        flight: resolve(__dirname, 'src/flight.ts'),
-        editor: resolve(__dirname, 'src/editor.ts'),
-        rnd:    resolve(__dirname, 'src/rnd.ts'),
+        mainmenu: resolve(__dirname, 'src/mainmenu.ts'),
+        flight:   resolve(__dirname, 'src/flight.ts'),
+        editor:   resolve(__dirname, 'src/editor.ts'),
+        rnd:      resolve(__dirname, 'src/rnd.ts'),
       },
       formats: ['es'],
     },

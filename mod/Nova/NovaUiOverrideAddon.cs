@@ -31,12 +31,13 @@ public class NovaUiOverrideAddon : MonoBehaviour {
       return;
     }
     // KSP scene IDs match GameScenes enum names (uppercase).
+    topic.SetOverride("MAINMENU", "@nova/mainmenu");
     topic.SetOverride("FLIGHT", "@nova/flight");
     topic.SetOverride("EDITOR", "@nova/editor");
     // RND is a Nova virtual scene id (not a KSP GameScenes value);
     // RnDBuilding.OnClicked patches publish to VirtualSceneTopic so the
     // hud shell's `virtual ?? ksp` precedence flips routing here.
     topic.SetOverride("RND", "@nova/rnd");
-    NovaLog.Log("UI scene overrides registered: FLIGHT/EDITOR/RND → @nova/{flight,editor,rnd}");
+    NovaLog.Log("UI scene overrides registered: MAINMENU/FLIGHT/EDITOR/RND → @nova/{mainmenu,flight,editor,rnd}");
   }
 }
