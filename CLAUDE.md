@@ -32,7 +32,7 @@ just test                       # run MSTest suite
 just ui-bootstrap               # symlink Dragonglass + npm install ui/
 just ui-build                   # Vite library build → ui/apps/nova/dist/
 just dist                       # produce release/Nova.zip (mod + UI)
-just install ~/KSP_osx          # build + install into a KSP directory
+just install ./game             # build + install into a KSP directory (this repo's `./game` is the canonical local install)
 ```
 
 `mod-build` depends on `proto`, so a fresh checkout just needs `just mod-build`. Anything that crosses into Dragonglass — `sync-dragonglass-stubs`, `ui-bootstrap`, and the targets that depend on them — requires `$DRAGONGLASS_PATH` set in the environment (e.g. `export DRAGONGLASS_PATH=~/dev/dragonglass`).
@@ -182,7 +182,7 @@ Nova's bundle externalizes `svelte`, `three`, `@threlte/core`, and every `@drago
 Use `kspcli` for live game inspection / scripted scenes. From `~/dev/hgs/kspcli`:
 
 ```
-just install ~/KSP_osx          # one-time, install kspcli mod
+just install ~/dev/nova/game    # one-time, install kspcli mod into Nova's local KSP install
 just run -- start
 just run -- load_save default
 just run -- vessels
@@ -197,7 +197,7 @@ Don't add bridge/CLI commands inside Nova — they live in kspcli.
 
 ```
 just sim-build
-just sim-run -- --ksp-path ~/KSP_osx --save ~/KSP_osx/saves/default/persistent.nvs
+just sim-run -- --ksp-path ./game --save ./game/saves/default/persistent.nvs
 # ws://0.0.0.0:9887 (telemetry), udp://127.0.0.1:9877 (eval)
 ```
 

@@ -25,7 +25,7 @@ Don't reach for it when:
 
 ## Prereqs
 
-- KSP installed at `~/KSP_osx` (or wherever, via `--ksp-path`). The sim walks `<ksp>/GameData/*/Parts/` for stock part configs and `<ksp>/GameData/Squad/Localization/dictionary.cfg` for `#autoLOC_*` resolution.
+- KSP installed at `./game` (this repo's local install — the canonical path), or wherever else via `--ksp-path`. The sim walks `<ksp>/GameData/*/Parts/` for stock part configs and `<ksp>/GameData/Squad/Localization/dictionary.cfg` for `#autoLOC_*` resolution.
 - For Nova-specific part data, `configs/overrides/**/*.cfg` from this repo gets layered on top (a minimal `@PART[name]` / `!MODULE[]` / `!RESOURCE[]` applier — Nova doesn't use the full ModuleManager surface). Resolved at startup.
 - A `.nvc` or `.nvs` to load. Inspect with `just save-cli dump <path>` first to check what's in it.
 
@@ -33,11 +33,11 @@ Don't reach for it when:
 
 ```
 just sim-build                      # → mod/Nova.Sim/build/Nova.Sim.exe
-just sim-run -- --ksp-path ~/KSP_osx \
-                 --save ~/KSP_osx/saves/default/persistent.nvs
+just sim-run -- --ksp-path ./game \
+                 --save ./game/saves/default/persistent.nvs
 # or:
-just sim-run -- --ksp-path ~/KSP_osx \
-                 --craft ~/KSP_osx/saves/default/Ships/VAB/MyShip.nvc
+just sim-run -- --ksp-path ./game \
+                 --craft ./game/saves/default/Ships/VAB/MyShip.nvc
 ```
 
 Flags:
@@ -65,7 +65,7 @@ In two terminals:
 
 ```
 # 1. sim
-just sim-run -- --ksp-path ~/KSP_osx --save <path>.nvs
+just sim-run -- --ksp-path ./game --save <path>.nvs
 
 # 2. vite dev server (http://localhost:5173)
 just ui-dev
