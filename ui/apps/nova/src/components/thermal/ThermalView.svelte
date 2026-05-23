@@ -14,7 +14,7 @@
 
   import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
   import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
-  import { NovaPartTopic } from '../../telemetry/nova-topics';
+  import { NovaPartTopic, IonTripReason } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy } from 'svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
@@ -47,8 +47,53 @@
   function isRtgPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.rtg.length > 0;
   }
+  function isIonPart(p: NovaPartHandle): boolean {
+    return !!p.state && p.state.ion.length > 0;
+  }
   function isRadiatorPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.radiator.length > 0;
+  }
+
+  // Aggregate across all ion engines on a part. Sums waste-heat
+  // injection + rejection so a player can read the thermal handshake
+  // (engine producing X W, exporting Y W to the bus). Temperatures
+  // average if multiple engines somehow live on one part — keeps the
+  // row layout symmetric with the RTG sum.
+  function ionThermal(p: NovaPartHandle): {
+    heatIn: number; rejection: number;
+    tempK: number; maxTempK: number;
+    tripped: boolean; tripReason: IonTripReason;
+  } {
+    let heatIn = 0, rejection = 0, tempK = 0, maxTempK = 0;
+    let tripped = false;
+    let tripReason: IonTripReason = IonTripReason.None;
+    let n = 0;
+    if (p.state) {
+      for (const ion of p.state.ion) {
+        heatIn    += ion.wasteHeatW;
+        rejection += ion.rejectionW;
+        tempK     += ion.coreTempK;
+        maxTempK  += ion.maxOperatingTempK;
+        if (ion.tripped) { tripped = true; tripReason = ion.tripReason; }
+        n++;
+      }
+    }
+    if (n > 1) {
+      tempK /= n;
+      maxTempK /= n;
+    }
+    return { heatIn, rejection, tempK, maxTempK, tripped, tripReason };
+  }
+
+  function ionTempFraction(p: NovaPartHandle): number {
+    const t = ionThermal(p);
+    // Same ambient assumption as the runtime view — 290 K floor so the
+    // bar starts near empty rather than ~20% full at idle. The gauge
+    // reads as "headroom to the trip line".
+    const ambient = 290;
+    const span = t.maxTempK - ambient;
+    if (span <= 0) return 0;
+    return Math.max(0, Math.min(1, (t.tempK - ambient) / span));
   }
 
   // Aggregate across all RTG components on a part. Stock has one per
@@ -168,20 +213,23 @@
   }
 
   const groups = $derived.by(() => {
-    const producers: NovaPartHandle[] = [];
+    const rtgs: NovaPartHandle[] = [];
+    const ions: NovaPartHandle[] = [];
     const radiators: NovaPartHandle[] = [];
     for (const p of vesselParts.current) {
-      if (isRtgPart(p)) producers.push(p);
-      else if (isRadiatorPart(p)) radiators.push(p);
+      if (isRtgPart(p)) rtgs.push(p);
+      if (isIonPart(p)) ions.push(p);
+      if (isRadiatorPart(p)) radiators.push(p);
     }
-    return { producers, radiators };
+    return { rtgs, ions, radiators };
   });
 
   const totals = $derived({
-    // Heat load on the cooling system — RTG waste heat plus cryocooler
-    // waste heat (Q_hot = Q_cold + W_in lands on the bus radiators
-    // have to reject).
-    heatLoad: groups.producers.reduce((a, p) => a + rtgThermal(p).heatIn, 0)
+    // Heat load on the cooling system — RTG waste heat + ion engine
+    // waste heat + cryocooler waste heat (Q_hot = Q_cold + W_in all
+    // lands on the bus radiators have to reject).
+    heatLoad: groups.rtgs.reduce((a, p) => a + rtgThermal(p).heatIn, 0)
+            + groups.ions.reduce((a, p) => a + ionThermal(p).heatIn, 0)
             + coolerRows.reduce((a, r) => a + r.coolerHeatW, 0),
     // Active cooling provided by deployed radiators.
     cooling:    groups.radiators.reduce((a, p) => a + radiatorOf(p).current, 0),
@@ -328,11 +376,11 @@
       </span>
     </button>
     {#if expanded.producers}
-      {#if groups.producers.length === 0 && coolerRows.length === 0}
+      {#if groups.rtgs.length === 0 && groups.ions.length === 0 && coolerRows.length === 0}
         {@render emptyMsg('NO HEAT PRODUCERS')}
       {:else}
         <ul class="thr__rows">
-          {#each groups.producers as p (p.struct.id)}
+          {#each groups.rtgs as p (p.struct.id)}
             {@const t = rtgThermal(p)}
             {@const loadFmt = fmtRate(t.heatIn)}
             {@const rejFmt  = fmtRate(t.rejection)}
@@ -379,6 +427,86 @@
                   <span class="thr__rate thr__rate--cool"
                         class:thr__rate--zero={isZero(t.rejection)}
                         title="Body radiation to environment, quantized into 10 tiers (linear in T). Idle when cooling loop covers production.">
+                    {rejFmt.mag}<em>{rejFmt.unit}</em>
+                  </span>
+                </div>
+              </div>
+            </li>
+          {/each}
+          <!-- Ion engines — accelerator-grid waste heat exported to the
+               same bus as the RTGs. Trip latch surfaces as a chip on
+               the primary line; reset lives in PWR (where the player
+               manages EC consumers). Layout mirrors the RTG row: gauge
+               + core T / max T + delta from the trip threshold. -->
+          {#each groups.ions as p (p.struct.id)}
+            {@const t = ionThermal(p)}
+            {@const loadFmt = fmtRate(t.heatIn)}
+            {@const rejFmt  = fmtRate(t.rejection)}
+            {@const tempFrac = ionTempFraction(p)}
+            {@const tempMarginK = t.maxTempK - t.tempK}
+            <li class="thr__row thr__row--stack"
+                class:thr__row--closed={t.tripped}
+                onmouseenter={() => highlightOn([p.struct.id])}
+                onmouseleave={highlightOff}>
+              <span class="thr__row-icon">
+                <ComponentIcon kind="ion" />
+              </span>
+              <div class="thr__row-stack">
+                <!-- Line 1: name + waste-heat number. Trip badge sits
+                     between name and rate; on `XeStarvation` the engine
+                     has zero EC draw, so heat too — the row reads as a
+                     calm trip rather than a runaway. -->
+                <div class="thr__row-line">
+                  <span class="thr__row-name">{p.struct.title}</span>
+                  {#if t.tripped}
+                    <span class="thr__ion-trip"
+                          title={t.tripReason === IonTripReason.XeStarvation
+                            ? 'Tripped — Xenon supply collapsed. Clear in PWR.'
+                            : t.tripReason === IonTripReason.Overtemp
+                              ? 'Tripped — overtemp. Add radiator capacity and clear in PWR.'
+                              : 'Tripped — clear in PWR'}>
+                      {t.tripReason === IonTripReason.XeStarvation ? 'TRIP·XE'
+                        : t.tripReason === IonTripReason.Overtemp ? 'TRIP·HOT'
+                        : 'TRIP'}
+                    </span>
+                  {/if}
+                  <span class="thr__rate thr__rate--load"
+                        class:thr__rate--zero={isZero(t.heatIn)}
+                        title="Waste heat injected this tick = currentEcW × (1 − jetEfficiency)">
+                    {loadFmt.mag}<em>{loadFmt.unit}</em>
+                  </span>
+                </div>
+                <!-- Line 2: temp gauge + K readout + headroom-to-trip.
+                     `tempMarginK` flips the readout color when the
+                     buffer is closing in on `maxTempK`. -->
+                <div class="thr__row-line thr__row-line--gauge">
+                  <SegmentGauge fraction={tempFrac} />
+                  <span class="thr__temp"
+                        title="Core temperature / overtemp trip threshold">
+                    {fmtTempC(t.tempK - 273.15)}<em>°C</em><span
+                      class="thr__temp-sep">/</span>{fmtTempC(t.maxTempK - 273.15)}<em>°C</em>
+                  </span>
+                  <span class="thr__dtdt"
+                        class:thr__dtdt--up={tempMarginK < 50}
+                        class:thr__dtdt--down={tempMarginK > 200}
+                        class:thr__dtdt--zero={tempMarginK <= 0}
+                        title="Headroom to overtemp trip. Negative = engine has tripped.">
+                    Δ{tempMarginK > 0 ? fmtTempC(tempMarginK) : '—'}<em>K</em>
+                  </span>
+                </div>
+                <!-- Line 3: rejection — the radiator-bus handshake.
+                     Same colour idiom as RTG passive rejection (mint =
+                     heat leaving the part); dim when matched, alert
+                     when production outruns it (precursor to overtemp). -->
+                <div class="thr__row-line thr__row-line--secondary">
+                  <span class="thr__rejection-label">bus rejection</span>
+                  <span class="thr__rate"
+                        class:thr__rate--cool={t.rejection >= t.heatIn - RATE_EPSILON}
+                        class:thr__rate--load={t.rejection < t.heatIn - RATE_EPSILON}
+                        class:thr__rate--zero={isZero(t.rejection)}
+                        title={t.rejection < t.heatIn - RATE_EPSILON
+                          ? 'Radiator headroom short — heat accumulating, overtemp incoming'
+                          : 'Radiator covers production — thermal balance steady'}>
                     {rejFmt.mag}<em>{rejFmt.unit}</em>
                   </span>
                 </div>
@@ -690,5 +818,27 @@
   }
   .thr__empty-text {
     flex: 0 0 auto;
+  }
+
+  /* Ion engine trip chip. Sits in the primary row line between the
+     name and the heat-load number. Same chip shape as the cooler
+     stage toggle, but alert-tinted + pulsing. No reset button here
+     — reset lives in PWR (the trip is a power-side action). */
+  .thr__ion-trip {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border: 1px solid var(--alert);
+    color: var(--alert);
+    background: rgba(60, 12, 12, 0.42);
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    line-height: 1.3;
+    animation: thr-ion-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes thr-ion-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
   }
 </style>

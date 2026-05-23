@@ -189,6 +189,7 @@ message PartState {
   DecouplerState      decoupler       = 14;
   NuclearEngineState  nuclear_engine  = 15;
   EngineState         engine          = 16;
+  IonEngineState      ion_engine      = 17;
 }
 
 message TankVolumeState {
@@ -281,6 +282,18 @@ message NuclearEngineState {
 // mainThrottle would stop being applied.
 message EngineState {
   bool active = 1;
+}
+
+// Ion engine (NSTAR-class) state. Two cross-system inputs (Xenon
+// topological + ElectricCharge uniform), waste heat exported to the
+// Heat bus, sticky trip latch on Xe starvation or overtemp. Player
+// clears the trip via `setIonResetTrip`. Core temperature persists so
+// a quicksave mid-burn doesn't snap the thermal buffer to ambient.
+message IonEngineState {
+  bool   active       = 1;
+  bool   tripped      = 2;
+  int32  trip_reason  = 3;  // 0=None 1=XeStarvation 2=Overtemp
+  double core_temp_k  = 4;
 }
 
 // Per-decoupler editor-tunable state. Resource crossfeed lists (allowed

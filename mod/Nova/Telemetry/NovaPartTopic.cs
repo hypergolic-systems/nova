@@ -162,6 +162,18 @@ namespace Nova.Telemetry;
 //                                throttle slews to 0. No-op on parts
 //                                without a NovaNuclearEngineModule
 //                                and on already-terminal states.
+//   "setIonResetTrip"           — clear an ion engine's trip latch.
+//                                Flight-only. No-op if not tripped.
+//                                Leaves `Active` alone — player must
+//                                re-stage or fire setEngineActive(true)
+//                                to relight the engine.
+//   "setEngineActive" [bool]    — toggle a chemical or ion engine's
+//                                Active flag. Lets the player shut a
+//                                staged engine down (and re-light it)
+//                                without un-staging. Rejected on
+//                                nuclear engines (use setReactorActive)
+//                                and on tripped ion engines (call
+//                                setIonResetTrip first).
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -287,6 +299,54 @@ public sealed class NovaPartTopic : Topic {
         var reactor = module?.Reactor;
         if (reactor == null) return;
         if (!reactor.SetReactorActive(active)) return;
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        vesselModule?.Virtual?.Invalidate();
+        MarkDirty();
+        return;
+      }
+      case "setIonResetTrip": {
+        if (HighLogic.LoadedScene != GameScenes.FLIGHT) {
+          Debug.Log(LogPrefix + Name + " setIonResetTrip rejected outside flight");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaIonEngineModule>();
+        var ion = module?.Ion;
+        if (ion == null || !ion.Tripped) return;
+        ion.Tripped = false;
+        ion.TripReason = Nova.Core.Components.Propulsion.IonTripReason.None;
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        vesselModule?.Virtual?.Invalidate();
+        MarkDirty();
+        return;
+      }
+      case "setEngineActive": {
+        // Toggle a chemical or ion engine's player-facing on/off bit.
+        // Stock KSP's staging system flips Active=true via OnActive when
+        // a stage fires; this op gives the player an in-flight UI to
+        // shut a staged engine down (and re-light it) without un-staging
+        // the whole stack. Nuclear engines have their own
+        // setReactorActive state-machine op and are not affected here.
+        if (args == null || args.Count < 1 || !(args[0] is bool active)) {
+          Debug.LogWarning(LogPrefix + Name + " setEngineActive: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.FLIGHT) {
+          Debug.Log(LogPrefix + Name + " setEngineActive rejected outside flight");
+          return;
+        }
+        // Lookup any Engine that isn't a NuclearEngine subclass — chemical
+        // engines and ion engines both have a plain Active toggle.
+        var engineModule = _part?.FindModuleImplementing<NovaEngineModule>();
+        if (engineModule is NovaNuclearEngineModule) return;
+        var engine = engineModule?.Engine;
+        if (engine == null) return;
+        // Ion engines refuse re-light while tripped — the player must
+        // setIonResetTrip first to acknowledge the fault.
+        if (active && engineModule is NovaIonEngineModule ionMod
+            && ionMod.Ion is { Tripped: true }) return;
+        if (engine.Active == active) return;
+        engine.Active = active;
+        if (!active) engine.Throttle = 0;
         var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
         vesselModule?.Virtual?.Invalidate();
         MarkDirty();

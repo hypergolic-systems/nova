@@ -24,6 +24,7 @@ public static class ComponentFactory {
     ["NovaTankModule"] = "TankVolume",
     ["NovaEngineModule"] = "Engine",
     ["NovaNuclearEngineModule"] = "NuclearEngine",
+    ["NovaIonEngineModule"] = "IonEngine",
     ["NovaDecouplerModule"] = "Decoupler",
     ["NovaBatteryModule"] = "Battery",
     ["NovaFuelCellModule"] = "FuelCell",
@@ -66,6 +67,7 @@ public static class ComponentFactory {
     return typeName switch {
       "Engine" => CreateEngine(moduleNode),
       "NuclearEngine" => CreateNuclearEngine(moduleNode),
+      "IonEngine" => CreateIonEngine(moduleNode),
       "TankVolume" => CreateTankVolume(moduleNode),
       "Battery" => CreateBattery(moduleNode),
       "FuelCell" => CreateFuelCell(moduleNode),
@@ -167,6 +169,36 @@ public static class ComponentFactory {
     if (gimbalRange != null)
       reactor.GimbalRangeRad = double.Parse(gimbalRange) * System.Math.PI / 180.0;
     return reactor;
+  }
+
+  // NSTAR-class ion thruster. Single propellant (Xenon); EC + Heat
+  // plumbing is set up by IonEngine.OnBuildSystems against the config-
+  // declared rated power and thermal envelope. Per the "factories are
+  // thin parsers" memory: no formulas, no defaults — every value is
+  // declared in configs/overrides/propulsion/ionEngine.cfg.
+  public static IonEngine CreateIonEngine(ConfigNode node) {
+    var propNode = node.GetNodes("PROPELLANT").FirstOrDefault()
+      ?? throw new System.ArgumentException(
+          "NovaIonEngineModule: PROPELLANT { resource = ... } is required.");
+    var propResource = Resource.Get(propNode.GetValue("resource"));
+
+    var ion = new IonEngine();
+    ion.InitializeIon(
+      thrust:                   double.Parse(node.GetValue("thrust")),
+      isp:                      double.Parse(node.GetValue("isp")),
+      propellant:               propResource,
+      ratedPowerW:              double.Parse(node.GetValue("ratedPowerW")),
+      jetEfficiency:            double.Parse(node.GetValue("jetEfficiency")),
+      thermalMassJK:            double.Parse(node.GetValue("thermalMassJK")),
+      ambientK:                 double.Parse(node.GetValue("ambientK")),
+      maxOperatingTempK:        double.Parse(node.GetValue("maxOperatingTempK")),
+      maxHeatRejectionW:        double.Parse(node.GetValue("maxHeatRejectionW")),
+      tripXeShortfallThreshold: double.Parse(node.GetValue("tripXeShortfallThreshold"))
+    );
+    ion.Class = node.GetValue("engineClass")
+      ?? throw new System.ArgumentException(
+          "NovaIonEngineModule: 'engineClass' is required (typically 'Ionic').");
+    return ion;
   }
 
   public static TankVolume CreateTankVolume(ConfigNode node) {

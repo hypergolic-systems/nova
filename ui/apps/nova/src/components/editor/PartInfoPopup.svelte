@@ -173,6 +173,7 @@
   const KIND_ICON: Record<string, ComponentKind> = {
     E: 'engine',
     N: 'nuclear',
+    I: 'ion',
     M: 'rcs',
     T: 'tank',
     B: 'battery',
@@ -214,6 +215,18 @@
           { label: 'THRUST', value: `${fmtMag(n.thrustKn)} kN` },
           { label: 'ISP',    value: `${fmtMag(n.ispS)} s` },
           { label: 'PWR',    value: `${fmtPower(n.idlePowerW)} → ${fmtPower(n.maxPowerW)}` },
+        ],
+      };
+    }
+    if (i.ion.length > 0) {
+      const x = i.ion[0];
+      return {
+        kind: 'ion',
+        classLine: 'ION ENGINE',
+        stats: [
+          { label: 'THRUST', value: `${fmtMag(x.thrustKn)} kN` },
+          { label: 'ISP',    value: `${fmtMag(x.ispS)} s` },
+          { label: 'PWR',    value: fmtPower(x.ratedPowerW) },
         ],
       };
     }
@@ -512,6 +525,19 @@
           {@render kv('WARMUP', fmtDuration(n.warmupSec))}
         </div>
         {@render propellants(n.propellants)}
+      {/each}
+
+      {#each info.ion as x, i (i)}
+        {@render group('I', x.class ? `${x.class.toUpperCase()} ENGINE` : 'ION ENGINE', null)}
+        <div class="pip__grid">
+          {@render kv('THRUST', `${fmtMag(x.thrustKn)} kN`)}
+          {@render kv('ISP',    `${fmtMag(x.ispS)} s`)}
+          {@render kv('POWER',  fmtPower(x.ratedPowerW))}
+          {@render kv('EFF',    `${(x.jetEfficiency * 100).toFixed(0)}%`)}
+          {@render kv('MAX T',  `${fmtMag(x.maxOperatingTempK)} K`)}
+          {@render kv('REJECT', fmtPower(x.maxHeatRejectionW))}
+        </div>
+        {@render propellants(x.propellants)}
       {/each}
 
       {#each info.rcs as r, i (i)}

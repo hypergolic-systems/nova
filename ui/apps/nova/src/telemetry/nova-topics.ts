@@ -150,6 +150,22 @@ export type NovaNuclearFrame = [
   shutdownRequested: 0 | 1,
 ];
 
+// Plain chemical engine. Mirrors the C# `Engine` virtual component —
+// staging-activated flag, derived status byte (0=burning, 1=flameout,
+// 3=shutdown, 4=idle), live throttle, and the design-rated ceilings
+// used for the "burning at X% of max thrust" readout. NuclearEngine /
+// IonEngine emit their own subclass frames ('N' / 'I') instead.
+export type NovaEngineFrame = [
+  'E',
+  active: 0 | 1,
+  status: number,                // engine-map status byte
+  flameout: 0 | 1,
+  throttle: number,              // 0..1, last LP demand
+  currentThrustKn: number,
+  maxThrustKn: number,
+  ispS: number,
+];
+
 // Mirrors Nova.Core.Components.Propulsion.ReactorState. Order matters —
 // the wire value is the int cast of the C# enum.
 export enum ReactorState {
@@ -158,6 +174,36 @@ export enum ReactorState {
   Idle      = 2,
   Throttled = 3,
   Cooling   = 4,
+}
+
+// NSTAR-class ion thruster wire frame. Cross-system inputs: Xenon
+// (Topological / Staging) and ElectricCharge (Uniform / Process).
+// `ecSatisfaction` / `xeSatisfaction` are the post-solve per-side
+// fractions (Activity / Demand). `wasteHeatW` is `currentEcW × (1 −
+// JetEfficiency)` and is exported via a Critical-priority Heat outlet
+// device; `rejectionW` is the achieved export. Trip latch is sticky —
+// cleared via the `setIonResetTrip` topic op.
+export type NovaIonFrame = [
+  'I',
+  tripped: 0 | 1,
+  tripReason: number,           // 0=None, 1=XeStarvation, 2=Overtemp
+  throttle: number,             // 0..1, player setpoint
+  ecSatisfaction: number,       // 0..1
+  xeSatisfaction: number,       // 0..1
+  coreTempK: number,
+  maxOperatingTempK: number,
+  currentEcW: number,
+  wasteHeatW: number,
+  rejectionW: number,
+  ratedPowerW: number,
+];
+
+// Mirrors Nova.Core.Components.Propulsion.IonTripReason. Cast of the
+// C# enum int; surfaced on the trip badge in the per-part view.
+export enum IonTripReason {
+  None         = 0,
+  XeStarvation = 1,
+  Overtemp     = 2,
 }
 
 // One progressive observation record on disk. The wire shape mirrors
@@ -267,7 +313,9 @@ export type NovaComponentFrame =
   | NovaFuelCellFrame
   | NovaRtgFrame
   | NovaDecouplerFrame
-  | NovaNuclearFrame;
+  | NovaEngineFrame
+  | NovaNuclearFrame
+  | NovaIonFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -709,6 +757,29 @@ export interface DecouplerState {
   ejectionForce: number;
 }
 
+export interface EngineFlightState {
+  /** Staging-activated bit. `false` = engine is in shutdown (status
+   *  byte 3). Toggled by stock KSP's staging system on stage fire, or
+   *  by the `setEngineActive` UI op. */
+  active: boolean;
+  /** Engine-map status byte: 0 burning, 1 flameout, 2 failed (reserved),
+   *  3 shutdown, 4 idle. Drives the row's state-badge label/colour. */
+  status: number;
+  /** Wanted thrust but the staging solver couldn't deliver propellant.
+   *  Transient — recomputed every solve. */
+  flameout: boolean;
+  /** Player throttle (0..1) last solve. */
+  throttle: number;
+  /** Realised thrust this tick, kN. Zero when shutdown / idle / flameout. */
+  currentThrustKn: number;
+  /** Rated vacuum thrust, kN — the design ceiling the live thrust
+   *  pegs against at full throttle in vacuum. */
+  maxThrustKn: number;
+  /** Rated vacuum Isp, seconds. Surfaced on the row's hover tooltip
+   *  and the PRP card's metadata strip. */
+  ispS: number;
+}
+
 export interface NuclearReactorState {
   /** Cold / Warming / Idle / Throttled / Cooling. Drives the on/off
    *  button label and panel chrome. */
@@ -738,6 +809,47 @@ export interface NuclearReactorState {
   shutdownRequested: boolean;
 }
 
+export interface IonEngineState {
+  /** Sticky trip latch. When true the engine is off until the player
+   *  fires `setIonResetTrip`. Trip clears `Active` C#-side so the
+   *  engine-map status reads as shutdown across the rest of the UI. */
+  tripped: boolean;
+  /** Why the trip latched. 0 = no trip; 1 = Xe couldn't supply the
+   *  demanded flow despite EC being available (firing the accelerator
+   *  into vacuum); 2 = core temperature exceeded the operating
+   *  envelope (radiator absent or undersized). */
+  tripReason: IonTripReason;
+  /** Player throttle setpoint, 0..1. Forced to 0 while tripped. */
+  throttle: number;
+  /** EC supply satisfaction last solve, 0..1. = Activity / Demand on
+   *  the Process-side EC device. EC is at Low priority — yields to
+   *  avionics and active cooling. */
+  ecSatisfaction: number;
+  /** Xenon supply satisfaction last solve, 0..1. Trip fires when this
+   *  falls meaningfully below `ecSatisfaction`. */
+  xeSatisfaction: number;
+  /** Live core temperature, K. Derived from the private heat buffer:
+   *  `AmbientK + Contents / ThermalMassJK`. */
+  coreTempK: number;
+  /** Overtemp trip threshold, K. The temperature bar is normalised to
+   *  this — gauge full = engine about to trip. */
+  maxOperatingTempK: number;
+  /** EC consumed this tick, W. = `ecSatisfaction × throttle × RatedPowerW`. */
+  currentEcW: number;
+  /** Waste heat injected into the private buffer this tick, W. =
+   *  `currentEcW × (1 − jetEfficiency)`. */
+  wasteHeatW: number;
+  /** Heat extracted by the radiator network this tick, W. = Activity ×
+   *  MaxHeatRejectionW on the Critical-priority Heat outlet device.
+   *  If radiator headroom is short, the buffer climbs toward the trip. */
+  rejectionW: number;
+  /** Rated EC draw at full throttle, W. Design ceiling — same shape as
+   *  Solar.ratedRate / Wheel.busRated. Useful for the editor's power
+   *  budget view (where the LP isn't running) and for tooltips that
+   *  want to show "this engine demands up to X". */
+  ratedPowerW: number;
+}
+
 export interface NovaPart {
   id: string;
   resources: NovaResourceFlow[];
@@ -752,7 +864,9 @@ export interface NovaPart {
   rtg: RtgState[];
   radiator: RadiatorState[];
   decoupler: DecouplerState[];
+  engine: EngineFlightState[];
   nuclear: NuclearReactorState[];
+  ion: IonEngineState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -921,6 +1035,24 @@ export interface NovaPartOps {
    * the draggable TGT marker.
    */
   setReactorPlayerThrottle(throttle: number): void;
+
+  /**
+   * Flight-only. Clear an ion engine's trip latch. No-op if the part
+   * has no `NovaIonEngineModule`, or if the engine isn't tripped.
+   * `Active` is left alone — the player must re-stage to relight the
+   * engine. If the underlying condition still holds (empty Xe tank,
+   * no radiator), the engine will trip again on the next solve.
+   */
+  setIonResetTrip(): void;
+
+  /**
+   * Flight-only. Toggle a chemical or ion engine's player-facing
+   * `Active` bit. Lets the player shut a staged engine down (and
+   * re-light it) without un-staging the whole stack. Rejected on
+   * nuclear engines (use `setReactorActive`) and on tripped ion
+   * engines (call `setIonResetTrip` first to acknowledge the fault).
+   */
+  setEngineActive(active: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -971,6 +1103,7 @@ export const NovaStorageTopic = (partId: string): Topic<NovaStorageFrame> =>
 // not mass.
 export type NovaInfoEngineFrame      = ['E', engineClass: string, thrustKn: number, ispS: number, gimbalDeg: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoNuclearFrame     = ['N', thrustKn: number, ispS: number, idleTempK: number, opTempK: number, idlePowerW: number, maxPowerW: number, warmupSec: number, slewPerSec: number, propellants: [resource: string, ratio: number][]];
+export type NovaInfoIonFrame         = ['I', engineClass: string, thrustKn: number, ispS: number, ratedPowerW: number, jetEfficiency: number, maxOperatingTempK: number, maxHeatRejectionW: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoRcsFrame         = ['M', thrusterPowerKn: number, thrusterCount: number, ispS: number, propellants: [resource: string, ratio: number][]];
 export type NovaInfoTankFrame        = ['T', volumeL: number, maxRateLps: number, slices: [resource: string, capacityL: number, tier: number][]];
 export type NovaInfoBatteryFrame     = ['B', capacityJ: number, maxRateW: number];
@@ -1008,7 +1141,8 @@ export type NovaInfoComponentFrame =
   | NovaInfoDockingFrame
   | NovaInfoCrewFrame
   | NovaInfoStorageFrame
-  | NovaInfoThermometerFrame;
+  | NovaInfoThermometerFrame
+  | NovaInfoIonFrame;
 
 // Wire frame for the singleton NovaPartInfo topic. Empty array = nothing
 // hovered; populated frame = open against the parts catalog's right
@@ -1075,6 +1209,23 @@ export interface NuclearSpec extends Omit<EngineSpec, 'class'> {
   warmupSec: number;
   /** Throttle slew rate per second (0..1 units / s). */
   slewPerSec: number;
+}
+
+export interface IonSpec extends EngineSpec {
+  /** Rated EC draw at full throttle, W. */
+  ratedPowerW: number;
+  /** Conversion efficiency, 0..1. Waste-heat fraction = 1 − jetEfficiency.
+   *  NSTAR is ≈ 0.66 — high, but the remaining ~34% still ends up on the
+   *  heat bus, so radiators are a hard requirement above a few hundred
+   *  watts of EC draw. */
+  jetEfficiency: number;
+  /** Overtemp trip threshold, K. The runtime temp bar normalises to
+   *  this; passing it (radiator absent or undersized) latches a sticky
+   *  trip. */
+  maxOperatingTempK: number;
+  /** Heat outlet bandwidth, W. The Critical-priority Heat outlet
+   *  device can never export more than this per tick. */
+  maxHeatRejectionW: number;
 }
 
 export interface RcsSpec {
@@ -1246,6 +1397,7 @@ export interface NovaPartInfo {
 
   engine:       EngineSpec[];
   nuclear:      NuclearSpec[];
+  ion:          IonSpec[];
   rcs:          RcsSpec[];
   tank:         TankSpec[];
   battery:      BatterySpec[];
@@ -1284,7 +1436,7 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
     dryMassKg, costFunds,
     iconX, iconY, iconW, iconH,
     catalogLeftX, catalogRightX, isPinned: isPinned === 1,
-    engine: [], nuclear: [], rcs: [], tank: [], battery: [],
+    engine: [], nuclear: [], ion: [], rcs: [], tank: [], battery: [],
     fuelCell: [], solar: [], rtg: [], wheel: [], radiator: [],
     light: [], command: [], probe: [], antenna: [], decoupler: [],
     docking: [], crew: [], storage: [], thermometer: [],
@@ -1308,6 +1460,16 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
           warmupSec: c[7], slewPerSec: c[8],
           gimbalDeg: 0,
           propellants: decodePropellants(c[9]),
+        });
+        break;
+      case 'I':
+        out.ion.push({
+          class: c[1],
+          thrustKn: c[2], ispS: c[3],
+          ratedPowerW: c[4], jetEfficiency: c[5],
+          maxOperatingTempK: c[6], maxHeatRejectionW: c[7],
+          gimbalDeg: 0,
+          propellants: decodePropellants(c[8]),
         });
         break;
       case 'M':
@@ -1738,7 +1900,9 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     rtg: [],
     radiator: [],
     decoupler: [],
+    engine: [],
     nuclear: [],
+    ion: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -1849,6 +2013,17 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           ejectionForce:   c[3],
         });
         break;
+      case 'E':
+        out.engine.push({
+          active:           c[1] === 1,
+          status:           c[2],
+          flameout:         c[3] === 1,
+          throttle:         c[4],
+          currentThrustKn:  c[5],
+          maxThrustKn:      c[6],
+          ispS:             c[7],
+        });
+        break;
       case 'N':
         out.nuclear.push({
           state:             c[1] as ReactorState,
@@ -1860,6 +2035,21 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           lh2FlowKgs:        c[7],
           thermalPowerW:     c[8],
           shutdownRequested: c[9] === 1,
+        });
+        break;
+      case 'I':
+        out.ion.push({
+          tripped:           c[1] === 1,
+          tripReason:        c[2] as IonTripReason,
+          throttle:          c[3],
+          ecSatisfaction:    c[4],
+          xeSatisfaction:    c[5],
+          coreTempK:         c[6],
+          maxOperatingTempK: c[7],
+          currentEcW:        c[8],
+          wasteHeatW:        c[9],
+          rejectionW:        c[10],
+          ratedPowerW:       c[11],
         });
         break;
     }

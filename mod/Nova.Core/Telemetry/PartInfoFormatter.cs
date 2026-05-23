@@ -46,6 +46,10 @@ namespace Nova.Core.Telemetry;
 //   "N" NuclearEngine — thrustKn, ispS, idleTempK, opTempK,
 //                       idlePowerW, maxPowerW, warmupSec, slewPerSec,
 //                       [[resource, ratio], ...]
+//   "I" IonEngine     — engineClass, thrustKn, ispS, ratedPowerW,
+//                       jetEfficiency, maxOperatingTempK,
+//                       maxHeatRejectionW,
+//                       [[resource, ratio], ...]
 //   "M" Rcs           — thrusterPowerKn, thrusterCount, ispS,
 //                       [[resource, ratio], ...]
 //   "T" TankVolume    — volumeL, maxRateLps,
@@ -154,8 +158,26 @@ public static class PartInfoFormatter {
                                          DockingPortInfo dockingInfo,
                                          ref bool first) {
     switch (c) {
-      // Order matters: NuclearEngine is a subclass of Engine, match
-      // first. (Engine extras are reactor-specific.)
+      // Order matters: NuclearEngine and IonEngine are both subclasses
+      // of Engine, so they must be matched first. (Engine extras are
+      // reactor-/ion-specific.)
+      case IonEngine i: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "I", ref f);
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.WriteString(sb, i.Class ?? "");
+        WriteNum(sb, i.Thrust, ref f);
+        WriteNum(sb, i.Isp, ref f);
+        WriteNum(sb, i.RatedPowerW, ref f);
+        WriteNum(sb, i.JetEfficiency, ref f);
+        WriteNum(sb, i.MaxOperatingTempK, ref f);
+        WriteNum(sb, i.MaxHeatRejectionW, ref f);
+        WritePropellants(sb, i.Propellants, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
       case NuclearEngine n: {
         JsonWriter.Sep(sb, ref first);
         JsonWriter.Begin(sb, '[');

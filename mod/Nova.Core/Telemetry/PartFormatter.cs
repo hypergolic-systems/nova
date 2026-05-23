@@ -46,9 +46,15 @@ namespace Nova.Core.Telemetry;
 //                           currentTempC, maxOperatingTempC, dTdtCps
 //   "X" Radiator          — currentCoolingW, maxCoolingW, isDeployed, isDeployable
 //   "D" Decoupler         — fullSeparation, canFullSeparate, ejectionForce
+//   "E" Engine (chemical) — active, status(0..4), flameout, throttle,
+//                           currentThrustKn, maxThrustKn, ispS
 //   "N" NuclearEngine     — state(0..4), coreTempK, throttleActual,
 //                           throttleSetpoint, currentThrustKn, maxThrustKn,
 //                           lh2FlowKgs, shutdownRequested
+//   "I" IonEngine         — tripped, tripReason(0..2), throttle,
+//                           ecSatisfaction, xeSatisfaction, coreTempK,
+//                           maxOperatingTempK, currentEcW, wasteHeatW,
+//                           rejectionW, ratedPowerW
 public static class PartFormatter {
   // Stock Kerbin year in seconds; presentation unit for the RTG
   // decline rate (real math is in seconds, this is a UI conversion).
@@ -340,10 +346,32 @@ public static class PartFormatter {
         JsonWriter.End(sb, ']');
         return true;
       }
-      // Order matters — NuclearEngine is a subclass of Engine, so it
-      // must be matched first. (Plain Engine has no per-part frame and
-      // falls through to the unhandled-kind path; its data flows on the
-      // NovaEngineTopic wire instead.)
+      // Order matters — NuclearEngine and IonEngine are both subclasses
+      // of Engine, so they must be matched first; the plain `Engine`
+      // case lives at the end of this switch.
+      case IonEngine ion: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "I", ref f);
+        WriteBit(sb, ion.Tripped, ref f);
+        WriteNum(sb, (int)ion.TripReason, ref f);
+        WriteNum(sb, ion.Throttle, ref f);
+        double ecSat = ion.Throttle > 1e-9
+            ? (ion.ecDevice?.Activity ?? 0) / ion.Throttle : 0;
+        double xeSat = ion.Throttle > 1e-9
+            ? ion.NormalizedOutput / ion.Throttle : 0;
+        WriteNum(sb, ecSat, ref f);
+        WriteNum(sb, xeSat, ref f);
+        WriteNum(sb, ion.CoreTempK, ref f);
+        WriteNum(sb, ion.MaxOperatingTempK, ref f);
+        WriteNum(sb, ion.CurrentEcW, ref f);
+        WriteNum(sb, ion.CurrentWasteHeatW, ref f);
+        WriteNum(sb, ion.CurrentRejectionW, ref f);
+        WriteNum(sb, ion.RatedPowerW, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
       case NuclearEngine reactor: {
         JsonWriter.Sep(sb, ref first);
         JsonWriter.Begin(sb, '[');
@@ -358,6 +386,23 @@ public static class PartFormatter {
         WriteNum(sb, reactor.Lh2FlowKgs, ref f);
         WriteNum(sb, reactor.CurrentThermalPowerW, ref f);
         WriteBit(sb, reactor.ShutdownRequested, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      // Plain chemical engine. Matched last so NuclearEngine / IonEngine
+      // subclasses don't fall through to here.
+      case Engine engine: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "E", ref f);
+        WriteBit(sb, engine.Active, ref f);
+        WriteNum(sb, (int)engine.EngineStatus, ref f);
+        WriteBit(sb, engine.Flameout, ref f);
+        WriteNum(sb, engine.Throttle, ref f);
+        WriteNum(sb, engine.Thrust * engine.ThrustOutputFraction, ref f);
+        WriteNum(sb, engine.Thrust, ref f);
+        WriteNum(sb, engine.Isp, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

@@ -13,6 +13,7 @@
     | 'light'
     | 'engine'
     | 'nuclear'
+    | 'ion'
     | 'rcs'
     | 'tank'
     | 'fuelCell'
@@ -172,6 +173,24 @@
       <path d="M 4.9 3.3 L 6 2.9 L 7.1 3.3 L 6 4.2 Z" />
       <path d="M 8.2 5.4 L 7.7 6.6 L 6.6 5.0 Z" />
       <path d="M 3.8 5.4 L 4.3 6.6 L 5.4 5.0 Z" />
+    </g>
+  {:else if kind === 'ion'}
+    <!-- Ion thruster: a cylindrical accelerator (NSTAR-style) with two
+         horizontal grid lines (screen + accelerator grids) and a
+         focused ion beam emerging as a dotted exhaust. Reads as
+         "electrical thruster" — distinct from the bell silhouette of
+         chemical/nuclear engines (which are about throat geometry,
+         not grid acceleration). -->
+    <rect x="3.4" y="1.6" width="5.2" height="6.4" rx="0.3"
+          stroke="currentColor" fill="none" stroke-width="0.9" />
+    <g stroke="currentColor" stroke-width="0.7" stroke-linecap="round">
+      <line x1="3.8" y1="3.8" x2="8.2" y2="3.8" />
+      <line x1="3.8" y1="6.0" x2="8.2" y2="6.0" />
+    </g>
+    <g fill="currentColor">
+      <circle cx="6" cy="8.9"  r="0.55" />
+      <circle cx="6" cy="10.2" r="0.45" />
+      <circle cx="6" cy="11.3" r="0.35" />
     </g>
   {:else if kind === 'rcs'}
     <!-- RCS thruster cluster: four small outward-facing nozzles in a

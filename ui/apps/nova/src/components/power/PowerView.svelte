@@ -12,7 +12,8 @@
 
   import type { NovaPartHandle } from '../../telemetry/use-nova-parts.svelte';
   import { NovaPartTopic } from '../../telemetry/nova-topics';
-  import type { SolarState, CommandState, ProbeState, WheelState } from '../../telemetry/nova-topics';
+  import type { SolarState, CommandState, ProbeState, WheelState, IonEngineState } from '../../telemetry/nova-topics';
+  import { IonTripReason } from '../../telemetry/nova-topics';
   import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy, untrack } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
@@ -66,6 +67,7 @@
         || p.state.probe.length > 0
         || p.state.wheel.length > 0
         || p.state.light.length > 0
+        || p.state.ion.length > 0
         || hasTankCooler(p)
         || hasRadiatorWithEc(p);
   }
@@ -170,6 +172,31 @@
     ksp.send(NovaPartTopic(partId), 'setCommandTestLoad', active);
   }
 
+  // Trip-reason short labels for the badge in the ion row. Same chip
+  // shape and tracking as the LOAD / EXT / RET / OFF deploy buttons.
+  // The recovery surface (RESET button + diagnostic card) lives in
+  // PRP; PWR just shows the trip chip so the player can see at a
+  // glance why a consumer row reads as zero draw.
+  function ionTripLabel(reason: IonTripReason): string {
+    switch (reason) {
+      case IonTripReason.XeStarvation: return 'TRIP·XE';
+      case IonTripReason.Overtemp:     return 'TRIP·HOT';
+      default:                          return 'TRIP';
+    }
+  }
+  function ionTripTitle(reason: IonTripReason): string {
+    switch (reason) {
+      case IonTripReason.XeStarvation:
+        return 'Xenon supply collapsed — the accelerator was firing into vacuum. '
+             + 'Clear the trip in PRP and refuel before relighting.';
+      case IonTripReason.Overtemp:
+        return 'Core temperature exceeded the operating envelope — '
+             + 'radiator headroom is short. Clear the trip in PRP and add cooling.';
+      default:
+        return 'Engine tripped — clear in PRP';
+    }
+  }
+
   // Per-component consumer row. Each Command / Probe / ReactionWheel /
   // Light on a part becomes its own row at the top consumption level —
   // the bus-facing rate is what the row reports as its "draw", so
@@ -177,7 +204,7 @@
   // inflow), even when the motor is being driven from buffered
   // energy. The wheel's expandable detail lines surface that
   // separately so the energy balance stays visible.
-  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'radiator';
+  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'radiator' | 'ion';
   interface ConsumerRow {
     key: string;
     partId: string;
@@ -186,11 +213,12 @@
     /** Bus-facing W. For Command/Probe this is idleRate + testLoadRate;
      *  for Wheel it is the refill device's busRate (motor draw is shown
      *  in the wheel-detail Torque sub-row, not here); for Light it's
-     *  light.rate. */
+     *  light.rate; for Ion it's currentEcW (or ratedPowerW in editor). */
     busRate: number;
     command?: CommandState;
     probe?: ProbeState;
     wheel?: WheelState;
+    ion?: IonEngineState;
   }
 
   // Tank cryocooler row — same data shape as ThermalView's CoolerRow.
@@ -257,6 +285,19 @@
         busRate: isEditor ? l.ratedRate : l.rate,
       });
     }
+    // Ion engines. Bus draw in flight is the LP-throttled `currentEcW`;
+    // in editor (no LP) it's the design ceiling `ratedPowerW`. A
+    // tripped engine reports 0 EC at runtime — the row shows TRIP·
+    // {reason} + RESET in place of the silent zero.
+    for (let i = 0; i < p.state.ion.length; i++) {
+      const ion = p.state.ion[i];
+      rows.push({
+        key: `${partId}:i${i}`, partId, partTitle,
+        kind: 'ion',
+        busRate: isEditor ? ion.ratedPowerW : ion.currentEcW,
+        ion,
+      });
+    }
     // Radiators with a non-zero EC pump cost (folding rads run a
     // working-fluid loop; fixed panels declare EcPerWattCooling=0
     // and don't surface here). Editor mode shows the design ceiling;
@@ -320,6 +361,7 @@
     if (kind === 'probe') return 'command';
     if (kind === 'wheel') return 'wheel';
     if (kind === 'radiator') return 'radiator';
+    if (kind === 'ion') return 'ion';
     return 'light';
   }
 
@@ -350,6 +392,12 @@
       for (const l of p.state.light)   total += l.rate;
       for (const c of p.state.command) total += c.idleRate + c.testLoadRate;
       for (const pr of p.state.probe)  total += pr.idleRate + pr.testLoadRate;
+    }
+    // Ion engines — editor totals use the rated ceiling so the power
+    // budget reflects "what this craft demands at full thrust"; flight
+    // uses the LP-throttled live draw (zero when tripped).
+    for (const ion of p.state.ion) {
+      total += isEditor ? ion.ratedPowerW : ion.currentEcW;
     }
     // Tank cryocoolers — EC draw is a single observable in both modes
     // (the editor sim emits the design ceiling at max stage; in flight
@@ -612,6 +660,36 @@
     <span class="pwr__empty-text">{text}</span>
     <span class="pwr__empty-rule"></span>
   </p>
+{/snippet}
+
+<!-- Ion engine row. Same shape as the flat consumer row, with one
+     extra chip slot before the rate: a TRIP·{reason} badge visible
+     only when the trip latch is set. Recovery action (RESET) lives
+     in the PRP tab next to the rich diagnostic card; PWR just shows
+     the chip so the player can read "this is why it's drawing zero". -->
+{#snippet ionRow(row: ConsumerRow, ion: IonEngineState)}
+  {@const r = fmtRate(row.busRate)}
+  <li class="pwr__row pwr__row--ion"
+      class:pwr__row--tripped={ion.tripped}
+      onmouseenter={() => highlightOn([row.partId])}
+      onmouseleave={highlightOff}>
+    <span class="pwr__row-chev-spacer" aria-hidden="true"></span>
+    <span class="pwr__row-icon">
+      <ComponentIcon kind="ion" />
+    </span>
+    <span class="pwr__row-name">{row.partTitle}</span>
+    {#if !isEditor && ion.tripped}
+      <span class="pwr__ion-trip"
+            title={ionTripTitle(ion.tripReason)}>
+        {ionTripLabel(ion.tripReason)}
+      </span>
+    {/if}
+    <span class="pwr__row-rate"
+          class:pwr__row-rate--neg={!isZero(row.busRate)}
+          class:pwr__row-rate--zero={isZero(row.busRate)}>
+      {r.mag}<em>{r.unit}</em>
+    </span>
+  </li>
 {/snippet}
 
 <!-- Flat consumer row: Command / Probe / Light. The whole row is the
@@ -1069,6 +1147,8 @@
           {#each consumerRows as row (row.key)}
             {#if !isEditor && row.kind === 'wheel' && row.wheel}
               {@render wheelRow(row, row.wheel)}
+            {:else if row.kind === 'ion' && row.ion}
+              {@render ionRow(row, row.ion)}
             {:else}
               {@render consumerFlatRow(row)}
             {/if}
@@ -2001,5 +2081,43 @@
   }
   .pwr__row--closed .pwr__row-rate em {
     color: var(--fg-mute);
+  }
+
+  /* Ion engine row — same flat-row shell as Command/Light, with two
+     extra slots between the name and the rate: a TRIP·{reason} badge
+     and a RESET button, both only present when the trip latch is set.
+     The whole row tints `--alert` while tripped so the player's eye
+     lands on it from across the panel. */
+  .pwr__row--ion .pwr__row-icon {
+    color: var(--accent);
+  }
+  .pwr__row--tripped {
+    --row-trip-color: var(--alert);
+  }
+  .pwr__row--tripped .pwr__row-icon,
+  .pwr__row--tripped .pwr__row-name {
+    color: var(--row-trip-color);
+  }
+  .pwr__row--tripped .pwr__row-rate,
+  .pwr__row--tripped .pwr__row-rate em {
+    color: var(--fg-mute);
+  }
+
+  .pwr__ion-trip {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border: 1px solid var(--alert);
+    color: var(--alert);
+    background: rgba(60, 12, 12, 0.42);
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    line-height: 1.3;
+    animation: pwr-ion-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pwr-ion-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
   }
 </style>
