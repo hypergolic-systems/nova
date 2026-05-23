@@ -1,0 +1,3 @@
+[submodule "external/waterfall"]
+	path = external/waterfall
+	url = git@github.com:KSPModStewards/Waterfall.git

@@ -1,4 +1,7 @@
+using System.Collections.Generic;
 using Nova.Core.Components.Propulsion;
+using Nova.Effects;
+using Waterfall;
 
 namespace Nova.Components;
 
@@ -54,4 +57,42 @@ public class NovaIonEngineModule : NovaEngineModule {
   // the FX module to our `isOperational` / `throttleSetting`, so
   // the animation gates on Active + Throttle + !Tripped correctly.
   public override string engineName => "Ion";
+
+  // Ion-specific Waterfall controllers, on top of base throttle/active:
+  //
+  //   ionTripped  — 1 when the trip latch is set (any reason). Templates
+  //                 multiply plume intensity by `1 - ionTripped` to kill
+  //                 the beam on trip. Sticky until `setIonResetTrip`.
+  //   ionHeat     — CoreTempK normalized to (AmbientK, MaxOperatingTempK).
+  //                 Drives thermal glow modifiers; saturates at 1 just
+  //                 as the overtemp trip fires.
+  //   ionEcDraw   — CurrentEcW / RatedPowerW (0..1). Tracks actual EC
+  //                 satisfaction, not commanded throttle — when EC is
+  //                 starved the plume should dim regardless of throttle.
+  public override IEnumerable<WaterfallController> CreateWaterfallControllers() {
+    foreach (var c in base.CreateWaterfallControllers()) yield return c;
+
+    yield return new NovaWaterfallController("ionTripped",
+        () => Ion != null && Ion.Tripped ? 1f : 0f);
+
+    yield return new NovaWaterfallController("ionHeat", () => {
+      var ion = Ion;
+      if (ion == null) return 0f;
+      double span = ion.MaxOperatingTempK - ion.AmbientK;
+      if (span <= 0) return 0f;
+      double t = (ion.CoreTempK - ion.AmbientK) / span;
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+      return (float)t;
+    });
+
+    yield return new NovaWaterfallController("ionEcDraw", () => {
+      var ion = Ion;
+      if (ion == null || ion.RatedPowerW <= 0) return 0f;
+      double f = ion.CurrentEcW / ion.RatedPowerW;
+      if (f < 0) f = 0;
+      if (f > 1) f = 1;
+      return (float)f;
+    });
+  }
 }

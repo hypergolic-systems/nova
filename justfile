@@ -34,6 +34,22 @@ sync-dragonglass-stubs: _dragonglass-check
     cp "{{dragonglass_path}}/mod/Dragonglass.Telemetry/build/Dragonglass.Telemetry.dll" stubs/dragonglass/
     @echo "Synced Dragonglass DLLs from {{dragonglass_path}}"
 
+# --- Waterfall (external/waterfall submodule) ---
+
+# Build the vendored Waterfall submodule. Nova references the resulting
+# Waterfall.dll directly from external/waterfall/Source/Waterfall/bin/.
+# The submodule is pinned at a specific upstream commit; to bump,
+# `cd external/waterfall && git fetch && git checkout <ref>` then
+# `git add external/waterfall && git commit` from the Nova root.
+waterfall-build config="Release":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f external/waterfall/Source/Waterfall/Waterfall.csproj ]; then
+        echo "error: Waterfall submodule not initialized — run 'git submodule update --init external/waterfall'" >&2
+        exit 1
+    fi
+    dotnet build external/waterfall/Source/Waterfall/Waterfall.csproj -c {{config}}
+
 # --- UI (ui/) ---
 
 # One-time setup: symlink Dragonglass into ui/external/, then npm install
@@ -72,7 +88,7 @@ proto:
 
 # --- C# (mod/) ---
 
-mod-build config="Release": proto
+mod-build config="Release": proto (waterfall-build config)
     cd mod && dotnet build Nova.sln -c {{config}}
 
 mod-clean:

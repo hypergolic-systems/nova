@@ -1,10 +1,13 @@
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using Nova.Core.Components.Propulsion;
+using Nova.Effects;
+using Waterfall;
 
 namespace Nova.Components;
 
-public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
+public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider, IWaterfallControllerProvider {
 
   // Gimbal config — optional, mirrored from stock ModuleGimbal field
   // names so cfg patches read intuitively. `gimbalRange` is in degrees
@@ -19,10 +22,6 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   // ApplyPlayerThrottle override.
   protected float lastThrottle = -1;
   private bool wasFlowing;
-
-  private FXGroup runningGroup;
-  private FXGroup powerGroup;
-  private FXGroup flameoutGroup;
 
   private Transform[] thrustTransforms;
   private float[] thrustMultipliers;
@@ -120,16 +119,6 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
 
     engine = Components.OfType<Engine>().First();
 
-    var audioSource = gameObject.GetComponent<AudioSource>()
-      ?? gameObject.AddComponent<AudioSource>();
-
-    runningGroup = part.findFxGroup("running");
-    runningGroup?.begin(audioSource);
-    powerGroup = part.findFxGroup("power");
-    powerGroup?.begin(audioSource);
-    flameoutGroup = part.findFxGroup("flameout");
-    flameoutGroup?.begin(audioSource);
-
     thrustTransforms = part.FindModelTransforms("thrustTransform");
     if (thrustTransforms.Length > 0) {
       var mult = 1f / thrustTransforms.Length;
@@ -140,11 +129,6 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
       // so slot-torque calcs stay sign-consistent with the physics.
       nominalThrustDirLocal =
           part.transform.InverseTransformDirection(-thrustTransforms[0].forward);
-
-      // Parent FX particles to thrust transforms (like stock AutoPlaceFXGroup).
-      PlaceFXAtThrust(runningGroup, thrustTransforms[0]);
-      PlaceFXAtThrust(powerGroup, thrustTransforms[0]);
-      PlaceFXAtThrust(flameoutGroup, thrustTransforms[0]);
     } else {
       thrustMultipliers = new float[0];
     }
@@ -179,20 +163,16 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   }
 
   /// <summary>
-  /// Quickload / revert restored the underlying Engine state. Update()
-  /// only writes FX while `engine.Active` is true, so a once-firing
-  /// engine whose Active just flipped to false (revert-to-launch back
-  /// to PRELAUNCH) would leave its flame + audio latched on. Killing
-  /// the FX groups here is idempotent; Update() resumes them next
-  /// frame if Active is still true and thrust is flowing.
+  /// Reset transient FX-detection state after a quickload / revert so
+  /// `wasFlowing` doesn't latch a pre-load flameout into a freshly-
+  /// restored engine. Waterfall controllers read their values live each
+  /// LateUpdate from `Engine.ThrustOutputFraction` / `.Active`, so the
+  /// FX themselves don't need any explicit reset here — the closures
+  /// see the restored state on their next frame.
   /// </summary>
   public override void OnNovaStateRestored() {
     if (engine == null) return;
-    if (!engine.Active) {
-      runningGroup?.setActive(false);
-      powerGroup?.setActive(false);
-      wasFlowing = false;
-    }
+    if (!engine.Active) wasFlowing = false;
   }
 
   // Hook for subclasses to receive the player throttle each FixedUpdate.
@@ -259,54 +239,41 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider {
   public void Update() {
     if (engine == null || !engine.Active) return;
 
-    // FX track thrust output, not propellant flow — the NTR's idle
-    // LH₂ venting is invisible and silent in reality (cool H₂), so
-    // its idle-cooling flow shouldn't drive the running/power groups.
+    // Detect flameout edge: was producing thrust, now starved while the
+    // player still wants throttle. `lastThrottle` holds the player input
+    // (via ApplyPlayerThrottle), not the engine's internal LP demand —
+    // an NTR's idle-coolant flow would otherwise spoof this.
+    // NuclearEngine and IonEngine both write Flameout authoritatively
+    // in their OnPostSolve; the base Engine (chemical) has no such
+    // hook, so this Update-side write is the only Flameout writer for
+    // plain liquid engines. Visual flameout pop now belongs to a
+    // Waterfall effect modifier keyed off the `flameout` controller
+    // (one-frame impulse when `wasFlowing && !flowing`).
     var output = (float)engine.ThrustOutputFraction;
     var flowing = output > 0;
-
-    runningGroup?.setActive(flowing);
-    powerGroup?.setActive(flowing);
-
-    if (flowing) {
-      // Match stock ModuleEngines power scaling.
-      var runningPower = Mathf.Clamp(output * 2f, 0.5f, 1.75f);
-      var powerPower = Mathf.Lerp(0.45f, 1.2f, output);
-      runningGroup?.SetPower(runningPower);
-      powerGroup?.SetPower(powerPower);
-    }
-
-    // Flameout: was flowing, now starved while the player still wants
-    // thrust. `lastThrottle` holds the player input (via the virtual
-    // ApplyPlayerThrottle hook) — not the engine's internal LP demand,
-    // which a subclass like NovaNuclearEngineModule may drive
-    // separately (idle coolant flow, etc). Surface to the virtual
-    // component so NovaEngineTopic samples it from a single source;
-    // NuclearEngine.OnPostSolve also writes Flameout authoritatively
-    // for the wire, so this FX-side flag is harmless redundancy there.
     bool flamedOut = wasFlowing && !flowing && lastThrottle > 0;
-    if (flamedOut) {
-      flameoutGroup?.Burst();
-      engine.Flameout = true;
-    } else if (flowing || lastThrottle <= 0) {
-      engine.Flameout = false;
-    }
+    if (flamedOut) engine.Flameout = true;
+    else if (flowing || lastThrottle <= 0) engine.Flameout = false;
     wasFlowing = flowing;
   }
 
-  private static void PlaceFXAtThrust(FXGroup group, Transform thruster) {
-    if (group == null || thruster == null) return;
-    foreach (var light in group.lights) {
-      light.transform.parent = thruster;
-      light.transform.localPosition = Vector3.zero;
-      light.transform.localRotation = Quaternion.identity;
-    }
-    foreach (var ps in group.fxEmittersNewSystem) {
-      ps.transform.parent = thruster;
-      ps.transform.localPosition = Vector3.zero;
-      ps.transform.localRotation = Quaternion.identity;
-      ps.transform.Rotate(-90f, 0f, 0f);
-    }
+  // ── Waterfall integration ──────────────────────────────────────────
+  //
+  // Yields the controllers every Nova engine publishes to its sibling
+  // `ModuleWaterfallFX`: throttle (actual thrust-producing fraction,
+  // 0..1) and active (ignition flag, 0/1). NTR / Ion subclasses add
+  // their kind-specific controllers via `override`. Wired by
+  // `WaterfallInitializePatch` postfix on `ModuleWaterfallFX.Initialize`.
+  //
+  // Closures dereference `Engine` (the typed component accessor) each
+  // call, not a captured local — the property reads through the same
+  // `engine` field set in OnStart, and re-binds naturally if a future
+  // change re-initializes Components on the PartModule.
+  public virtual IEnumerable<WaterfallController> CreateWaterfallControllers() {
+    yield return new NovaWaterfallController("throttle",
+        () => Engine == null ? 0f : (float)Engine.ThrustOutputFraction);
+    yield return new NovaWaterfallController("active",
+        () => Engine != null && Engine.Active ? 1f : 0f);
   }
 
   // IEngineStatus implementation. Virtual so NovaNuclearEngineModule

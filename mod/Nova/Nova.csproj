@@ -36,6 +36,9 @@
     <KspStubs>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'stubs'))</KspStubs>
     <!-- Dragonglass DLLs vendored by `just sync-dragonglass-stubs` -->
     <DragonglassStubs>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'stubs', 'dragonglass'))</DragonglassStubs>
+    <!-- Waterfall built from the external/waterfall submodule
+         (`just waterfall-build` — wired as a mod-build dep). -->
+    <WaterfallBuild>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'external', 'waterfall', 'Source', 'Waterfall', 'bin', '$(Configuration)', 'net4.8'))</WaterfallBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -164,6 +167,16 @@
     </Reference>
     <Reference Include="Dragonglass.Telemetry">
       <HintPath>$(DragonglassStubs)/Dragonglass.Telemetry.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+
+    <!-- Waterfall — hard runtime dep. The submodule at
+         external/waterfall/ is built by `just waterfall-build`; Nova
+         references the resulting DLL directly. Private=False because
+         Waterfall is a separately-installed mod; Nova does not ship it
+         (CKAN dep, same model as Dragonglass / ModuleManager). -->
+    <Reference Include="Waterfall">
+      <HintPath>$(WaterfallBuild)/Waterfall.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>
