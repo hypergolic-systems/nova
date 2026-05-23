@@ -1,3 +1,7 @@
 [submodule "external/waterfall"]
 	path = external/waterfall
 	url = git@github.com:KSPModStewards/Waterfall.git
+	# Build writes a fresh KSPVersionFile into the submodule work tree;
+	# we don't care about that drift. `dirty` still reports pointer moves
+	# so a bump to a new Waterfall commit is visible in `git status`.
+	ignore = dirty
