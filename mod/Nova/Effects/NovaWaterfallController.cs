@@ -1,4 +1,5 @@
 using System;
+using UnityEngine;
 using Waterfall;
 
 namespace Nova.Effects;
@@ -15,6 +16,12 @@ namespace Nova.Effects;
 // every Initialize (which includes save-load re-init), so a stale value
 // from a previous load is replaced with a fresh closure.
 //
+// Optional slew (responseRateUp/Down, units = 1/sec) ramps `values[0]`
+// toward `source()` at the named rate, matching the cosmetic spool-up
+// behaviour of stock `ThrottleController`. Used when we hot-swap a stock
+// ThrottleController for a Nova-aware one and want to preserve the
+// template author's chosen ramp feel; zero (default) = instantaneous.
+//
 // Save() returns a no-op marker node — Waterfall's loader skips unknown
 // node names, and our re-injection happens unconditionally on Initialize,
 // so the marker is never actually load-bearing. We just need *something*
@@ -22,10 +29,15 @@ namespace Nova.Effects;
 // Save() on each.
 public class NovaWaterfallController : WaterfallController {
   private readonly Func<float> source;
+  private readonly float responseRateUp;
+  private readonly float responseRateDown;
 
-  public NovaWaterfallController(string controllerName, Func<float> source) {
+  public NovaWaterfallController(string controllerName, Func<float> source,
+      float responseRateUp = 0f, float responseRateDown = 0f) {
     this.name = controllerName;
     this.source = source;
+    this.responseRateUp = responseRateUp;
+    this.responseRateDown = responseRateDown;
     this.values = new float[1];
   }
 
@@ -40,7 +52,15 @@ public class NovaWaterfallController : WaterfallController {
     this.source = null;
   }
 
-  protected override float UpdateSingleValue() => source?.Invoke() ?? 0f;
+  protected override float UpdateSingleValue() {
+    float target = source?.Invoke() ?? 0f;
+    if (responseRateUp <= 0f && responseRateDown <= 0f) return target;
+    float current = values[0];
+    if (current == target) return target;
+    float rate = target > current ? responseRateUp : responseRateDown;
+    if (rate <= 0f) return target;
+    return Mathf.MoveTowards(current, target, rate * TimeWarp.deltaTime);
+  }
 
   public override ConfigNode Save() {
     var node = new ConfigNode("NOVAWATERFALLCONTROLLER");
