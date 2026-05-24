@@ -30,6 +30,9 @@ public static class NovaBodyRegistry {
       Radius = kspBody.Radius,
       RotationPeriod = kspBody.rotationPeriod,
       InitialRotationDeg = kspBody.initialRotation,
+      // Krakensbane-aware body centre, in the same frame as the
+      // endpoint PositionAt closures elsewhere in this file.
+      PositionAt = ut => kspBody.getTruePositionAtUT(ut).ToNova(),
     };
     cache[kspBody] = body;  // insert before recursing — handles any cycle defensively
 

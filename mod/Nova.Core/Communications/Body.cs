@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using Nova.Core.Utils;
 
 namespace Nova.Core.Communications;
 
@@ -50,4 +52,18 @@ public sealed class Body {
   // Defaults to empty so existing fixtures that don't wire children
   // continue to work.
   public List<Body> Children = new();
+
+  // Optional world-frame position closure, evaluated at any UT. The
+  // KSP integration driver (NovaBodyRegistry) sets this to
+  // `kspBody.getTruePositionAtUT`, which returns the body's centre in
+  // KSP's Krakensbane frame — the same frame the comm-graph endpoint
+  // PositionAt closures live in. Occlusion.IsAnyBlocked prefers this
+  // over the analytical fallback: the analytical chain roots at the
+  // Sun (heliocentric), but in-game endpoint positions are shifted to
+  // the active vessel, so a mismatched body centre lands in a
+  // different region of space and occlusion silently never triggers.
+  // Tests leave this null and fall back to AnalyticalPosition.BodyCentreAt,
+  // which is correct for fixtures whose endpoint positions are also
+  // rooted analytically.
+  public Func<double, Vec3d> PositionAt;
 }

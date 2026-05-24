@@ -35,7 +35,9 @@ public static class Occlusion {
     for (int i = 0; i < occluders.Count; i++) {
       var c = occluders[i];
       if (c == null) continue;
-      var centre = AnalyticalPosition.BodyCentreAt(c, ut);
+      var centre = c.PositionAt != null
+        ? c.PositionAt(ut)
+        : AnalyticalPosition.BodyCentreAt(c, ut);
       if (IsBlocked(posA, posB, centre, c.Radius)) return true;
     }
     return false;
