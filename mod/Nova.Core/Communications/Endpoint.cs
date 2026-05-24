@@ -100,4 +100,10 @@ public struct PathSummary {
   public double DirectMaxRateBps;
   public double DirectSnrFloor;
   public string NextHopId;
+  // Ordered Links along the chosen path source→home, populated once
+  // per Solve by RefreshHomePathSummaries. Null on the home endpoint
+  // and when HasPath is false. Readers must treat this as a snapshot
+  // — the underlying Link references are reused across Solves but
+  // their fields (RateBps etc.) are stable within a Solve cycle.
+  public IReadOnlyList<Link> Path;
 }

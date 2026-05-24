@@ -21,6 +21,12 @@ public class Link {
   // automatically drop out of routing without allocator changes.
   public double RateBps { get; internal set; }
 
+  // Hardware ceiling for this antenna pair — the rate the link would
+  // reach in the saturated-SNR limit. RateBps / MaxRateBps gives a
+  // [0,1] utilisation scalar useful as a signal-strength proxy for
+  // visualisation (matches stock CommNet's signalStrength bucketing).
+  public double MaxRateBps { get; internal set; }
+
   // True iff some occluder body in this link's set is currently
   // intersecting the chord between endpoints. Surfaced for telemetry
   // / UI; routing already excludes the edge via the RateBps filter.

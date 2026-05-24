@@ -228,6 +228,7 @@ public class CommunicationsNetwork {
         }
         summary.BottleneckBps = minRate == double.PositiveInfinity ? 0 : minRate;
         summary.NextHopId = path[0].To.Id;
+        summary.Path = path;
       }
 
       foreach (var l in graph.Links) {
@@ -376,6 +377,7 @@ public class CommunicationsNetwork {
         var effective = blocked ? 0 : quantised;
         var link = new Link(from, to, distance, snr, effective);
         link.Blocked = blocked;
+        link.MaxRateBps = maxCeiling;
         links.Add(link);
       }
     }

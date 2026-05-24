@@ -195,6 +195,74 @@ public class CommunicationsNetworkTests {
   }
 
   [TestMethod]
+  public void RefreshHomePathSummaries_PopulatesPathField() {
+    // A — B — home; direct A→home is out of range so the chosen path
+    // is A → B → home. The retained Path field must reflect this
+    // ordering exactly.
+    var net = new CommunicationsNetwork();
+    var a = At("A", Vec3d.Zero, Std());
+    var b = At("B", new Vec3d(20, 0, 0), Std());
+    var home = At("home", new Vec3d(40, 0, 0), Std());
+    net.AddEndpoint(a);
+    net.AddEndpoint(b);
+    net.AddEndpoint(home);
+
+    net.Solve(0);
+    net.RefreshHomePathSummaries(home);
+
+    Assert.IsTrue(a.PathToHome.HasPath);
+    Assert.IsNotNull(a.PathToHome.Path);
+    Assert.AreEqual(2, a.PathToHome.Path.Count);
+    Assert.AreEqual("A", a.PathToHome.Path[0].From.Id);
+    Assert.AreEqual("B", a.PathToHome.Path[0].To.Id);
+    Assert.AreEqual("B", a.PathToHome.Path[1].From.Id);
+    Assert.AreEqual("home", a.PathToHome.Path[1].To.Id);
+
+    Assert.IsTrue(b.PathToHome.HasPath);
+    Assert.IsNotNull(b.PathToHome.Path);
+    Assert.AreEqual(1, b.PathToHome.Path.Count);
+    Assert.AreEqual("B", b.PathToHome.Path[0].From.Id);
+    Assert.AreEqual("home", b.PathToHome.Path[0].To.Id);
+
+    Assert.IsNull(home.PathToHome.Path);
+  }
+
+  [TestMethod]
+  public void RefreshHomePathSummaries_NoPath_PathIsNull() {
+    // Two endpoints far enough apart that the link drops to bucket 0
+    // (no positive-rate route). PathToHome.HasPath is false and the
+    // retained Path field remains null.
+    var net = new CommunicationsNetwork();
+    var a = At("A", Vec3d.Zero, Std());
+    var home = At("home", new Vec3d(1e9, 0, 0), Std());
+    net.AddEndpoint(a);
+    net.AddEndpoint(home);
+
+    net.Solve(0);
+    net.RefreshHomePathSummaries(home);
+
+    Assert.IsFalse(a.PathToHome.HasPath);
+    Assert.IsNull(a.PathToHome.Path);
+  }
+
+  [TestMethod]
+  public void BuildGraph_StoresMaxRateBpsOnLink() {
+    // MaxRateBps is the per-link hardware ceiling, symmetric across
+    // both directed edges. With identical Std() antennas it equals
+    // MaxRate (1000) for both A→B and B→A.
+    var net = new CommunicationsNetwork();
+    net.AddEndpoint(At("A", Vec3d.Zero, Std()));
+    net.AddEndpoint(At("B", new Vec3d(20, 0, 0), Std()));
+
+    var g = net.Solve(0);
+    var ab = FindLink(g, "A", "B");
+    var ba = FindLink(g, "B", "A");
+
+    Assert.AreEqual(1000, ab.MaxRateBps, 1e-9);
+    Assert.AreEqual(1000, ba.MaxRateBps, 1e-9);
+  }
+
+  [TestMethod]
   public void Solve_RedundantCall_StableGraph() {
     var net = new CommunicationsNetwork();
     net.AddEndpoint(At("A", Vec3d.Zero, Std()));
