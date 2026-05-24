@@ -7,6 +7,7 @@ using UnityEngine;
 using Google.OrTools.LinearSolver;
 using Nova;
 using Nova.Core.Components;
+using Nova.Effects;
 using System.Linq;
 
 [KSPAddon(KSPAddon.Startup.Instantly, true)]
@@ -66,6 +67,7 @@ public class HypergolicSystemsMod : MonoBehaviour {
 
   private void InitializeSystems() {
     HarmonyPatcher.Initialize();
+    NovaWaterfallRegistration.Register();
     TestOrTools();
   }
 
