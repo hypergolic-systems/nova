@@ -46,6 +46,10 @@ public static class NovaWaterfallRegistration {
     SwapController<NovaThrottleController>(
         replacing: typeof(ThrottleController),
         legacyTypeId: "throttle");
+
+    SwapController<NovaRcsController>(
+        replacing: typeof(RCSController),
+        legacyTypeId: "rcs");
   }
 
   private static void SwapController<TNova>(Type replacing, string legacyTypeId)

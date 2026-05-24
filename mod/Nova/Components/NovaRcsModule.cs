@@ -59,6 +59,20 @@ public class NovaRcsModule : NovaPartModule, ITorqueProvider {
   /// </summary>
   public Rcs Rcs => rcs;
 
+  /// <summary>
+  /// Per-thruster normalized activity (0..1) from the last solver tick,
+  /// indexed the same as <see cref="ThrusterTransforms"/>. Updated by
+  /// <see cref="ApplySolvedThrottles"/> only when a nozzle's power
+  /// changes meaningfully (delta &gt; 0.01), matching the rate at which
+  /// the stock per-nozzle Effect is re-fired. Exposed for the
+  /// <c>NovaRcsController</c> Waterfall binding to read per-frame.
+  /// Returns an empty array before OnStart populates it; the controller
+  /// initializes on a still-empty array and stays length-zero, so a
+  /// late-loaded part won't fire RCS Waterfall effects until next scene.
+  /// </summary>
+  public System.Collections.Generic.IReadOnlyList<float> NozzlePower =>
+      lastNozzlePower ?? System.Array.Empty<float>();
+
   public void GetPotentialTorque(out Vector3 pos, out Vector3 neg) {
     pos = neg = Vector3.zero;
     if (vessel == null || thrusterTransforms == null || rcs == null) return;
