@@ -22,6 +22,18 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider, 
   // ApplyPlayerThrottle override.
   protected float lastThrottle = -1;
   private bool wasFlowing;
+  private bool wasActive;
+
+  // Auto-discovered at OnStart by scanning the part's EFFECTS for a
+  // sub-effect with a looping AUDIO/AUDIO_MULTI_POOL entry. Stock
+  // ModuleEngines/EnginesFX has an explicit `runningEffectName` cfg
+  // field; we discover it instead so per-engine cfg authors don't
+  // have to keep our value in sync with whichever audio pack
+  // (WaterfallRestock, plume-pack-of-the-week) is layered on top —
+  // each pack tends to rename this differently (`running` for the
+  // Skipper, `fx-swivel-running` for the LV-T45, …) but all of them
+  // make it the one-and-only looping audio in the EFFECTS block.
+  private string runningEffectName;
 
   private Transform[] thrustTransforms;
   private float[] thrustMultipliers;
@@ -134,6 +146,8 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider, 
     }
 
 
+    runningEffectName = DiscoverRunningEffectName();
+
     // Gimbal setup. Find the pivot, capture its zero-deflection pose,
     // and stamp the radians-converted range onto the virtual component
     // so the attitude solver can see this engine as gimbal-capable.
@@ -172,6 +186,10 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider, 
   /// </summary>
   public override void OnNovaStateRestored() {
     if (engine == null) return;
+    // Reset transient FX-detect state to whatever the restored engine
+    // says — so the very-next Update fires an engage/disengage edge
+    // only if Active actually flipped, not because we lost track.
+    wasActive = engine.Active;
     if (!engine.Active) wasFlowing = false;
   }
 
@@ -237,7 +255,26 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider, 
   }
 
   public void Update() {
-    if (engine == null || !engine.Active) return;
+    if (engine == null) return;
+
+    // Fire stock-convention EFFECTS sub-effects so any audio-pack
+    // (WaterfallRestock, native-stock, …) that ships AUDIO under
+    // engage/disengage/flameout/<running> can hear engine state.
+    // We replaced ModuleEngines so nothing else calls part.Effect on
+    // these engines.
+    bool isActive = engine.Active;
+    if (isActive != wasActive) {
+      part.Effect(isActive ? "engage" : "disengage", 0f);
+      wasActive = isActive;
+    }
+
+    if (!isActive) return;
+
+    var output = (float)engine.ThrustOutputFraction;
+    var flowing = output > 0;
+
+    if (runningEffectName != null)
+      part.Effect(runningEffectName, output);
 
     // Detect flameout edge: was producing thrust, now starved while the
     // player still wants throttle. `lastThrottle` holds the player input
@@ -249,12 +286,39 @@ public class NovaEngineModule : NovaPartModule, IEngineStatus, ITorqueProvider, 
     // plain liquid engines. Visual flameout pop now belongs to a
     // Waterfall effect modifier keyed off the `flameout` controller
     // (one-frame impulse when `wasFlowing && !flowing`).
-    var output = (float)engine.ThrustOutputFraction;
-    var flowing = output > 0;
     bool flamedOut = wasFlowing && !flowing && lastThrottle > 0;
-    if (flamedOut) engine.Flameout = true;
-    else if (flowing || lastThrottle <= 0) engine.Flameout = false;
+    if (flamedOut) {
+      engine.Flameout = true;
+      part.Effect("flameout", 0f);
+    } else if (flowing || lastThrottle <= 0) engine.Flameout = false;
     wasFlowing = flowing;
+  }
+
+  // Walk the part's EFFECTS sub-blocks and return the first one whose
+  // AUDIO (or AUDIO_MULTI_POOL) entry has `loop = true`. Used as the
+  // looping engine-running effect. Returns null if nothing matches —
+  // engine then just doesn't fire a running sound (no exception, no
+  // silent spam of bad part.Effect calls).
+  private string DiscoverRunningEffectName() {
+    var cfg = part?.partInfo?.partConfig?.GetNode("EFFECTS");
+    if (cfg == null) return null;
+    for (int i = 0; i < cfg.nodes.Count; i++) {
+      var subNode = cfg.nodes[i];
+      if (NodeHasLoopingAudio(subNode.GetNodes("AUDIO"))
+          || NodeHasLoopingAudio(subNode.GetNodes("AUDIO_MULTI_POOL"))) {
+        return subNode.name;
+      }
+    }
+    return null;
+  }
+
+  private static bool NodeHasLoopingAudio(ConfigNode[] audioNodes) {
+    if (audioNodes == null) return false;
+    foreach (var a in audioNodes) {
+      bool loop = false;
+      if (a.TryGetValue("loop", ref loop) && loop) return true;
+    }
+    return false;
   }
 
   // ── Waterfall integration ──────────────────────────────────────────
