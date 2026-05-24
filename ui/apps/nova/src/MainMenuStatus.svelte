@@ -1,12 +1,18 @@
 <script lang="ts">
   // Brand badge for the KSP main menu. A player-facing acknowledgement
-  // that Nova is installed and its UI layer is alive. Anchored
-  // bottom-right, pointer-events: none, doesn't intercept clicks.
+  // that Nova is installed. Sits above the KSP wordmark with the
+  // ignitor riding the same vertical column as KSP's rocket-icon
+  // spire — so the orange bar reads as ignition rising out of the
+  // KSP rocket and bursting into the Nova mark. Pointer-events:
+  // none, doesn't intercept clicks. Sitting above (rather than
+  // below) keeps the badge clear of the menu column, which occupies
+  // the band beneath SPACE PROGRAM in both the root and Start Game
+  // menu states.
   //
   // The mount animation is the message: a vertical accent bar ignites
   // from bottom to top (hypergolic — instant brilliance), the wordmark
-  // resolves under it, a hairline draws across, and the ACTIVE dot
-  // begins its slow pulse. ~1.2s cascade, then a steady breathing glow.
+  // resolves under it, and a hairline draws across to close the mark.
+  // ~1.5s cascade, then a steady breathing glow.
 
   import { onMount } from 'svelte';
 
@@ -17,28 +23,27 @@
   });
 </script>
 
-<aside class="nova-badge" class:is-mounted={mounted} aria-label="Nova active">
+<aside class="nova-badge" class:is-mounted={mounted} aria-label="Nova">
   <span class="ignitor" aria-hidden="true"></span>
   <div class="mark">
     <span class="eyebrow">Hypergolic&nbsp;·&nbsp;Systems</span>
     <span class="wordmark">N<i>O</i>V<i>A</i></span>
     <span class="rule" aria-hidden="true"></span>
-    <span class="status">
-      <span class="status-dot" aria-hidden="true"></span>
-      <span class="status-word">Active</span>
-    </span>
   </div>
 </aside>
 
 <style>
-  /* Bottom-right anchored. Padding sized so the wordmark's text-shadow */
-  /* halo stays inside the safe margin from the screen edge. */
+  /* Anchored above the KSP wordmark, ignitor on the same vertical    */
+  /* column as KSP's rocket-icon spire. Going above (not below)       */
+  /* keeps the badge clear of the menu items, which occupy the band   */
+  /* directly under SPACE PROGRAM in the root menu and the band       */
+  /* under "Start Game" in the submenu. The badge's bottom edge       */
+  /* sits just above the KSP logo's top so the ignitor visually       */
+  /* continues the rocket-icon's vertical thrust line.                */
   .nova-badge {
     position: fixed;
-    right: 28px;
-    /* Clear KSP's copyright + build-version strip in the bottom-right */
-    /* corner — it's ~2 lines of small text, so lift the badge above it. */
-    bottom: 70px;
+    left: 22vw;
+    top: 10vh;
     z-index: 9000;
     display: grid;
     grid-template-columns: 2px auto;
@@ -190,35 +195,6 @@
   }
   .is-mounted .rule { width: 100%; }
 
-  .status {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    letter-spacing: 0.32em;
-    text-transform: uppercase;
-    color: var(--ink);
-    opacity: 0;
-    transform: translateY(-2px);
-    transition:
-      opacity 320ms ease 1180ms,
-      transform 320ms ease 1180ms;
-  }
-  .is-mounted .status { opacity: 1; transform: translateY(0); }
-
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--signal);
-    box-shadow:
-      0 0 5px var(--signal-glow),
-      0 0 12px var(--signal-glow);
-    animation: dot-pulse 2.4s ease-in-out infinite 1600ms;
-  }
-  .status-word { color: var(--signal-soft); }
-
   /* ── keyframes ── */
   @keyframes spark-trail {
     /* The spark rides the top of the bar as scaleY grows. Bar is */
@@ -247,10 +223,6 @@
         0 0 16px var(--signal-glow);
     }
   }
-  @keyframes dot-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%      { opacity: 0.45; transform: scale(0.86); }
-  }
   @keyframes badge-float {
     0%, 100% { transform: translateY(0); }
     50%      { transform: translateY(-2px); }
@@ -259,7 +231,7 @@
   @media (prefers-reduced-motion: reduce) {
     .nova-badge { animation: none; }
     .ignitor, .ignitor::after,
-    .eyebrow, .wordmark, .rule, .status, .status-dot {
+    .eyebrow, .wordmark, .rule {
       transition-duration: 0ms !important;
       animation: none !important;
     }
