@@ -246,6 +246,40 @@ public class CommunicationsNetworkTests {
   }
 
   [TestMethod]
+  public void Solve_NonDeployedAntenna_NoLinkRate() {
+    // A retracted antenna behaves as if absent — the only antenna on
+    // each side is non-deployed, so no positive-rate link forms.
+    var net = new CommunicationsNetwork();
+    var aAnt = Std(); aAnt.IsDeployed = false;
+    var bAnt = Std(); bAnt.IsDeployed = false;
+    net.AddEndpoint(At("A", Vec3d.Zero, aAnt));
+    net.AddEndpoint(At("B", new Vec3d(20, 0, 0), bAnt));
+
+    var g = net.Solve(0);
+    var ab = FindLink(g, "A", "B");
+
+    Assert.AreEqual(0, ab.RateBps);
+    Assert.AreEqual(0, ab.Snr);
+  }
+
+  [TestMethod]
+  public void Solve_OneDeployedOneNot_BestPairSkipsNonDeployed() {
+    // Endpoint A has a strong but retracted antenna and a weaker
+    // deployed one. The link must use the deployed pair.
+    var strong = new Antenna { TxPower = 10000, Gain = 100, MaxRate = 10000, RefDistance = 10, IsDeployed = false };
+    var weak   = new Antenna { TxPower = 1,     Gain = 1,   MaxRate = 10,    RefDistance = 10, IsDeployed = true };
+    var net = new CommunicationsNetwork();
+    net.AddEndpoint(At("A", Vec3d.Zero, strong, weak));
+    net.AddEndpoint(At("B", new Vec3d(100, 0, 0), Std()));
+
+    var g = net.Solve(0);
+    var ab = FindLink(g, "A", "B");
+
+    // Strong-pair rate would be hundreds; weak-only collapses to order-of-1.
+    Assert.IsTrue(ab.RateBps < 10, $"expected weak-only rate < 10, got {ab.RateBps}");
+  }
+
+  [TestMethod]
   public void BuildGraph_StoresMaxRateBpsOnLink() {
     // MaxRateBps is the per-link hardware ceiling, symmetric across
     // both directed edges. With identical Std() antennas it equals

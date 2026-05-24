@@ -277,6 +277,7 @@ public class CommunicationsNetwork {
     var n0 = CommunicationsParameters.NoiseFloor;
     double best = double.PositiveInfinity;
     foreach (var tx in from.Antennas) {
+      if (!tx.IsDeployed) continue;
       var snrRef = tx.RefSnr(n0);
       if (snrRef <= 0) continue;
       var thresh = Math.Pow(1 + snrRef, 1.0 / n) - 1;
@@ -575,11 +576,13 @@ public class CommunicationsNetwork {
     var n0 = CommunicationsParameters.NoiseFloor;
 
     foreach (var x in a.Antennas) {
+      if (!x.IsDeployed) continue;
       var snrRefX = x.RefSnr(n0);
       if (snrRefX <= 0) continue;
       var snrThreshX = Math.Pow(1 + snrRefX, 1.0 / n) - 1;
       if (snrThreshX <= 0) continue;
       foreach (var y in b.Antennas) {
+        if (!y.IsDeployed) continue;
         // X→Y direction: TX = x, RX = y, ref-SNR = SNR_ref(x).
         var rXtoY2 = x.TxPower * x.Gain * y.Gain / (n0 * snrThreshX);
         if (rXtoY2 > maxR2) maxR2 = rXtoY2;
@@ -587,11 +590,13 @@ public class CommunicationsNetwork {
     }
 
     foreach (var y in b.Antennas) {
+      if (!y.IsDeployed) continue;
       var snrRefY = y.RefSnr(n0);
       if (snrRefY <= 0) continue;
       var snrThreshY = Math.Pow(1 + snrRefY, 1.0 / n) - 1;
       if (snrThreshY <= 0) continue;
       foreach (var x in a.Antennas) {
+        if (!x.IsDeployed) continue;
         // Y→X direction: TX = y, RX = x, ref-SNR = SNR_ref(y).
         var rYtoX2 = y.TxPower * y.Gain * x.Gain / (n0 * snrThreshY);
         if (rYtoX2 > maxR2) maxR2 = rYtoX2;
@@ -607,7 +612,9 @@ public class CommunicationsNetwork {
   private static double LinkMaxCeiling(Endpoint from, Endpoint to) {
     double max = 0;
     foreach (var tx in from.Antennas) {
+      if (!tx.IsDeployed) continue;
       foreach (var rx in to.Antennas) {
+        if (!rx.IsDeployed) continue;
         var c = Math.Min(tx.MaxRate, rx.MaxRate);
         if (c > max) max = c;
       }
@@ -716,10 +723,12 @@ public class CommunicationsNetwork {
     var r2n0 = distance * distance * n0;
 
     foreach (var tx in from.Antennas) {
+      if (!tx.IsDeployed) continue;
       var refSnr = tx.RefSnr(n0);
       if (refSnr <= 0) continue;
       var logRef = Math.Log(1 + refSnr);
       foreach (var rx in to.Antennas) {
+        if (!rx.IsDeployed) continue;
         var snr = tx.TxPower * tx.Gain * rx.Gain / r2n0;
         var ceiling = Math.Min(tx.MaxRate, rx.MaxRate);
         var ratio = Math.Log(1 + snr) / logRef;

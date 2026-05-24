@@ -24,6 +24,15 @@ public class Antenna : VirtualComponent {
   // reference SNR via the formula in RefSnr.
   public double RefDistance;
 
+  // Whether the antenna is currently deployed/extended. Fixed (non-
+  // deployable) and integrated antennas keep this true and never
+  // touch it; deployable antennas drive it from their KSP-side
+  // wrapper. The network filters non-deployed antennas at every
+  // iteration site (BestPair, LinkMaxCeiling, etc.) — a retracted
+  // antenna behaves as if absent, but still appears in
+  // `Endpoint.Antennas` so UI / telemetry can surface its state.
+  public bool IsDeployed = true;
+
   // SNR an A→A self-link would achieve at exactly RefDistance.
   // Closed form: TxPower · Gain² / (RefDistance² · noiseFloor).
   // Used as the denominator when scaling Shannon capacity to a rate.
