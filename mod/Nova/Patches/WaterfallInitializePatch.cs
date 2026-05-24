@@ -15,10 +15,10 @@ namespace Nova.Patches;
 /// API accepts any controller instance, and the postfix is the cleanest
 /// hook for "after Initialize completes."
 ///
-/// (Stock <c>ThrottleController</c> is handled separately: Nova swaps
-/// its type registration in <see cref="NovaWaterfallRegistration"/> at
-/// startup, so Waterfall instantiates <see cref="NovaThrottleController"/>
-/// from the start — no post-hoc rewire here.)
+/// (Stock <c>ThrottleController</c> and <c>RCSController</c> are
+/// handled separately: <see cref="WaterfallLoadControllersPatch"/>
+/// prefix-replaces <c>LoadControllers</c> so the cfg-driven CONTROLLER
+/// nodes for those types instantiate Nova subclasses directly.)
 ///
 /// Fires on the first <c>Start()</c>-triggered Initialize and on every
 /// subsequent re-init (OnLoad after the FX module is already started).
