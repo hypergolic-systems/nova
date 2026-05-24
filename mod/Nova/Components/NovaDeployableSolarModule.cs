@@ -1,3 +1,4 @@
+using System.Linq;
 using UnityEngine;
 
 namespace Nova.Components;
@@ -19,7 +20,18 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   public override void OnStart(StartState state) {
     base.OnStart(state);
 
-    anim = part.FindModelAnimators(animationName)?[0];
+    // FindModelAnimators returns an *empty* array (not null) when no
+    // Animation on the model carries the named clip — common when a
+    // mesh-replacing mod like ReStock swaps the model and the cfg's
+    // animationName no longer matches. The original `?[0]` only
+    // short-circuited on null, so an empty array threw and OnStart
+    // aborted before `solarPanel.IsDeployed` was written, leaving the
+    // component at its default `true`: panel produces power and the
+    // UI hides the EXT button (the symptoms reported on ReStock'd
+    // OX-10C). FirstOrDefault tolerates the empty case — the panel
+    // simply has no animation to drive, deploy state still tracks
+    // isExtended, and downstream null-guards already cover anim==null.
+    anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
 
     // Mirror stock ModuleDeployablePart.startFSM: pin the wrap mode
     // to ClampForever so when the deploy/retract clip finishes Unity
@@ -63,7 +75,15 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     unfocusedRange = 4f, guiName = "Extend Solar Panel")]
   public void Extend() {
     if (animating || isExtended) return;
-    if (anim == null) return;
+    if (anim == null) {
+      // No animation available (cfg/mesh mismatch). Flip state
+      // instantly so deploy logic still responds; visual stays
+      // wherever the mesh defaulted.
+      isExtended = true;
+      solarPanel.IsDeployed = true;
+      OnDeployStateChanged();
+      return;
+    }
 
     // SetAnimationPosition leaves the AnimationState disabled (anim.Stop
     // at the end). Unity's legacy Play() doesn't reliably re-enable a
@@ -83,7 +103,12 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   public void Retract() {
     if (animating || !isExtended) return;
     if (!retractable && !HighLogic.LoadedSceneIsEditor) return;
-    if (anim == null) return;
+    if (anim == null) {
+      isExtended = false;
+      solarPanel.IsDeployed = false;
+      OnDeployStateChanged();
+      return;
+    }
 
     anim[animationName].normalizedTime = 1f;
     anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? -5f : -1f;

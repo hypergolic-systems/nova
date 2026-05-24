@@ -47,7 +47,13 @@ public class NovaRadiatorModule : NovaPartModule {
       return;
     }
 
-    anim = part.FindModelAnimators(animationName)?[0];
+    // Empty (not null) when no Animation on the model has the named
+    // clip — e.g. ReStock-replaced meshes whose anim was renamed.
+    // ?[0] threw on the empty case, aborting OnStart before
+    // IsDeployed was wired; FirstOrDefault degrades to "no animation,
+    // deploy state still tracks isExtended" and the null-guards
+    // downstream already cover that path.
+    anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
 
     // ClampForever so Unity holds the end pose after the clip — see
     // NovaDeployableSolarModule for the rationale (Once leaves
@@ -77,7 +83,12 @@ public class NovaRadiatorModule : NovaPartModule {
   public void Extend() {
     if (!IsDeployable) return;
     if (animating || isExtended) return;
-    if (anim == null) return;
+    if (anim == null) {
+      isExtended = true;
+      if (radiator != null) radiator.IsDeployed = true;
+      OnDeployStateChanged();
+      return;
+    }
 
     anim[animationName].normalizedTime = 0f;
     anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? 5f : 1f;
@@ -91,7 +102,12 @@ public class NovaRadiatorModule : NovaPartModule {
     if (!IsDeployable) return;
     if (animating || !isExtended) return;
     if (!retractable && !HighLogic.LoadedSceneIsEditor) return;
-    if (anim == null) return;
+    if (anim == null) {
+      isExtended = false;
+      if (radiator != null) radiator.IsDeployed = false;
+      OnDeployStateChanged();
+      return;
+    }
 
     anim[animationName].normalizedTime = 1f;
     anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? -5f : -1f;
