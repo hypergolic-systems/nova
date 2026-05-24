@@ -253,6 +253,15 @@ public static class NovaSaveLoader {
     // Nova component state
     var mod = vessel.FindVesselModuleImplementing<NovaVesselModule>();
     if (mod?.Virtual != null && state.Parts != null) {
+      // Rebase the shared SimClock to the snapshot UT BEFORE LoadPartState
+      // runs. Tank.Load (and any other component that mutates a clock-
+      // attached Buffer via its Contents setter) rebaselines to Clock.UT;
+      // if we leave Clock at the stale pre-revert time, those baselines
+      // land in the future relative to Planetarium.UT and subsequent
+      // Tick(targetTime=Planetarium.UT) is a no-op (simulationTime >
+      // targetTime → while loop never fires → Clock never advances →
+      // every Contents lerp freezes at baseline, infinite-fuel bug).
+      mod.Virtual.RebaseClock(Planetarium.GetUniversalTime());
       foreach (var partState in state.Parts)
         mod.Virtual.LoadPartState(partState.Id, partState);
       mod.Virtual.Invalidate();

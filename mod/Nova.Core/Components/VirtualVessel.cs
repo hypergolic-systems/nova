@@ -171,6 +171,25 @@ public class VirtualVessel {
   }
 
   /// <summary>
+  /// Reset the shared SimClock and the internal simulationTime cursor
+  /// to <paramref name="newUT"/> without rebuilding the solver topology.
+  /// Used by the in-memory quickload / revert-to-launch path, where
+  /// Planetarium.UT jumps backward but the live VirtualVessel survives:
+  /// without this, Buffer rebaselines (Tank.Load → Buffer.Contents
+  /// setter) land at the stale Clock.UT, and the very-next Tick is a
+  /// no-op (simulationTime &gt; targetTime), freezing every lerp in
+  /// place. The visible failure is engines firing on stale Activity
+  /// while tanks read full forever — the lerp's (Clock.UT - BaselineUT)
+  /// stays at zero.
+  /// </summary>
+  public void RebaseClock(double newUT) {
+    if (systems == null) return;
+    systems.Clock.UT = newUT;
+    simulationTime = newUT;
+    needsSolve = true;
+  }
+
+  /// <summary>
   /// Compute optimal solar rates for all panels on the vessel.
   /// Finds the sun direction that maximizes total power given panel geometry,
   /// then proportions the result to each panel by rated capacity. Caches
