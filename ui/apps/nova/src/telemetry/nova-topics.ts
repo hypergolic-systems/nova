@@ -119,6 +119,24 @@ export type NovaRadiatorFrame = [
   maxEcW: number,
 ];
 
+// Per-antenna wire frame. Mirrors the static spec carried on the
+// NovaPartInfo catalog popup (`NovaInfoAntennaFrame`) and adds the
+// runtime deploy triplet so the SYS panel can render an antenna list
+// + EXT/RET control without joining two topics. `txPower` is in watts;
+// `gain` is dimensionless (≥1); `maxRate` is the hardware-rated
+// bits-per-second ceiling reached on a self-link at exactly
+// `refDistance` metres.
+export type NovaAntennaFrame = [
+  'A',
+  maxRateBps: number,
+  refDistanceM: number,
+  gain: number,
+  txPowerW: number,
+  isDeployed: 0 | 1,
+  isDeployable: 0 | 1,
+  isRetractable: 0 | 1,
+];
+
 // Per-decoupler state. `fullSeparation` is the editor-time toggle —
 // when on, the decoupler releases every attached neighbour at once
 // (stock "separator" semantics). `canFullSeparate` is the capability
@@ -305,6 +323,7 @@ export type NovaLtsExperimentFrame = [
 export type NovaComponentFrame =
   | NovaSolarFrame
   | NovaRadiatorFrame
+  | NovaAntennaFrame
   | NovaBatteryFrame
   | NovaWheelFrame
   | NovaLightFrame
@@ -751,6 +770,38 @@ export interface RadiatorState {
   maxEcW: number;
 }
 
+export interface AntennaState {
+  /** Hardware-rated data rate ceiling, bits per second. Reached on a
+   *  self-link at exactly `refDistanceM` — the comms graph scales
+   *  Shannon capacity against this and the per-link SNR. */
+  maxRateBps: number;
+  /** Design distance, metres. Two of this antenna achieve `maxRateBps`
+   *  at this separation; used as the reference for the per-link SNR. */
+  refDistanceM: number;
+  /** Antenna gain, dimensionless (≥1). Multiplies both the tx and rx
+   *  contributions to received power: SNR ∝ Gain_A · Gain_B. */
+  gain: number;
+  /** Transmit power, watts. Numerator of SNR(A→B); also the EC draw
+   *  once tx becomes a controlled variable in a later layer. */
+  txPowerW: number;
+  /** Live deploy state. Fixed (non-deployable) antennas keep this
+   *  true forever; deployable antennas round-trip the player's
+   *  toggle. The comms graph filters non-deployed antennas at every
+   *  iteration site, so a retracted antenna behaves as if absent. */
+  isDeployed: boolean;
+  /** True iff the part has a deploy animation — i.e. the cfg named an
+   *  `animationName` that resolved on the model. Integrated antennas
+   *  on probe cores and the dish-shaped relays without a fold-out
+   *  mechanism are `false`. Drives whether the SYS row shows any
+   *  deploy control at all. */
+  isDeployable: boolean;
+  /** True iff a deployable antenna can be retracted after extension.
+   *  One-shot deployables leave this false — the UI offers an EXT
+   *  button while retracted and no control once deployed. Always
+   *  false on fixed antennas. */
+  isRetractable: boolean;
+}
+
 export interface DecouplerState {
   /** Player-set toggle: when true, firing releases every attached
    *  neighbour (children + parent) at once instead of just the
@@ -869,6 +920,7 @@ export interface NovaPart {
   fuelCell: FuelCellState[];
   rtg: RtgState[];
   radiator: RadiatorState[];
+  antenna: AntennaState[];
   decoupler: DecouplerState[];
   engine: EngineFlightState[];
   nuclear: NuclearReactorState[];
@@ -1008,6 +1060,18 @@ export interface NovaPartOps {
    * effect is immediate.
    */
   setRadiatorDeployed(deployed: boolean): void;
+
+  /**
+   * Extend (`true`) or retract (`false`) a deployable antenna. No-op
+   * on fixed / integrated antennas (`isDeployable=false`) and on
+   * retract requests against one-shot deployables (`isRetractable=false`)
+   * in flight (editor still allows it). Drives the part's deploy
+   * animation; the `isDeployed` bit flips only after the animation
+   * finishes, so the UI button's effect is visually gated by the
+   * model's open/close transition. State round-trips on save via
+   * `AntennaState.is_deployed`.
+   */
+  setAntennaDeployed(deployed: boolean): void;
 
   /**
    * Editor-only. Toggle this decoupler's "Full Separation" mode —
@@ -1909,6 +1973,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     fuelCell: [],
     rtg: [],
     radiator: [],
+    antenna: [],
     decoupler: [],
     engine: [],
     nuclear: [],
@@ -2015,6 +2080,17 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           isRetractable:   c[5] === 1,
           currentEcW:      c[6],
           maxEcW:          c[7],
+        });
+        break;
+      case 'A':
+        out.antenna.push({
+          maxRateBps:    c[1],
+          refDistanceM:  c[2],
+          gain:          c[3],
+          txPowerW:      c[4],
+          isDeployed:    c[5] === 1,
+          isDeployable:  c[6] === 1,
+          isRetractable: c[7] === 1,
         });
         break;
       case 'D':

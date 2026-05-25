@@ -35,6 +35,22 @@ public class Antenna : VirtualComponent {
   // `Endpoint.Antennas` so UI / telemetry can surface its state.
   public bool IsDeployed = true;
 
+  // True iff the part has a deploy animation — i.e. the cfg named an
+  // `animationName` that the KSP-side wrapper resolved. Fixed (non-
+  // deployable) and integrated antennas leave this false; their
+  // IsDeployed stays true for the part's lifetime. Pushed in by
+  // NovaAntennaModule.OnStart so telemetry / UI can gate the
+  // EXT/RET control without reaching back into the module.
+  public bool IsDeployable;
+
+  // True iff a deployable antenna can be retracted after extension.
+  // Mirrors the cfg's `retractable` flag (default true). One-shot
+  // deployables (cfg `retractable = false`) leave this false — the
+  // UI shows an EXT button while retracted and no control once
+  // deployed. Fixed (non-deployable) antennas leave this false too,
+  // but the UI gates on IsDeployable first so the value is moot.
+  public bool IsRetractable;
+
   // True iff Load() consumed an AntennaState from proto. The KSP-side
   // wrapper uses this to decide whether to push IsDeployed into the
   // stock ModuleDeployableAntenna (loaded save) or pull from it

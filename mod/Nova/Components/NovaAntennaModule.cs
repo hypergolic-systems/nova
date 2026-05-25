@@ -2,6 +2,7 @@ using System.Linq;
 using UnityEngine;
 using Nova.Communications;
 using Nova.Core.Components.Communications;
+using Nova.Telemetry;
 
 namespace Nova.Components;
 
@@ -51,6 +52,14 @@ public class NovaAntennaModule : NovaPartModule {
         bool.TryParse(cfg.GetValue("retractable"), out retractable);
     }
 
+    // Push deployability flags into the virtual component so the wire
+    // can carry them without the formatter knowing about modules. The
+    // factual deployable bit is "we have a clip to play"; we revise it
+    // below once ResolveAnimation runs (a cfg may name a clip that
+    // doesn't exist on the model — that part stays fixed).
+    antenna.IsDeployable = !string.IsNullOrEmpty(animationName);
+    antenna.IsRetractable = retractable;
+
     // Resolve the deploy animation. cfg's animationName is the preference;
     // ResolveAnimation falls back to "first model Animation, first clip"
     // so ReStock-overhauled parts with renamed clips still animate.
@@ -65,6 +74,8 @@ public class NovaAntennaModule : NovaPartModule {
         Debug.LogWarning($"[Nova/Antenna] {part.partInfo?.name}: "
             + $"no model animations found — treating as fixed antenna");
         animationName = "";
+        antenna.IsDeployable = false;
+        antenna.IsRetractable = false;
       }
     }
 
@@ -171,6 +182,10 @@ public class NovaAntennaModule : NovaPartModule {
     // Deploy state change is a topology event for the comm graph —
     // pairwise rates and per-vessel path-to-home may all change.
     NovaCommunicationsAddon.Instance?.Network?.Invalidate();
+    // And it's a UI event — the SYS panel's antenna list reads the
+    // deployed bit off the part topic, so push a fresh frame for the
+    // owning part.
+    if (part != null) NovaPartTopic.MarkPartDirty(part.persistentId);
   }
 
   private void SetAnimationPosition(float time) {

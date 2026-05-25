@@ -281,11 +281,19 @@ public static class SimComponentFactory {
   }
 
   public static Antenna CreateAntenna(ConfigNode node) {
+    // Same shape as Radiator above: `animationName` presence drives
+    // IsDeployable, `retractable` (default true) gates one-shot.
+    // Mirrors NovaAntennaModule.OnStart so the sim's wire surface
+    // matches what the in-game adapter would publish.
+    var animationName = node.GetValue("animationName") ?? "";
+    var deployable = !string.IsNullOrEmpty(animationName);
     return new Antenna {
-      TxPower     = D(node, "txPower"),
-      Gain        = D(node, "gain"),
-      MaxRate     = D(node, "maxRate"),
-      RefDistance = D(node, "refDistance"),
+      TxPower       = D(node, "txPower"),
+      Gain          = D(node, "gain"),
+      MaxRate       = D(node, "maxRate"),
+      RefDistance   = D(node, "refDistance"),
+      IsDeployable  = deployable,
+      IsRetractable = deployable && BOr(node, "retractable", true),
     };
   }
 

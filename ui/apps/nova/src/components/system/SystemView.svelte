@@ -26,10 +26,20 @@
   //                   in a tight readout column. Strictly the comms
   //                   graph view; per-probe activity moved to STORED
   //                   COMMANDS.
+  //
+  //                   Antennas live as a sub-list beneath the link
+  //                   readout: one row per installed antenna with a
+  //                   one-line stats summary and (for deployable parts)
+  //                   an EXT/RET button. Rows use a 4-column grid that
+  //                   reserves the control slot for every row — so the
+  //                   stats line never reflows when a button toggles
+  //                   between EXT and RET, and the fixed-antenna case
+  //                   (no button) sits in exactly the same geometry.
 
   import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
   import { useComms } from '../../telemetry/use-comms.svelte';
-  import { useStageOps } from '@dragonglass/telemetry/svelte';
+  import { NovaPartTopic } from '../../telemetry/nova-topics';
+  import { getKsp, useStageOps } from '@dragonglass/telemetry/svelte';
   import { onDestroy, untrack } from 'svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
@@ -37,6 +47,8 @@
 
   interface Props { vesselId: string; }
   const { vesselId }: Props = $props();
+
+  const ksp = getKsp();
 
   const RATE_EPSILON = 0.005;
   const isZero = (v: number): boolean => Math.abs(v) < RATE_EPSILON;
@@ -138,7 +150,7 @@
     return { sign, mag: r.mag, unit: r.unit };
   }
 
-  // ── COMMUNICATIONS — link readout ────────────────────────────
+  // ── COMMUNICATIONS — link readout (KSC peer) ─────────────────
   function rateBars(rateBps: number, maxRateBps: number): number {
     if (!Number.isFinite(rateBps) || rateBps <= 0) return 0;
     if (!Number.isFinite(maxRateBps) || maxRateBps <= 0) return 0;
@@ -151,6 +163,73 @@
     return (db >= 0 ? '+' : '') + db.toFixed(1) + ' dB';
   }
 
+  // ── ANTENNAS — per-antenna roster ────────────────────────────
+  // Read the same parts list the STORED COMMANDS section uses and
+  // pluck the antenna components. Each part may host multiple
+  // antennas (rare — but the wire supports it), so flatten with a
+  // stable key per (partId, index). Fixed antennas are kept in the
+  // list per [[feedback_show_hardware_always]] — the player sees the
+  // installed hardware, and the row simply omits the deploy control.
+  interface AntennaEntry {
+    key:           string;
+    partId:        string;
+    partTitle:     string;
+    maxRateBps:    number;
+    refDistanceM:  number;
+    gain:          number;
+    txPowerW:      number;
+    isDeployed:    boolean;
+    isDeployable:  boolean;
+    isRetractable: boolean;
+  }
+  const antennaEntries = $derived.by<AntennaEntry[]>(() => {
+    const out: AntennaEntry[] = [];
+    for (const p of cmdParts.current) {
+      if (!p.state) continue;
+      for (let i = 0; i < p.state.antenna.length; i++) {
+        const a = p.state.antenna[i];
+        out.push({
+          key:           `${p.struct.id}:${i}`,
+          partId:        p.struct.id,
+          partTitle:     p.struct.title,
+          maxRateBps:    a.maxRateBps,
+          refDistanceM:  a.refDistanceM,
+          gain:          a.gain,
+          txPowerW:      a.txPowerW,
+          isDeployed:    a.isDeployed,
+          isDeployable:  a.isDeployable,
+          isRetractable: a.isRetractable,
+        });
+      }
+    }
+    return out;
+  });
+
+  // How many antennas are currently contributing to the network. The
+  // accordion-summary chip surfaces this so a collapsed panel still
+  // shows the live count without the player drilling in.
+  const antennaActiveCount = $derived(
+    antennaEntries.reduce((n, e) => n + (e.isDeployed ? 1 : 0), 0),
+  );
+
+  // Distance display: same SI-prefix scaling the bps helper uses, but
+  // attached to metres. RA-100 at 1.58 Gm vs an integrated antenna at
+  // 1 km share a single column without the tiny ones collapsing to 0.
+  function fmtDistanceMeters(value: number): { mag: string; unit: string } {
+    const p = siPrefix(value);
+    return { mag: fmtMag(value / p.div), unit: p.letter + 'm' };
+  }
+  // Tx power display: same prefix logic, anchored to watts.
+  function fmtPowerW(value: number): { mag: string; unit: string } {
+    const p = siPrefix(value);
+    return { mag: fmtMag(value / p.div), unit: p.letter + 'W' };
+  }
+
+  function setAntennaDeployed(partId: string, deployed: boolean): void {
+    ksp.send(NovaPartTopic(partId), 'setAntennaDeployed', deployed);
+  }
+
+  // ── COMMUNICATIONS — link readout (KSC peer) ─────────────────
   const linkUp        = $derived(comms.current?.hasPathToKsc ?? false);
   const directRate    = $derived(comms.current?.directRateBps ?? 0);
   const directMaxRate = $derived(comms.current?.directMaxRateBps ?? 0);
@@ -341,6 +420,122 @@
           <dt>Bottleneck</dt>
           <dd>{linkUp ? `${fmtRateBps(bottleneck).mag} ${fmtRateBps(bottleneck).unit}` : '—'}</dd>
         </dl>
+
+        <!-- Antenna roster. Sub-heading + per-antenna rows. Each row is
+             a four-column grid: icon | name+stats stack | status pill |
+             control slot. The control slot is fixed-width and always
+             rendered — when the antenna is fixed (no deploy mechanism)
+             or one-shot-and-locked-open, the slot still occupies its
+             46-pixel column with a static glyph so neighbouring rows
+             don't shift as deploy state changes. The stats line and
+             the control slot live in different grid columns, so the
+             stats line's right edge stays put when EXT toggles to RET. -->
+        <div class="ant">
+          <div class="ant__head">
+            <span class="ant__head-title">Antennas</span>
+            <span class="ant__head-count"
+                  title={`${antennaActiveCount} of ${antennaEntries.length} extended`}>
+              {antennaActiveCount}<em class="ant__head-of">/</em>{antennaEntries.length}
+            </span>
+          </div>
+
+          {#if antennaEntries.length === 0}
+            <p class="ant__empty">No antennas on this vessel.</p>
+          {:else}
+            <ul class="ant__list">
+              {#each antennaEntries as a (a.key)}
+                {@const rate = fmtRateBps(a.maxRateBps)}
+                {@const dist = fmtDistanceMeters(a.refDistanceM)}
+                {@const pow  = fmtPowerW(a.txPowerW)}
+                {@const statsTitle =
+                  `${rate.mag} ${rate.unit} at ${dist.mag} ${dist.unit}` +
+                  ` · gain ${fmtMag(a.gain)} · tx ${pow.mag} ${pow.unit}`}
+                <li class="ant__row"
+                    class:ant__row--retracted={a.isDeployable && !a.isDeployed}
+                    onmouseenter={() => highlightOn([a.partId])}
+                    onmouseleave={highlightOff}
+                    role="presentation">
+
+                  <span class="ant__row-icon">
+                    <ComponentIcon kind="antenna" />
+                  </span>
+
+                  <div class="ant__row-stack">
+                    <span class="ant__row-name" title={a.partTitle}>
+                      {a.partTitle}
+                    </span>
+                    <!-- One-line stat description. The three observables
+                         the player actually compares between antennas:
+                         max data rate, design distance (knee), gain.
+                         Tx power is informational and gets carried as
+                         the row's hover title only — keeps the line
+                         narrow enough to never wrap inside the SYS
+                         panel's 270-ish-pixel content column. Tabular
+                         numerals and a non-breaking middle-dot sep
+                         hold the column rhythm; units in <em> so the
+                         eye lands on magnitudes first. -->
+                    <span class="ant__row-stats" title={statsTitle}>
+                      <span class="ant__stat">{rate.mag}<em>{rate.unit}</em></span>
+                      <span class="ant__stat-sep">·</span>
+                      <span class="ant__stat">{dist.mag}<em>{dist.unit}</em></span>
+                      <span class="ant__stat-sep">·</span>
+                      <span class="ant__stat ant__stat--mute">G&nbsp;{fmtMag(a.gain)}</span>
+                    </span>
+                  </div>
+
+                  <!-- Status pill. Fixed width — "EXT"/"RET"/"FIX" all
+                       occupy the same footprint, so the deploy control
+                       to the right anchors to a consistent x-position
+                       whichever state the antenna is in. -->
+                  {#if !a.isDeployable}
+                    <span class="ant__status ant__status--fixed"
+                          title="Integrated / non-deployable antenna">FIX</span>
+                  {:else if a.isDeployed}
+                    <span class="ant__status ant__status--on"
+                          title="Extended — contributing to the comms graph">EXT</span>
+                  {:else}
+                    <span class="ant__status ant__status--off"
+                          title="Retracted — antenna inactive">RET</span>
+                  {/if}
+
+                  <!-- Deploy control slot. Always rendered, fixed
+                       46-px column. Four cases:
+                         • non-deployable        → static "—" glyph
+                         • deployable, retracted → clickable EXT
+                         • deployable+retractable, extended → clickable RET
+                         • one-shot, already extended → static "lock" glyph
+                       Static cases use the same width as the buttons
+                       so the row's right edge never shifts. -->
+                  {#if !a.isDeployable}
+                    <span class="ant__btn ant__btn--placeholder"
+                          aria-hidden="true">—</span>
+                  {:else if !a.isDeployed}
+                    <button type="button"
+                            class="ant__btn ant__btn--ext"
+                            aria-label={`Extend ${a.partTitle}`}
+                            title="Extend antenna"
+                            onclick={(e) => { e.stopPropagation();
+                                              setAntennaDeployed(a.partId, true); }}>
+                      EXT
+                    </button>
+                  {:else if a.isRetractable}
+                    <button type="button"
+                            class="ant__btn ant__btn--ret"
+                            aria-label={`Retract ${a.partTitle}`}
+                            title="Retract antenna"
+                            onclick={(e) => { e.stopPropagation();
+                                              setAntennaDeployed(a.partId, false); }}>
+                      RET
+                    </button>
+                  {:else}
+                    <span class="ant__btn ant__btn--placeholder"
+                          title="One-shot deployable — cannot retract">⌖</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -654,5 +849,236 @@
     font-variant-numeric: tabular-nums;
     font-size: 11px;
     letter-spacing: 0.04em;
+  }
+
+  /* ── ANTENNAS — per-antenna roster ───────────────────────────
+     Sits below the KSC-link readout inside the COMMUNICATIONS
+     accordion. The sub-heading mirrors the typographic register
+     of the .link__readout dt labels (display-face caps, wide
+     tracking) without re-using their grid — so the eye reads
+     "Antennas" as a new sibling group, not another row in the
+     spec table. Vertical rhythm: a small gap separates this
+     block from the readout above, and rows themselves carry a
+     thin baseline rule for scan-ability. */
+  .ant {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .ant__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0 2px 2px;
+    border-bottom: 1px solid var(--line);
+  }
+  .ant__head-title {
+    color: var(--fg-mute);
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .ant__head-count {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+  .ant__head-of {
+    font-style: normal;
+    color: var(--fg-mute);
+    padding: 0 1px;
+  }
+  .ant__empty {
+    margin: 0;
+    padding: 4px 2px;
+    color: var(--fg-mute);
+    font-style: italic;
+    font-size: 11px;
+  }
+
+  .ant__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* The four columns are: icon | name+stats stack | status pill
+     | control slot. ALL of these are explicit so the stats line
+     can't drift when the control toggles between EXT and RET,
+     and so a fixed-antenna row aligns perfectly with a deployable
+     one above it. Status pill uses `max-content` so the layout
+     stays compact, but its content is fixed-width (3-char pill)
+     so it doesn't drift either. Control slot is a hard 46px so
+     EXT/RET/—/⌖ all sit in identical real estate. */
+  .ant__row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) max-content 46px;
+    column-gap: 10px;
+    align-items: center;
+    padding: 5px 2px;
+    border-bottom: 1px solid var(--line-faint, rgba(126, 245, 184, 0.06));
+  }
+  .ant__row:last-child { border-bottom: 0; }
+  .ant__row-icon {
+    grid-column: 1;
+    color: var(--fg-mute);
+    display: inline-flex;
+    align-self: start;
+    padding-top: 1px;
+    transition: color 200ms ease;
+  }
+  .ant__row--retracted .ant__row-icon { color: var(--fg-dim); }
+
+  /* Name + stats stacked vertically in the second column. min-width:0
+     lets the name truncate cleanly when the part title is unusually
+     long; the stats line has its own min-width:0 so its inline-flex
+     items can shrink without bleeding into the control column. */
+  .ant__row-stack {
+    grid-column: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .ant__row-name {
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ant__row--retracted .ant__row-name { color: var(--fg-mute); }
+
+  .ant__row-stats {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ant__stat { color: var(--fg); }
+  .ant__stat em {
+    font-style: normal;
+    color: var(--fg-mute);
+    padding-left: 1px;
+  }
+  .ant__stat-sep {
+    color: var(--fg-mute);
+    opacity: 0.6;
+  }
+  .ant__stat--mute { color: var(--fg-dim); }
+
+  /* Tri-state status pill. Fixed width (3 caps + a smidge of
+     tracking) so EXT / RET / FIX all land in the same envelope —
+     the eye sees the color change, not a width change. */
+  .ant__status {
+    grid-column: 3;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    padding: 1px 0;
+    border: 1px solid var(--line);
+    color: var(--fg-mute);
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .ant__status--on {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.08);
+    box-shadow: 0 0 4px rgba(126, 245, 184, 0.10) inset;
+  }
+  .ant__status--off {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+  }
+  .ant__status--fixed {
+    color: var(--fg-mute);
+    border-color: var(--line);
+    background: transparent;
+  }
+
+  /* Deploy control. ALWAYS occupies the 46px control column,
+     whether it's an interactive button or a static placeholder.
+     The .ant__btn class drives the geometry; modifier classes
+     drive the colour/interactivity. EXT (accent) leans visually
+     forward — that's the action the player most often wants on
+     a freshly-launched vessel. RET sits in the muted register
+     because retracting an extended antenna is the rarer move. */
+  .ant__btn {
+    grid-column: 4;
+    box-sizing: border-box;
+    width: 46px;
+    height: 22px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--fg-dim);
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-align: center;
+    cursor: pointer;
+    transition:
+      color 160ms ease,
+      border-color 160ms ease,
+      background 160ms ease,
+      box-shadow 160ms ease;
+  }
+  .ant__btn:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: rgba(126, 245, 184, 0.06);
+  }
+  .ant__btn:active {
+    background: rgba(126, 245, 184, 0.14);
+  }
+  .ant__btn--ext {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    box-shadow: inset 0 0 0 1px rgba(126, 245, 184, 0.04);
+  }
+  .ant__btn--ret {
+    color: var(--fg-dim);
+    border-color: var(--line);
+  }
+  .ant__btn--placeholder {
+    color: var(--fg-mute);
+    border-color: transparent;
+    background: transparent;
+    cursor: default;
+    opacity: 0.55;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0;
+  }
+  .ant__btn--placeholder:hover {
+    color: var(--fg-mute);
+    border-color: transparent;
+    background: transparent;
   }
 </style>

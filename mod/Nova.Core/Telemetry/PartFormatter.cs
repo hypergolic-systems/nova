@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Nova.Core.Components;
+using Nova.Core.Components.Communications;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
@@ -45,6 +46,8 @@ namespace Nova.Core.Telemetry;
 //                           wasteHeatW, exportW, rejectionW,
 //                           currentTempC, maxOperatingTempC, dTdtCps
 //   "X" Radiator          — currentCoolingW, maxCoolingW, isDeployed, isDeployable
+//   "A" Antenna           — maxRateBps, refDistanceM, gain, txPowerW,
+//                           isDeployed, isDeployable, isRetractable
 //   "D" Decoupler         — fullSeparation, canFullSeparate, ejectionForce
 //   "E" Engine (chemical) — active, status(0..4), flameout, throttle,
 //                           currentThrustKn, maxThrustKn, ispS
@@ -346,6 +349,28 @@ public static class PartFormatter {
         WriteBit(sb, decoupler.FullSeparation, ref f);
         WriteBit(sb, decoupler.CanFullSeparate, ref f);
         WriteNum(sb, decoupler.EjectionForce, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case Antenna antenna: {
+        // Static specs (maxRate, refDistance, gain, txPower) are
+        // available from NovaPartInfo too, but echoing them here means
+        // the SYS panel doesn't have to cross-join two topics to render
+        // an antenna row — same trick the Radiator frame uses for max
+        // cooling. The triplet (isDeployed, isDeployable, isRetractable)
+        // mirrors the Radiator convention so the UI's deploy-control
+        // gating reads identically across components.
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "A", ref f);
+        WriteNum(sb, antenna.MaxRate, ref f);
+        WriteNum(sb, antenna.RefDistance, ref f);
+        WriteNum(sb, antenna.Gain, ref f);
+        WriteNum(sb, antenna.TxPower, ref f);
+        WriteBit(sb, antenna.IsDeployed, ref f);
+        WriteBit(sb, antenna.IsDeployable, ref f);
+        WriteBit(sb, antenna.IsRetractable, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }
