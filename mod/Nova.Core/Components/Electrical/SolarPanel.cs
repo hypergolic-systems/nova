@@ -1,3 +1,4 @@
+using Nova.Core.Persistence.Protos;
 using Nova.Core.Resources;
 using Nova.Core.Flight;
 using Nova.Core.Utils;
@@ -33,4 +34,22 @@ public class SolarPanel : VirtualComponent {
   public double CurrentRate;
   public bool IsSunlit = true;
   public double ShadowTransitionUT = double.PositiveInfinity;
+
+  // True iff Load() consumed a SolarPanelState from proto — i.e. this
+  // component's IsDeployed reflects a previously saved value. Lets the
+  // KSP-side module distinguish "restoring from a Nova save" from
+  // "fresh launch with no save state", and preserve the stock-launch
+  // default of "retracted" for deployable panels in the fresh-launch
+  // case.
+  public bool LoadedFromSave;
+
+  public override void Save(PartState state) {
+    state.SolarPanel = new SolarPanelState { IsDeployed = IsDeployed };
+  }
+
+  public override void Load(PartState state) {
+    if (state.SolarPanel == null) return;
+    IsDeployed = state.SolarPanel.IsDeployed;
+    LoadedFromSave = true;
+  }
 }

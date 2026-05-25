@@ -190,6 +190,8 @@ message PartState {
   NuclearEngineState  nuclear_engine  = 15;
   EngineState         engine          = 16;
   IonEngineState      ion_engine      = 17;
+  SolarPanelState     solar_panel     = 18;
+  AntennaState        antenna         = 19;
 }
 
 message TankVolumeState {
@@ -252,6 +254,24 @@ message RtgState {
 // Radiator deploy state. Fixed (non-deployable) panels ignore this;
 // deployable folding rads round-trip the player's toggle.
 message RadiatorState {
+  bool is_deployed = 1;
+}
+
+// Solar-panel deploy state. Fixed panels ignore this; deployable
+// panels round-trip the player's extend/retract toggle. Nova owns its
+// own animation (we strip stock ModuleDeployablePart), so this is the
+// only persistence path — the stock `isExtended` KSPField writes into
+// a ConfigNode tree our save format bypasses.
+message SolarPanelState {
+  bool is_deployed = 1;
+}
+
+// Antenna deploy state. Fixed antennas keep this true and never touch
+// it; deployable antennas round-trip the player's extend/retract
+// toggle. The KSP-side wrapper pushes this value into the sibling
+// stock ModuleDeployableAntenna on load (stock's `[KSPField(isPersistant)]
+// deployState` doesn't survive Nova's proto save path).
+message AntennaState {
   bool is_deployed = 1;
 }
 
@@ -417,6 +437,14 @@ message FlightState {
   // this the engine's transient Throttle field would survive in memory but
   // ctrlState would reset to 0, leaving the two out of sync for one tick.
   float main_throttle = 4;
+  // Stock KSP's per-vessel staging pointer — index of the next stage
+  // to fire (max remaining inverseStage + 1). Decremented each time
+  // the player stages, so it can't be derived from parts alone after
+  // any firing has happened (parts retain their original inverseStage
+  // until decoupled). Without this restore, a quickload leaves
+  // currentStage at the default 0 and pressing space tries to fire
+  // stage -1 → no parts → engine never activates.
+  int32 current_stage = 5;
 }
 
 message OrbitalState {

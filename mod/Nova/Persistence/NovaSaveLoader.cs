@@ -171,8 +171,20 @@ public static class NovaSaveLoader {
       var activePid = save.Vessels[save.ActiveVesselIndex].Structure.PersistentId;
       var activeVessel = FlightGlobals.Vessels.FirstOrDefault(v => v.persistentId == activePid);
       if (activeVessel != null) {
-        if (activeVessel != FlightGlobals.ActiveVessel)
+        if (activeVessel != FlightGlobals.ActiveVessel) {
           FlightGlobals.ForceSetActiveVessel(activeVessel);
+          // ForceSetActiveVessel → MakeActive → ResumeStaging fires
+          // onVesselResumeStaging, which is how StageManager learns the
+          // new currentStage. Nothing more to do for this path.
+        } else {
+          // Matched quickload of the *same* active vessel —
+          // ForceSetActiveVessel short-circuits when v == activeVessel,
+          // so MakeActive never runs and StageManager keeps its
+          // pre-quickload _currentStage. Force the resync explicitly so
+          // the staging UI and `ActivateNextStage` see the restored
+          // currentStage.
+          activeVessel.ResumeStaging();
+        }
         // Re-target camera — ForceSetActiveVessel skips if already active,
         // and the camera pivot may have been disrupted by quickload.
         FlightCamera.fetch.SetTarget(activeVessel.transform);
@@ -248,6 +260,13 @@ public static class NovaSaveLoader {
       // visually at zero (stock KSP resets ctrlState on vessel reload).
       if (vessel.ctrlState != null)
         vessel.ctrlState.mainThrottle = flight.MainThrottle;
+
+      // Restore staging pointer for the matched-vessel path. The active
+      // vessel's StageManager will pick this up via the ResumeStaging
+      // call at the end of ApplyQuickload; inactive vessels just need
+      // the value parked on the Vessel for when they later become
+      // active (MakeActive → ResumeStaging fires the resync then).
+      vessel.currentStage = flight.CurrentStage;
     }
 
     // Nova component state
@@ -468,6 +487,12 @@ public static class NovaSaveLoader {
     vessel.launchTime = state.LaunchTime;
     vessel.missionTime = state.MissionTime;
     vessel.packed = true;
+    // Restore staging pointer — Initialize leaves currentStage at 0,
+    // which makes pressing space try to fire stage -1 (no parts) on a
+    // freshly-loaded vessel. StageManager.OnVesselResumeStaging (fired
+    // by MakeActive → ResumeStaging) reads currentStage to sync the
+    // staging UI, so it has to be set before the active-vessel switch.
+    if (flight != null) vessel.currentStage = flight.CurrentStage;
     vessel.orbitDriver.updateMode = vessel.LandedOrSplashed
       ? OrbitDriver.UpdateMode.IDLE
       : OrbitDriver.UpdateMode.UPDATE;

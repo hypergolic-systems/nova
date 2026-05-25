@@ -173,11 +173,16 @@ fn launch(common: CommonArgs, mk_orbit: impl FnOnce(f64) -> OrbitalState) -> Res
     // FlightState — orbit only; leave position = None so the loader's
     // orbitDriver.updateFromParameters() derives lat/lon/alt from orbit
     // at load time (NovaSaveLoader.cs:200-212 + 216 guard).
+    // current_stage = stages.len() means "all stages remaining, next
+    // press fires the top one" — matches what StageManager.BeginFlight
+    // computes for a freshly-launched vessel that hasn't been staged.
+    let current_stage = state.stages.len() as i32;
     state.flight = Some(FlightState {
         orbit: Some(orbit),
         position: None,
         action_groups: 0,
         main_throttle: 0.0,
+        current_stage,
     });
 
     // Mirrors NovaVesselBuilder.ComputeStructureHash.

@@ -151,6 +151,7 @@ public static class NovaSaveBuilder {
       Position = BuildPosition(vessel),
       ActionGroups = BuildActionGroups(vessel),
       MainThrottle = vessel.ctrlState?.mainThrottle ?? 0f,
+      CurrentStage = vessel.currentStage,
     };
     return flight;
   }

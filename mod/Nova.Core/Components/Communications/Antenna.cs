@@ -1,3 +1,5 @@
+using Nova.Core.Persistence.Protos;
+
 namespace Nova.Core.Components.Communications;
 
 // Communications antenna. Static-config component today: the four
@@ -33,10 +35,27 @@ public class Antenna : VirtualComponent {
   // `Endpoint.Antennas` so UI / telemetry can surface its state.
   public bool IsDeployed = true;
 
+  // True iff Load() consumed an AntennaState from proto. The KSP-side
+  // wrapper uses this to decide whether to push IsDeployed into the
+  // stock ModuleDeployableAntenna (loaded save) or pull from it
+  // (fresh launch — stock's deployState carries the editor-time
+  // intent through the launch pipeline).
+  public bool LoadedFromSave;
+
   // SNR an A→A self-link would achieve at exactly RefDistance.
   // Closed form: TxPower · Gain² / (RefDistance² · noiseFloor).
   // Used as the denominator when scaling Shannon capacity to a rate.
   public double RefSnr(double noiseFloor) {
     return TxPower * Gain * Gain / (RefDistance * RefDistance * noiseFloor);
+  }
+
+  public override void Save(PartState state) {
+    state.Antenna = new AntennaState { IsDeployed = IsDeployed };
+  }
+
+  public override void Load(PartState state) {
+    if (state.Antenna == null) return;
+    IsDeployed = state.Antenna.IsDeployed;
+    LoadedFromSave = true;
   }
 }

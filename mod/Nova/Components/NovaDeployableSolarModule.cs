@@ -11,9 +11,6 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   [KSPField]
   public bool retractable = true;
 
-  [KSPField(isPersistant = true)]
-  public bool isExtended;
-
   private Animation anim;
   private bool animating;
 
@@ -30,7 +27,8 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     // UI hides the EXT button (the symptoms reported on ReStock'd
     // OX-10C). FirstOrDefault tolerates the empty case — the panel
     // simply has no animation to drive, deploy state still tracks
-    // isExtended, and downstream null-guards already cover anim==null.
+    // solarPanel.IsDeployed, and downstream null-guards already cover
+    // anim==null.
     anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
 
     // Mirror stock ModuleDeployablePart.startFSM: pin the wrap mode
@@ -49,13 +47,21 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     // gets a toggle (retractable) or a one-shot open button.
     solarPanel.IsRetractable = retractable;
 
-    if (state == StartState.Editor || isExtended) {
-      SetAnimationPosition(1f);
-      solarPanel.IsDeployed = true;
-    } else {
-      SetAnimationPosition(0f);
-      solarPanel.IsDeployed = false;
-    }
+    // Three OnStart cases:
+    //   1. Loaded from save (LoadedFromSave) — use the proto value
+    //      already in solarPanel.IsDeployed.
+    //   2. Editor scene — panels render extended (matches the prior
+    //      `state == StartState.Editor` shortcut, no surprise in the VAB).
+    //   3. Fresh launch — start retracted (stock convention; the prior
+    //      `[KSPField(isPersistant)] isExtended` defaulted to false).
+    // The proto save path bypasses the stock ConfigNode tree, so a
+    // pure `isExtended` KSPField wouldn't round-trip — that was the
+    // bug behind "panel saved deployed, reloaded retracted".
+    bool deployed = solarPanel.LoadedFromSave
+        ? solarPanel.IsDeployed
+        : state == StartState.Editor;
+    solarPanel.IsDeployed = deployed;
+    SetAnimationPosition(deployed ? 1f : 0f);
 
     UpdateEvents();
 
@@ -74,12 +80,11 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
     unfocusedRange = 4f, guiName = "Extend Solar Panel")]
   public void Extend() {
-    if (animating || isExtended) return;
+    if (animating || solarPanel.IsDeployed) return;
     if (anim == null) {
       // No animation available (cfg/mesh mismatch). Flip state
       // instantly so deploy logic still responds; visual stays
       // wherever the mesh defaulted.
-      isExtended = true;
       solarPanel.IsDeployed = true;
       OnDeployStateChanged();
       return;
@@ -101,10 +106,9 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
     unfocusedRange = 4f, guiName = "Retract Solar Panel")]
   public void Retract() {
-    if (animating || !isExtended) return;
+    if (animating || !solarPanel.IsDeployed) return;
     if (!retractable && !HighLogic.LoadedSceneIsEditor) return;
     if (anim == null) {
-      isExtended = false;
       solarPanel.IsDeployed = false;
       OnDeployStateChanged();
       return;
@@ -126,14 +130,12 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     if (anim[animationName].speed > 0 && time >= 1f) {
       anim.Stop(animationName);
       SetAnimationPosition(1f);
-      isExtended = true;
       animating = false;
       solarPanel.IsDeployed = true;
       OnDeployStateChanged();
     } else if (anim[animationName].speed < 0 && time <= 0f) {
       anim.Stop(animationName);
       SetAnimationPosition(0f);
-      isExtended = false;
       animating = false;
       solarPanel.IsDeployed = false;
       OnDeployStateChanged();
@@ -150,8 +152,8 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   }
 
   private void UpdateEvents() {
-    Events["Extend"].active = !isExtended && !animating;
-    Events["Retract"].active = isExtended && !animating
+    Events["Extend"].active = !solarPanel.IsDeployed && !animating;
+    Events["Retract"].active = solarPanel.IsDeployed && !animating
       && (retractable || HighLogic.LoadedSceneIsEditor);
   }
 
