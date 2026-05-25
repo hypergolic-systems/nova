@@ -1,51 +1,16 @@
-//! `dump` subcommand — reads the 8-byte HGS header, decodes the proto
-//! payload (CraftFile or SaveFile), and writes a structured text dump.
-//!
-//! Wire format mirrors `mod/Nova.Core/Persistence/NovaFileFormat.cs`:
-//!   bytes 0..3: 'H' 'G' 'S'
-//!   byte 3:     'C' (craft) | 'S' (save)
-//!   bytes 4..8: u32 LE version
-//!   bytes 8..:  prost-encoded CraftFile or SaveFile
+//! `dump` subcommand — decodes a .nvc or .nvs file and writes a
+//! structured text dump. Auto-detects file type from the HGS header.
 
-use anyhow::{bail, Context, Result};
-use prost::Message;
-use std::fs::File;
-use std::io::Read;
+use anyhow::Result;
 use std::path::Path;
 
+use crate::io::{read_nova_file, NovaFile};
 use crate::proto::*;
 
-const MAGIC: [u8; 3] = *b"HGS";
-
 pub fn dump(path: &Path) -> Result<()> {
-    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut header = [0u8; 8];
-    file.read_exact(&mut header).context("read HGS header")?;
-
-    if header[..3] != MAGIC {
-        bail!(
-            "Invalid HGS magic: {:?}",
-            String::from_utf8_lossy(&header[..3])
-        );
-    }
-    let kind = header[3] as char;
-    let version = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-
-    println!("HGS file type='{kind}' version={version}");
-
-    let mut payload = Vec::new();
-    file.read_to_end(&mut payload).context("read payload")?;
-
-    match kind {
-        'C' => {
-            let craft = CraftFile::decode(payload.as_slice()).context("decode CraftFile")?;
-            dump_craft(&craft);
-        }
-        'S' => {
-            let save = SaveFile::decode(payload.as_slice()).context("decode SaveFile")?;
-            dump_save(&save);
-        }
-        other => bail!("Unknown HGS file type: '{other}'"),
+    match read_nova_file(path)? {
+        NovaFile::Craft(craft) => dump_craft(&craft),
+        NovaFile::Save(save) => dump_save(&save),
     }
     Ok(())
 }

@@ -13,3 +13,5 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 prost = "0.13"
 prost-build = "0.13"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }

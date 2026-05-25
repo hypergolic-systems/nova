@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod dump;
+mod io;
+mod launch;
 mod proto;
 
 #[derive(Parser)]
@@ -20,11 +22,15 @@ enum Command {
         /// Path to a .nvs or .nvc file.
         file: PathBuf,
     },
+    /// Inject a craft into a save as a launched vessel at a target orbit.
+    #[command(subcommand)]
+    Launch(launch::LaunchCmd),
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Dump { file } => dump::dump(&file),
+        Command::Launch(cmd) => launch::run(cmd),
     }
 }
