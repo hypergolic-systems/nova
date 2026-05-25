@@ -23,6 +23,8 @@ use crate::io::{read_craft_file, read_save_file, write_save_file};
 use crate::proto::*;
 
 const SITUATION_ORBITING: i32 = 32; // Vessel.Situations.ORBITING
+const VESSEL_TYPE_DEBRIS: i32 = 0; // VesselType.Debris
+const VESSEL_TYPE_PROBE: i32 = 3; // VesselType.Probe
 
 #[derive(Subcommand)]
 pub enum LaunchCmd {
@@ -47,8 +49,10 @@ pub struct CommonArgs {
     /// CraftMetadata.name.
     #[arg(long)]
     name: Option<String>,
-    /// Override the vessel type (VesselType enum). Defaults to the
-    /// craft's CraftMetadata.vessel_type.
+    /// Override the vessel type (VesselType enum). Defaults to the craft's
+    /// CraftMetadata.vessel_type, or VesselType.Probe (3) if that is 0
+    /// (Debris) — current Nova .nvc writes leave the field unset, and
+    /// Debris is hidden by the tracking station's default filter.
     #[arg(long)]
     vessel_type: Option<i32>,
     /// Before overwriting, copy the existing .nvs to <save>.nvs.bak.
@@ -165,7 +169,13 @@ fn launch(common: CommonArgs, mk_orbit: impl FnOnce(f64) -> OrbitalState) -> Res
     // Scalars that BuildVessel writes from the live KSP Vessel
     let craft_meta = craft.metadata.unwrap_or_default();
     state.name = common.name.unwrap_or_else(|| craft_meta.name.clone());
-    state.vessel_type = common.vessel_type.unwrap_or(craft_meta.vessel_type);
+    state.vessel_type = common.vessel_type.unwrap_or_else(|| {
+        if craft_meta.vessel_type == VESSEL_TYPE_DEBRIS {
+            VESSEL_TYPE_PROBE
+        } else {
+            craft_meta.vessel_type
+        }
+    });
     state.situation = SITUATION_ORBITING;
     state.mission_time = 0.0;
     state.launch_time = save.universal_time;
