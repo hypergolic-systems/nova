@@ -22,29 +22,39 @@ pub enum NovaFile {
     Save(SaveFile),
 }
 
-pub fn read_nova_file(path: &Path) -> Result<NovaFile> {
+/// Header byte (`'C'` craft / `'S'` save) and the u32 version surfaced
+/// alongside the decoded payload — `dump` prints them; the other
+/// callers ignore them.
+pub struct NovaFileHeader {
+    pub kind: char,
+    pub version: u32,
+}
+
+pub fn read_nova_file(path: &Path) -> Result<(NovaFileHeader, NovaFile)> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let (kind, _version, payload) = read_with_kind(&mut file)?;
-    match kind {
-        'C' => Ok(NovaFile::Craft(
+    let (kind, version, payload) = read_with_kind(&mut file)?;
+    let header = NovaFileHeader { kind, version };
+    let file = match kind {
+        'C' => NovaFile::Craft(
             CraftFile::decode(payload.as_slice()).context("decode CraftFile")?,
-        )),
-        'S' => Ok(NovaFile::Save(
+        ),
+        'S' => NovaFile::Save(
             SaveFile::decode(payload.as_slice()).context("decode SaveFile")?,
-        )),
+        ),
         other => bail!("Unknown HGS file type: '{other}'"),
-    }
+    };
+    Ok((header, file))
 }
 
 pub fn read_save_file(path: &Path) -> Result<SaveFile> {
-    match read_nova_file(path)? {
+    match read_nova_file(path)?.1 {
         NovaFile::Save(s) => Ok(s),
         NovaFile::Craft(_) => bail!("{} is a craft (.nvc), expected a save (.nvs)", path.display()),
     }
 }
 
 pub fn read_craft_file(path: &Path) -> Result<CraftFile> {
-    match read_nova_file(path)? {
+    match read_nova_file(path)?.1 {
         NovaFile::Craft(c) => Ok(c),
         NovaFile::Save(_) => bail!("{} is a save (.nvs), expected a craft (.nvc)", path.display()),
     }

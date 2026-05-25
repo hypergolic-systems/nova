@@ -8,7 +8,10 @@ use crate::io::{read_nova_file, NovaFile};
 use crate::proto::*;
 
 pub fn dump(path: &Path) -> Result<()> {
-    match read_nova_file(path)? {
+    let (header, file) = read_nova_file(path)?;
+    println!("HGS file type='{}' version={}", header.kind, header.version);
+    println!();
+    match file {
         NovaFile::Craft(craft) => dump_craft(&craft),
         NovaFile::Save(save) => dump_save(&save),
     }
