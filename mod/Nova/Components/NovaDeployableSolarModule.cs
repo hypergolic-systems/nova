@@ -63,8 +63,6 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     solarPanel.IsDeployed = deployed;
     SetAnimationPosition(deployed ? 1f : 0f);
 
-    UpdateEvents();
-
     if (state != StartState.Editor) {
       var vesselModule = vessel.FindVesselModuleImplementing<NovaVesselModule>();
       if (vesselModule != null)
@@ -72,13 +70,12 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     }
   }
 
-  // Per-panel deploy. Stock ModuleDeployablePart walks part.symmetryCounterparts
-  // here; Nova does not — each panel's Extend/Retract affects only the
-  // panel it was called on, so the PAW and the PWR UI both produce
-  // single-panel actions. Deploy a four-way symmetry group by clicking
-  // each panel (or the SOLAR subgroup bulk control in the UI).
-  [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
-    unfocusedRange = 4f, guiName = "Extend Solar Panel")]
+  // Per-panel deploy. Called from NovaPartTopic on `setSolarDeployed`;
+  // not exposed in the stock PAW (Nova owns its player-facing UI). Stock
+  // ModuleDeployablePart walks part.symmetryCounterparts here; Nova
+  // does not — each panel's Extend/Retract affects only the panel it
+  // was called on, so the PWR UI produces single-panel actions. Deploy
+  // a four-way symmetry group via the SOLAR subgroup bulk control.
   public void Extend() {
     if (animating || solarPanel.IsDeployed) return;
     if (anim == null) {
@@ -100,11 +97,8 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     anim[animationName].weight = 1f;
     anim.Play(animationName);
     animating = true;
-    UpdateEvents();
   }
 
-  [KSPEvent(guiActive = true, guiActiveEditor = true, guiActiveUnfocused = true,
-    unfocusedRange = 4f, guiName = "Retract Solar Panel")]
   public void Retract() {
     if (animating || !solarPanel.IsDeployed) return;
     if (!retractable && !HighLogic.LoadedSceneIsEditor) return;
@@ -120,7 +114,6 @@ public class NovaDeployableSolarModule : NovaSolarModule {
     anim[animationName].weight = 1f;
     anim.Play(animationName);
     animating = true;
-    UpdateEvents();
   }
 
   public void FixedUpdate() {
@@ -143,18 +136,11 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   }
 
   private void OnDeployStateChanged() {
-    UpdateEvents();
     if (vessel != null) {
       var vesselModule = vessel.FindVesselModuleImplementing<NovaVesselModule>();
       if (vesselModule != null)
         vesselModule.InvalidateSolarData();
     }
-  }
-
-  private void UpdateEvents() {
-    Events["Extend"].active = !solarPanel.IsDeployed && !animating;
-    Events["Retract"].active = solarPanel.IsDeployed && !animating
-      && (retractable || HighLogic.LoadedSceneIsEditor);
   }
 
   private void SetAnimationPosition(float time) {
