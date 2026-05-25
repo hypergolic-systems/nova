@@ -21,6 +21,14 @@ public class Radiator : VirtualComponent {
   public bool   IsDeployable;
   public bool   IsDeployed = true;
 
+  // True iff Load() consumed a RadiatorState from proto. The KSP-side
+  // wrapper uses this to decide whether to drive the animation from
+  // the loaded IsDeployed (true: snap pose to match save) or fall back
+  // to the fresh-launch default (false: editor → extended, flight →
+  // retracted, matching the stock convention the prior isExtended
+  // KSPField default carried).
+  public bool LoadedFromSave;
+
   internal Device device;
 
   public double MaxCoolingW => Math.Max(VacuumCoolingW, AtmCoolingW);
@@ -76,5 +84,6 @@ public class Radiator : VirtualComponent {
   public override void Load(PartState state) {
     if (state.Radiator == null) return;
     IsDeployed = state.Radiator.IsDeployed;
+    LoadedFromSave = true;
   }
 }

@@ -22,9 +22,6 @@ public class NovaRadiatorModule : NovaPartModule {
   [KSPField]
   public bool retractable = true;
 
-  [KSPField(isPersistant = true)]
-  public bool isExtended;
-
   private Animation anim;
   private bool animating;
   private Radiator radiator;
@@ -51,8 +48,8 @@ public class NovaRadiatorModule : NovaPartModule {
     // clip — e.g. ReStock-replaced meshes whose anim was renamed.
     // ?[0] threw on the empty case, aborting OnStart before
     // IsDeployed was wired; FirstOrDefault degrades to "no animation,
-    // deploy state still tracks isExtended" and the null-guards
-    // downstream already cover that path.
+    // deploy state still tracks radiator.IsDeployed" and the null-guards
+    // downstream already cover anim==null.
     anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
 
     // ClampForever so Unity holds the end pose after the clip — see
@@ -62,13 +59,18 @@ public class NovaRadiatorModule : NovaPartModule {
       anim[animationName].wrapMode = WrapMode.ClampForever;
     }
 
-    if (state == StartState.Editor || isExtended) {
-      SetAnimationPosition(1f);
-      radiator.IsDeployed = true;
-    } else {
-      SetAnimationPosition(0f);
-      radiator.IsDeployed = false;
-    }
+    // Three OnStart cases — same pattern as NovaDeployableSolarModule:
+    //   1. Loaded from save (LoadedFromSave) — use proto value already
+    //      in radiator.IsDeployed.
+    //   2. Editor scene — rads render extended (matches the prior
+    //      `state == StartState.Editor` shortcut, no surprise in the VAB).
+    //   3. Fresh launch — start retracted (stock convention; the prior
+    //      `[KSPField(isPersistant)] isExtended` defaulted to false).
+    bool deployed = radiator.LoadedFromSave
+        ? radiator.IsDeployed
+        : state == StartState.Editor;
+    radiator.IsDeployed = deployed;
+    SetAnimationPosition(deployed ? 1f : 0f);
 
     if (state != StartState.Editor) {
       var vesselModule = vessel.FindVesselModuleImplementing<NovaVesselModule>();
@@ -81,11 +83,10 @@ public class NovaRadiatorModule : NovaPartModule {
   // `setRadiatorDeployed` op — never exposed in the stock PAW. Player-
   // facing deploy lives in the Nova UI (ThermalView).
   public void Extend() {
-    if (!IsDeployable) return;
-    if (animating || isExtended) return;
+    if (!IsDeployable || radiator == null) return;
+    if (animating || radiator.IsDeployed) return;
     if (anim == null) {
-      isExtended = true;
-      if (radiator != null) radiator.IsDeployed = true;
+      radiator.IsDeployed = true;
       OnDeployStateChanged();
       return;
     }
@@ -99,12 +100,11 @@ public class NovaRadiatorModule : NovaPartModule {
   }
 
   public void Retract() {
-    if (!IsDeployable) return;
-    if (animating || !isExtended) return;
+    if (!IsDeployable || radiator == null) return;
+    if (animating || !radiator.IsDeployed) return;
     if (!retractable && !HighLogic.LoadedSceneIsEditor) return;
     if (anim == null) {
-      isExtended = false;
-      if (radiator != null) radiator.IsDeployed = false;
+      radiator.IsDeployed = false;
       OnDeployStateChanged();
       return;
     }
@@ -118,22 +118,20 @@ public class NovaRadiatorModule : NovaPartModule {
   }
 
   public void FixedUpdate() {
-    if (!animating || anim == null) return;
+    if (!animating || anim == null || radiator == null) return;
 
     var time = anim[animationName].normalizedTime;
     if (anim[animationName].speed > 0 && time >= 1f) {
       anim.Stop(animationName);
       SetAnimationPosition(1f);
-      isExtended = true;
       animating = false;
-      if (radiator != null) radiator.IsDeployed = true;
+      radiator.IsDeployed = true;
       OnDeployStateChanged();
     } else if (anim[animationName].speed < 0 && time <= 0f) {
       anim.Stop(animationName);
       SetAnimationPosition(0f);
-      isExtended = false;
       animating = false;
-      if (radiator != null) radiator.IsDeployed = false;
+      radiator.IsDeployed = false;
       OnDeployStateChanged();
     }
   }
