@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Nova.Core.Components;
 using Nova.Core.Resources;
 using Buffer = Nova.Core.Resources.Buffer;
 
@@ -77,6 +78,12 @@ public class StagingFlowSystem : BackgroundSystem {
     public double DryMass;
     public List<Buffer> Buffers = new();
 
+    // Components attached at this node. Populated by each component's
+    // OnBuildSystems via `node.Components.Add(this)` (TankVolume's
+    // AddBuffer is the analogue for buffer registration). Walked by
+    // Mass() to fold in per-component dynamic mass.
+    public List<VirtualComponent> Components = new();
+
     // Children-via-edges. Populated by StagingFlowSystem.AddEdge so
     // walkers can recurse the subtree (e.g. decoupler-driven jettison
     // marks every node below the decoupler).
@@ -106,11 +113,14 @@ public class StagingFlowSystem : BackgroundSystem {
           yield return n;
     }
 
-    // Total mass = dry + Σ buffer mass (Density × Contents-at-now).
+    // Total mass = dry + Σ buffer mass (Density × Contents-at-now) +
+    // Σ component dynamic mass (Sample-carrying chambers, etc.).
     public double Mass() {
       double m = DryMass;
       foreach (var b in Buffers)
         m += b.Contents * b.Resource.Density;
+      foreach (var c in Components)
+        m += c.Mass();
       return m;
     }
 

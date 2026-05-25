@@ -12,6 +12,7 @@ public static class ExperimentSpecs {
     return experimentId switch {
       AtmosphericProfileExperiment.ExperimentId => AtmosphericProfileExperiment.FileSizeBytes,
       LongTermStudyExperiment.ExperimentId      => LongTermStudyExperiment.FileSizeBytes,
+      MysteryGooExperiment.ExperimentId         => MysteryGooExperiment.FileSizeBytes,
       _                                          => 1_000,
     };
   }

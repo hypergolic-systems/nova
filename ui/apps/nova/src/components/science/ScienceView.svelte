@@ -11,11 +11,12 @@
   // prefix (.sci__).
 
   import {
+    useNovaParts,
     useNovaScienceParts,
     useNovaStorageParts,
   } from '../../telemetry/use-nova-parts.svelte';
   import type { NovaPartEntry } from '../../telemetry/use-nova-parts.svelte';
-  import { NovaScienceTopic } from '../../telemetry/nova-topics';
+  import { NovaPartTopic, NovaScienceTopic } from '../../telemetry/nova-topics';
   import type {
     ScienceFile,
     NovaStorage,
@@ -29,6 +30,7 @@
   import AtmProfileIndicator from './AtmProfileIndicator.svelte';
   import AtmTempPlot from './AtmTempPlot.svelte';
   import LtsOrbitIndicator from './LtsOrbitIndicator.svelte';
+  import MysteryGooChamber from './MysteryGooChamber.svelte';
   import { fmtBytes, fmtDuration } from '../../util/units';
   import { experimentLabel } from '../../util/science-labels';
 
@@ -41,15 +43,32 @@
 
   const allScience = useNovaScienceParts(() => vesselId);
   const allStorage = useNovaStorageParts(() => vesselId);
+  // NovaParts gives us the goo-chamber state via the 'G' frame on each
+  // part. Thermometer instruments come through NovaScience; goo chambers
+  // come through NovaPart. Both render under the same INSTRUMENTS tree.
+  const allParts = useNovaParts(() => vesselId);
   // Iterate every part's NovaScience/NovaStorage frame, drop parts that
   // emit nothing of interest. The per-part topic returns empty
   // instrument / file lists for non-science / non-storage parts.
   const instruments = $derived(
     allScience.current.filter((p) => (p.state?.instruments.length ?? 0) > 0),
   );
+  const gooParts = $derived(
+    allParts.current.filter((p) => (p.state?.goo.length ?? 0) > 0),
+  );
+  // Total goo chambers across all parts (one part = one chamber today,
+  // but the wire is shaped to support multi-chamber parts already).
+  const gooChamberCount = $derived(
+    gooParts.reduce((n, p) => n + (p.state?.goo.length ?? 0), 0),
+  );
+  const instrumentSummaryTotal = $derived(instruments.length + gooChamberCount);
   const storages = $derived(
     allStorage.current.filter((p) => (p.state?.capacityBytes ?? 0) > 0),
   );
+
+  function setGooCoverOpen(partId: string, open: boolean): void {
+    ksp.send(NovaPartTopic(partId), 'setGooCoverOpen', open);
+  }
 
   const ksp = getKsp();
 
@@ -271,8 +290,8 @@
       <span class="sci__chev" aria-hidden="true">{instrOpen ? '▾' : '▸'}</span>
       <span class="sci__node-title">INSTRUMENTS</span>
       <span class="sci__node-summary">
-        {#if instruments.length > 0}
-          <span class="sci__node-files">{instruments.length}</span>
+        {#if instrumentSummaryTotal > 0}
+          <span class="sci__node-files">{instrumentSummaryTotal}</span>
         {:else}
           <span class="sci__node-empty">—</span>
         {/if}
@@ -280,7 +299,7 @@
     </button>
 
     {#if instrOpen}
-      {#if instruments.length === 0}
+      {#if instruments.length === 0 && gooParts.length === 0}
         <p class="sci__empty">No science instruments on this vessel.</p>
       {:else}
         <ul class="sci__instr-rows">
@@ -397,6 +416,19 @@
                 </ul>
               {/if}
               </li>
+            {/each}
+          {/each}
+          <!-- Mystery Goo chambers: each renders as a sibling instrument
+               row under the same INSTRUMENTS hierarchy. Sourced from
+               NovaPart's 'G' frame, not NovaScience. -->
+          {#each gooParts as p (p.struct.id)}
+            {#each p.state?.goo ?? [] as goo, gooIdx (gooIdx)}
+              <MysteryGooChamber
+                partId={p.struct.id}
+                title={p.struct.title}
+                {goo}
+                onToggle={(open) => setGooCoverOpen(p.struct.id, open)}
+              />
             {/each}
           {/each}
         </ul>

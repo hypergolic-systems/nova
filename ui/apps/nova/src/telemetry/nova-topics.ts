@@ -137,6 +137,35 @@ export type NovaAntennaFrame = [
   isRetractable: 0 | 1,
 ];
 
+// Per-sample tuple inside a Mystery Goo chamber's wire frame.
+//   condition  — 0=Pristine, 1=Exposed, 2=Invalidated. Mirrors
+//                Nova.Core.Samples.SampleCondition.
+//   exposedSubjectId — SubjectKey of the ScienceFile produced by a
+//                clean exposure; empty for Pristine and Invalidated.
+//   massKg     — per-sample mass (kg); the chamber's total mass
+//                contribution is the sum across this list.
+export type NovaGooSampleFrame = [
+  typeId: string,
+  condition: 0 | 1 | 2,
+  exposedAtUt: number,
+  exposedSubjectId: string,
+  massKg: number,
+];
+
+// Mystery Goo chamber wire frame. `exposingIndex` is -1 when no sample
+// is currently being exposed (cover closed, or open but no Pristine
+// sample to load). `exposureProgress` and `remainingSec` are pre-
+// computed C#-side so the UI never reconstructs from a start-UT.
+export type NovaGooFrame = [
+  'G',
+  coverOpen: 0 | 1,
+  capacity: number,
+  exposingIndex: number,
+  exposureProgress: number,        // 0..1
+  remainingSec: number,
+  samples: NovaGooSampleFrame[],
+];
+
 // Per-decoupler state. `fullSeparation` is the editor-time toggle —
 // when on, the decoupler releases every attached neighbour at once
 // (stock "separator" semantics). `canFullSeparate` is the capability
@@ -335,7 +364,8 @@ export type NovaComponentFrame =
   | NovaDecouplerFrame
   | NovaEngineFrame
   | NovaNuclearFrame
-  | NovaIonFrame;
+  | NovaIonFrame
+  | NovaGooFrame;
 
 export type NovaPartFrame = [
   partId: string,
@@ -802,6 +832,58 @@ export interface AntennaState {
   isRetractable: boolean;
 }
 
+// One sample inside a Mystery Goo chamber. State is metadata-only —
+// Invalidated samples still take up a slot and contribute mass; the
+// UI renders all three conditions distinctly per
+// `feedback_show_hardware_always`.
+export enum SampleCondition {
+  Pristine    = 0,
+  Exposed     = 1,
+  Invalidated = 2,
+}
+
+export interface GooSample {
+  /** SampleRegistry id (e.g. "mystery-goo-prime"). */
+  typeId: string;
+  /** Lifecycle state of this sample. */
+  condition: SampleCondition;
+  /** UT at which the sample's state flipped from Pristine to Exposed.
+   *  0 for Pristine; 0 for Invalidated (invalidations don't carry a
+   *  meaningful timestamp — the cycling action is what matters). */
+  exposedAtUt: number;
+  /** SubjectKey string of the ScienceFile produced by exposure; empty
+   *  until the sample reaches Exposed (Pristine / Invalidated → ""). */
+  exposedSubjectId: string;
+  /** Per-sample mass (kg). The chamber's total mass contribution is
+   *  the sum across this list, computed C#-side via the `Mass()`
+   *  hook — Node.Mass() already folds it into the part total. */
+  massKg: number;
+}
+
+export interface GooState {
+  /** True iff the chamber cover is open. While open, the next Pristine
+   *  sample (`exposingIndex >= 0`) is being exposed; closing before
+   *  `remainingSec` elapses invalidates that sample. */
+  coverOpen: boolean;
+  /** Maximum sample slots the chamber can hold (cfg-declared). The UI
+   *  may render empty slot placeholders when `samples.length < capacity`
+   *  — but v1 always ships with `samples.length == capacity` since
+   *  there's no eject/transfer yet. */
+  capacity: number;
+  /** Index into `samples` of the sample currently being exposed; -1
+   *  when not exposing (cover closed, or open but no Pristine sample
+   *  to load). */
+  exposingIndex: number;
+  /** Live exposure progress, 0..1. 0 when not exposing. */
+  exposureProgress: number;
+  /** Seconds remaining until the in-progress exposure would complete
+   *  cleanly. 0 when not exposing. */
+  remainingSec: number;
+  /** Per-slot sample list. Positional — `samples[i]` is the sample at
+   *  chamber slot `i`. */
+  samples: GooSample[];
+}
+
 export interface DecouplerState {
   /** Player-set toggle: when true, firing releases every attached
    *  neighbour (children + parent) at once instead of just the
@@ -925,6 +1007,7 @@ export interface NovaPart {
   engine: EngineFlightState[];
   nuclear: NuclearReactorState[];
   ion: IonEngineState[];
+  goo: GooState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -1123,6 +1206,18 @@ export interface NovaPartOps {
    * engines (call `setIonResetTrip` first to acknowledge the fault).
    */
   setEngineActive(active: boolean): void;
+
+  /**
+   * Flight-only. Toggle the Mystery Goo chamber cover. Opening the
+   * cover begins exposure of the next Pristine sample (no-op if the
+   * chamber holds no Pristine samples); closing the cover before the
+   * sample's exposure-duration elapses **invalidates** the in-progress
+   * sample — its mass stays in the chamber but it produces no
+   * ScienceFile. Clean expiry produces a ScienceFile in the nearest
+   * DataStorage and flips the sample to Exposed automatically via
+   * VirtualVessel.Tick (no UI signal required).
+   */
+  setGooCoverOpen(open: boolean): void;
 }
 
 export const NovaPartTopic = (partId: string): Topic<NovaPartFrame, NovaPartOps> =>
@@ -1749,23 +1844,27 @@ export function decodeOrbit(f: NovaOrbitFrame): NovaOrbit {
 
 // Per-vessel — comms summary. `bottleneckBps` is the rate-limiting
 // edge along the chosen vessel→KSC max-rate path; 0 when no path
-// exists. `directSnr` / `directRateBps` are the direct vessel→KSC
-// edge's SNR (linear) and theoretical pre-bottleneck rate; 0 when
-// no direct edge exists (vessel reachable only via relay).
-// `directMaxRateBps` is the antenna-pair hardware ceiling along
-// vessel→KSC; the UI uses `directRateBps / directMaxRateBps` as the
-// "fraction of ideal" for the signal-bar gauge so bars saturate
-// independent of the absolute units this game runs at. The XMIT
-// block (`tx*`) is populated only while a Packet is in flight; the
-// UI hides it entirely when `txActive` is false.
+// exists. `link*` fields describe the vessel's *first hop* — the
+// link from this vessel to its immediate peer (KSC for direct paths,
+// the relay vessel for relayed paths). For relayed paths these are
+// the link the vessel itself manages, so signal bars and dB readouts
+// reflect the player-visible link quality. `linkMaxRateBps` is the
+// antenna-pair hardware ceiling for the first hop; the UI uses
+// `linkRateBps / linkMaxRateBps` as the "fraction of ideal" for the
+// signal-bar gauge so bars saturate independent of the absolute
+// units this game runs at. `linkSnrFloor` is the linear SNR threshold
+// below which the first hop drops to zero rate (bucket-1 cutoff for
+// the chosen antenna pair). The XMIT block (`tx*`) is populated only
+// while a Packet is in flight; the UI hides it entirely when
+// `txActive` is false.
 export type NovaCommsFrame = [
   vesselId: string,
   hasPathToKsc: 0 | 1,
   bottleneckBps: number,
-  directSnr: number,
-  directRateBps: number,
-  directMaxRateBps: number,
-  directSnrFloor: number,
+  linkSnr: number,
+  linkRateBps: number,
+  linkMaxRateBps: number,
+  linkSnrFloor: number,
   peerLabel: string,
   txActive: 0 | 1,
   txRateBps: number,
@@ -1777,10 +1876,10 @@ export interface NovaComms {
   vesselId: string;
   hasPathToKsc: boolean;
   bottleneckBps: number;
-  directSnr: number;
-  directRateBps: number;
-  directMaxRateBps: number;
-  directSnrFloor: number;
+  linkSnr: number;
+  linkRateBps: number;
+  linkMaxRateBps: number;
+  linkSnrFloor: number;
   peerLabel: string;
   txActive: boolean;
   txRateBps: number;
@@ -1796,10 +1895,10 @@ export function decodeComms(f: NovaCommsFrame): NovaComms {
     vesselId:         f[0],
     hasPathToKsc:     f[1] === 1,
     bottleneckBps:    f[2],
-    directSnr:        f[3],
-    directRateBps:    f[4],
-    directMaxRateBps: f[5],
-    directSnrFloor:   f[6],
+    linkSnr:          f[3],
+    linkRateBps:      f[4],
+    linkMaxRateBps:   f[5],
+    linkSnrFloor:     f[6],
     peerLabel:        f[7],
     txActive:         f[8] === 1,
     txRateBps:        f[9],
@@ -1978,6 +2077,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     engine: [],
     nuclear: [],
     ion: [],
+    goo: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -2137,6 +2237,22 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           wasteHeatW:        c[9],
           rejectionW:        c[10],
           ratedPowerW:       c[11],
+        });
+        break;
+      case 'G':
+        out.goo.push({
+          coverOpen:        c[1] === 1,
+          capacity:         c[2],
+          exposingIndex:    c[3],
+          exposureProgress: c[4],
+          remainingSec:     c[5],
+          samples: c[6].map(([typeId, condition, exposedAtUt, exposedSubjectId, massKg]) => ({
+            typeId,
+            condition: condition as SampleCondition,
+            exposedAtUt,
+            exposedSubjectId,
+            massKg,
+          })),
         });
         break;
     }

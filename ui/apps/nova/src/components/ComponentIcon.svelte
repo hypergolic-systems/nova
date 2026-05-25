@@ -25,6 +25,7 @@
     | 'crew'
     | 'dataStorage'
     | 'thermometer'
+    | 'mysteryGoo'
     | 'rtg'
     | 'radiator';
 
@@ -137,6 +138,16 @@
       <line x1="6" y1="1.4" x2="6" y2="8" stroke-width="1.3" />
       <line x1="7.5" y1="4.2" x2="8.6" y2="4.2" />
       <line x1="7.5" y1="6.4" x2="8.6" y2="6.4" />
+    </g>
+  {:else if kind === 'mysteryGoo'}
+    <!-- Goo canister: a stocky cylinder with a slit cover halfway up
+         and a single suspended droplet inside. Reads as "specimen jar"
+         at 12 px; the droplet keeps it semantically distinct from
+         the storage cylinder. -->
+    <g stroke="currentColor" fill="none" stroke-width="0.95" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.6" y="2" width="6.8" height="8.4" rx="1.1" />
+      <line x1="2.6" y1="5.4" x2="9.4" y2="5.4" />
+      <circle cx="6" cy="7.8" r="1.35" fill="currentColor" stroke="none" />
     </g>
   {:else if kind === 'radiator'}
     <!-- Heat radiator: a vertical spine with three pairs of fins.

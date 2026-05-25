@@ -66,6 +66,14 @@ public class VirtualComponent {
 
   public virtual void Update(double nowUT) {}
 
+  // Per-component dynamic mass contribution (kg). Default 0; components
+  // that carry mutable payload (samples, EVA-collected items, etc.)
+  // override. Summed into Node.Mass() alongside DryMass and buffer mass.
+  // Static structural mass stays in the prefab and is set once into
+  // Node.DryMass at vessel build — this hook is for state that changes
+  // post-build without rebuilding the topology.
+  public virtual double Mass() => 0;
+
   public static bool Is(Type type) {
     return type.BaseType != null && (type.BaseType == typeof(VirtualComponent) || Is(type.BaseType));
   }

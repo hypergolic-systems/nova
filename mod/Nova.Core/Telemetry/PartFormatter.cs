@@ -5,9 +5,11 @@ using Nova.Core.Components.Communications;
 using Nova.Core.Components.Control;
 using Nova.Core.Components.Electrical;
 using Nova.Core.Components.Propulsion;
+using Nova.Core.Components.Science;
 using Nova.Core.Components.Structural;
 using Nova.Core.Components.Thermal;
 using Nova.Core.Resources;
+using Nova.Core.Samples;
 
 namespace Nova.Core.Telemetry;
 
@@ -48,6 +50,10 @@ namespace Nova.Core.Telemetry;
 //   "X" Radiator          — currentCoolingW, maxCoolingW, isDeployed, isDeployable
 //   "A" Antenna           — maxRateBps, refDistanceM, gain, txPowerW,
 //                           isDeployed, isDeployable, isRetractable
+//   "G" MysteryGoo        — coverOpen, capacity, exposingIndex,
+//                           exposureProgress(0..1), remainingSec,
+//                           [[typeId, condition(0..2), exposedAtUt,
+//                             exposedSubjectId, massKg], ...]
 //   "D" Decoupler         — fullSeparation, canFullSeparate, ejectionForce
 //   "E" Engine (chemical) — active, status(0..4), flameout, throttle,
 //                           currentThrustKn, maxThrustKn, ispS
@@ -349,6 +355,42 @@ public static class PartFormatter {
         WriteBit(sb, decoupler.FullSeparation, ref f);
         WriteBit(sb, decoupler.CanFullSeparate, ref f);
         WriteNum(sb, decoupler.EjectionForce, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case MysteryGoo goo: {
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "G", ref f);
+        WriteBit(sb, goo.CoverOpen, ref f);
+        WriteNum(sb, goo.Capacity, ref f);
+        WriteNum(sb, goo.ExposingIndex, ref f);
+        WriteNum(sb, goo.LiveExposureProgress, ref f);
+        WriteNum(sb, goo.LiveExposureRemainingSec, ref f);
+        // Per-sample tuples: [typeId, condition, exposedAtUt,
+        // exposedSubjectId, massKg]. Invalidated and Exposed samples
+        // both render — `feedback_show_hardware_always`.
+        JsonWriter.Sep(sb, ref f);
+        JsonWriter.Begin(sb, '[');
+        bool fs = true;
+        foreach (var sample in goo.Samples) {
+          JsonWriter.Sep(sb, ref fs);
+          JsonWriter.Begin(sb, '[');
+          bool fsi = true;
+          JsonWriter.Sep(sb, ref fsi);
+          JsonWriter.WriteString(sb, sample.Type?.Id ?? "");
+          JsonWriter.Sep(sb, ref fsi);
+          JsonWriter.WriteDouble(sb, (int)sample.Condition);
+          JsonWriter.Sep(sb, ref fsi);
+          JsonWriter.WriteDouble(sb, sample.ExposedAtUt);
+          JsonWriter.Sep(sb, ref fsi);
+          JsonWriter.WriteString(sb, sample.ExposedSubjectId ?? "");
+          JsonWriter.Sep(sb, ref fsi);
+          JsonWriter.WriteDouble(sb, sample.Type?.MassKg ?? 0);
+          JsonWriter.End(sb, ']');
+        }
+        JsonWriter.End(sb, ']');
         JsonWriter.End(sb, ']');
         return true;
       }

@@ -176,6 +176,16 @@ namespace Nova.Telemetry;
 //                                Leaves `Active` alone — player must
 //                                re-stage or fire setEngineActive(true)
 //                                to relight the engine.
+//   "setGooCoverOpen" [bool]    — toggle the mystery-goo chamber cover.
+//                                Flight-only. Opening starts exposure
+//                                of the next Pristine sample (no-op if
+//                                none); closing before the exposure
+//                                timer elapses invalidates the in-
+//                                progress sample (mass-neutral — the
+//                                invalidated sample stays in the
+//                                chamber). The completion ScienceFile
+//                                lands in the nearest DataStorage on
+//                                clean expiry via VirtualVessel.Tick.
 //   "setEngineActive" [bool]    — toggle a chemical or ion engine's
 //                                Active flag. Lets the player shut a
 //                                staged engine down (and re-light it)
@@ -304,6 +314,24 @@ public sealed class NovaPartTopic : Topic {
         if (module == null) return;
         if (deployed) module.Extend();
         else module.Retract();
+        return;
+      }
+      case "setGooCoverOpen": {
+        if (args == null || args.Count < 1 || !(args[0] is bool open)) {
+          Debug.LogWarning(LogPrefix + Name + " setGooCoverOpen: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.FLIGHT) {
+          Debug.Log(LogPrefix + Name + " setGooCoverOpen rejected outside flight");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaMysteryGooModule>();
+        if (module == null) return;
+        if (open) module.OpenCover();
+        else module.CloseCover();
+        var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
+        vesselModule?.Virtual?.Invalidate();
+        MarkDirty();
         return;
       }
       case "setReactorActive": {

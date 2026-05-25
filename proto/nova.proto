@@ -192,6 +192,7 @@ message PartState {
   IonEngineState      ion_engine      = 17;
   SolarPanelState     solar_panel     = 18;
   AntennaState        antenna         = 19;
+  MysteryGooState     mystery_goo     = 20;
 }
 
 message TankVolumeState {
@@ -409,6 +410,32 @@ message ArchivedScienceRecord {
   // this directly — never resolve via FlightGlobals at telemetry-emit
   // time.
   string      source_vessel_name         = 4;
+}
+
+// One discrete sample held by a sample-carrying component (e.g. a
+// Mystery Goo chamber). State is metadata-only — invalidating an
+// exposure flips the state flag but does not remove the sample,
+// since it's still physically present and contributing mass.
+//   0 = Pristine    — has never been exposed
+//   1 = Exposed     — exposure ran to completion; produced ScienceFile
+//                     linked via exposed_subject_id
+//   2 = Invalidated — exposure was cut short (chamber cycled mid-
+//                     exposure); no ScienceFile produced
+message SampleState {
+  string type_id            = 1;   // SampleRegistry key
+  int32  state              = 2;   // 0=Pristine 1=Exposed 2=Invalidated
+  double exposed_at_ut      = 3;   // 0 unless State != Pristine
+  string exposed_subject_id = 4;   // SubjectKey of produced ScienceFile
+}
+
+// Mystery Goo chamber state. Samples are positional — the cover-open
+// op exposes the first Pristine sample in this list (cursor advances
+// naturally as exposures complete or invalidate).
+message MysteryGooState {
+  repeated SampleState samples           = 1;
+  int32                exposing_index    = 2;   // -1 when not exposing
+  double               exposure_start_ut = 3;
+  bool                 cover_open        = 4;
 }
 
 // Thermometer state. Body / situation / body-year are NOT here —

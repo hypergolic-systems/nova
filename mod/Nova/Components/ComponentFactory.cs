@@ -42,6 +42,7 @@ public static class ComponentFactory {
     ["NovaAntennaModule"] = "Antenna",
     ["NovaRtgModule"] = "Rtg",
     ["NovaRadiatorModule"] = "Radiator",
+    ["NovaMysteryGooModule"] = "MysteryGoo",
   };
 
   public static void RegisterModuleMapping(string moduleName, string typeName) {
@@ -85,6 +86,7 @@ public static class ComponentFactory {
       "Antenna" => CreateAntenna(moduleNode),
       "Rtg" => CreateRtg(moduleNode),
       "Radiator" => CreateRadiator(moduleNode),
+      "MysteryGoo" => CreateMysteryGoo(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
@@ -391,6 +393,14 @@ public static class ComponentFactory {
       // IsDeployable / IsDeployed are set by NovaRadiatorModule.OnStart
       // — derived from whether `animationName` is configured (the
       // single source of truth for deploy mechanics).
+    };
+  }
+
+  public static MysteryGoo CreateMysteryGoo(ConfigNode node) {
+    return new MysteryGoo {
+      Capacity              = int.Parse(node.GetValue("capacity")),
+      AllowedSampleTypeIds  = node.GetValues("allowedSampleType").ToList(),
+      InitialSampleTypeIds  = node.GetValues("initialSample").ToList(),
     };
   }
 }
