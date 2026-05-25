@@ -51,21 +51,19 @@ public class NovaAntennaModule : NovaPartModule {
         bool.TryParse(cfg.GetValue("retractable"), out retractable);
     }
 
-    // Resolve the named animation. Two ways this can land at no-anim:
-    // (a) cfg omitted animationName — fixed antenna, no clip needed;
-    // (b) cfg names a clip the model doesn't carry (mesh-replacing
-    //     mod renamed it, common with ReStock-overhauled parts).
-    // Both fall through to "fixed-behaviour antenna stays deployed".
+    // Resolve the deploy animation. cfg's animationName is the preference;
+    // ResolveAnimation falls back to "first model Animation, first clip"
+    // so ReStock-overhauled parts with renamed clips still animate.
+    // Empty animationName in cfg → fixed antenna, no fallback runs.
     if (!string.IsNullOrEmpty(animationName)) {
-      anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
+      (anim, animationName) = ResolveAnimation(animationName);
       if (anim != null) {
         // Mirror stock startFSM: ClampForever holds the end pose when
         // the clip finishes so the bell doesn't snap back to frame 0.
         anim[animationName].wrapMode = WrapMode.ClampForever;
       } else {
         Debug.LogWarning($"[Nova/Antenna] {part.partInfo?.name}: "
-            + $"animationName='{animationName}' not found on model — "
-            + "treating as fixed antenna");
+            + $"no model animations found — treating as fixed antenna");
         animationName = "";
       }
     }

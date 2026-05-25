@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Nova.Core.Components;
 using Nova.Telemetry;
+using UnityEngine;
 
 namespace Nova.Components;
 
@@ -48,6 +49,38 @@ public class NovaPartModule : PartModule {
   internal ConfigNode GetPrefabModuleConfig() {
     return part.partInfo.partConfig.GetNodes("MODULE")
       .FirstOrDefault(n => n.GetValue("name") == GetType().Name);
+  }
+
+  /// <summary>
+  /// Resolve a deploy animation on the part. Prefers the cfg-named
+  /// clip; falls back to the first Animation component on the model
+  /// using its first clip's name. Returns `(null, "")` if the model
+  /// carries no animations at all (fixed/non-deployable part — caller
+  /// should treat as deploy-state-only with no visual transition).
+  ///
+  /// The fallback is what keeps mesh-replacing mods (ReStock,
+  /// RealAntennas, etc.) working without per-mod cfg edits: those
+  /// rewrite the model and rename the clip, so a Nova cfg that hardcodes
+  /// the stock name (e.g. "solarpanels4" → ReStock's "1x6SolarPanels")
+  /// would miss with FindModelAnimators(name) alone. Without the
+  /// fallback, the Extend()/Retract() helpers hit their `anim == null`
+  /// branch and the panel flips IsDeployed instantly with no visual
+  /// transition — which was the "produces EC but never animates"
+  /// regression. Stock ModuleDeployablePart.FindAnimations does the
+  /// same first-Animation fallback for the same reason.
+  /// </summary>
+  protected (Animation anim, string clipName) ResolveAnimation(string preferredName) {
+    if (!string.IsNullOrEmpty(preferredName)) {
+      var named = part.FindModelAnimator(preferredName);
+      if (named != null) return (named, preferredName);
+    }
+    var anims = part.FindModelAnimators();
+    foreach (var a in anims) {
+      foreach (AnimationState st in a) {
+        if (st?.clip != null) return (a, st.clip.name);
+      }
+    }
+    return (null, "");
   }
 
   private void OnStartEditor() {

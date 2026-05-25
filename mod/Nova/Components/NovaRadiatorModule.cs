@@ -44,13 +44,10 @@ public class NovaRadiatorModule : NovaPartModule {
       return;
     }
 
-    // Empty (not null) when no Animation on the model has the named
-    // clip — e.g. ReStock-replaced meshes whose anim was renamed.
-    // ?[0] threw on the empty case, aborting OnStart before
-    // IsDeployed was wired; FirstOrDefault degrades to "no animation,
-    // deploy state still tracks radiator.IsDeployed" and the null-guards
-    // downstream already cover anim==null.
-    anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
+    // ResolveAnimation falls back to "first model Animation, first clip"
+    // when the cfg-named clip isn't on the model — see the same call
+    // in NovaDeployableSolarModule for the ReStock-renaming context.
+    (anim, animationName) = ResolveAnimation(animationName);
 
     // ClampForever so Unity holds the end pose after the clip — see
     // NovaDeployableSolarModule for the rationale (Once leaves

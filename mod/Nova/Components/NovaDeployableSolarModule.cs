@@ -17,19 +17,16 @@ public class NovaDeployableSolarModule : NovaSolarModule {
   public override void OnStart(StartState state) {
     base.OnStart(state);
 
-    // FindModelAnimators returns an *empty* array (not null) when no
-    // Animation on the model carries the named clip — common when a
-    // mesh-replacing mod like ReStock swaps the model and the cfg's
-    // animationName no longer matches. The original `?[0]` only
-    // short-circuited on null, so an empty array threw and OnStart
-    // aborted before `solarPanel.IsDeployed` was written, leaving the
-    // component at its default `true`: panel produces power and the
-    // UI hides the EXT button (the symptoms reported on ReStock'd
-    // OX-10C). FirstOrDefault tolerates the empty case — the panel
-    // simply has no animation to drive, deploy state still tracks
-    // solarPanel.IsDeployed, and downstream null-guards already cover
-    // anim==null.
-    anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
+    // ResolveAnimation falls back to "first model Animation, first clip"
+    // when the cfg-named clip isn't on the model — ReStock and other
+    // mesh-replacing mods rename clips, so a Nova cfg hardcoding the
+    // stock name (e.g. "solarpanels4" → ReStock's "1x6SolarPanels")
+    // would otherwise miss. The cfg name is now a preference, not a
+    // hard requirement. Returns (null, "") if the model carries no
+    // animations at all; downstream null-guards cover anim==null
+    // (panel still tracks IsDeployed for power generation, just no
+    // visual transition).
+    (anim, animationName) = ResolveAnimation(animationName);
 
     // Mirror stock ModuleDeployablePart.startFSM: pin the wrap mode
     // to ClampForever so when the deploy/retract clip finishes Unity
