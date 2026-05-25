@@ -78,7 +78,7 @@ namespace Nova.Telemetry;
 //          wasteHeatW, exportW, rejectionW,
 //          currentTempC, maxOperatingTempC, dTdtCps]                               Rtg
 //   ["X", currentCoolingW, maxCoolingW, isDeployed, isDeployable,
-//          currentEcW, maxEcW]                                                     Radiator
+//          isRetractable, currentEcW, maxEcW]                                      Radiator
 //   ["D", fullSeparation, canFullSeparate, ejectionForce]                           Decoupler
 //
 // Solar's `maxEcRate` stays orientation-and-sunlit gated (live "what
@@ -106,8 +106,12 @@ namespace Nova.Telemetry;
 //                                wants to deploy.
 //   "setRadiatorDeployed" [bool] — toggle a deployable radiator's
 //                                IsDeployed flag. No-op on fixed
-//                                panels (IsDeployable=false). State
-//                                round-trips on save via RadiatorState.
+//                                panels (IsDeployable=false), and no-op
+//                                on retract requests against one-shot
+//                                deployables (IsRetractable=false) in
+//                                flight (editor still allows it for
+//                                build-time staging). State round-trips
+//                                on save via RadiatorState.
 //   "setAntennaDeployed" [bool] — toggle a deployable antenna's
 //                                IsDeployed flag. No-op on fixed
 //                                antennas (cfg without animationName,

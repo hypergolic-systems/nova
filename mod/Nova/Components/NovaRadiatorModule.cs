@@ -37,6 +37,7 @@ public class NovaRadiatorModule : NovaPartModule {
     radiator = Components.OfType<Radiator>().FirstOrDefault();
     if (radiator == null) return;
     radiator.IsDeployable = IsDeployable;
+    radiator.IsRetractable = retractable;
 
     // Fixed panel: no animation, always deployed.
     if (!IsDeployable) {

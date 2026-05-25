@@ -131,17 +131,26 @@
 
   function radiatorOf(p: NovaPartHandle): {
     current: number; max: number; deployed: boolean; deployable: boolean;
+    retractable: boolean;
   } {
     let current = 0, max = 0, deployed = true, deployable = false;
+    // Retractable only matters once any sub-radiator is deployable; if
+    // any deployable sub-radiator on the part is non-retractable the
+    // part as a whole exposes only an EXT affordance (mirrors the
+    // per-panel solar logic in PowerView).
+    let retractable = true;
     if (p.state) {
       for (const r of p.state.radiator) {
         current   += r.currentCoolingW;
         max       += r.maxCoolingW;
         if (!r.isDeployed) deployed = false;
-        if (r.isDeployable) deployable = true;
+        if (r.isDeployable) {
+          deployable = true;
+          if (!r.isRetractable) retractable = false;
+        }
       }
     }
-    return { current, max, deployed, deployable };
+    return { current, max, deployed, deployable, retractable };
   }
 
   function setRadiatorDeployed(partId: string, deployed: boolean): void {
@@ -340,9 +349,12 @@
 {/snippet}
 
 <!-- Per-radiator deploy toggle. Fixed panels (deployable=false) have
-     no control. Deployable rads show EXT when retracted, RET when
-     deployed. Effect is immediate; no busy/pending state. -->
-{#snippet radiatorControl(p: NovaPartHandle, r: { deployed: boolean; deployable: boolean })}
+     no control. Deployable rads show EXT when retracted; RET only
+     when retractable. One-shot deployables (retractable=false) lock
+     open after EXT — the C# side rejects retract in flight anyway,
+     so the missing button mirrors the actual capability. Effect is
+     immediate; no busy/pending state. -->
+{#snippet radiatorControl(p: NovaPartHandle, r: { deployed: boolean; deployable: boolean; retractable: boolean })}
   {#if r.deployable}
     {#if !r.deployed}
       <button type="button" class="thr__deploy-btn thr__deploy-btn--ext"
@@ -351,7 +363,7 @@
               onclick={(e) => { e.stopPropagation(); setRadiatorDeployed(p.struct.id, true); }}>
         <span>EXT</span>
       </button>
-    {:else}
+    {:else if r.retractable}
       <button type="button" class="thr__deploy-btn thr__deploy-btn--ret"
               aria-label="Retract radiator"
               title="Retract radiator"

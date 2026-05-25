@@ -114,6 +114,7 @@ export type NovaRadiatorFrame = [
   maxCoolingW: number,
   isDeployed: 0 | 1,
   isDeployable: 0 | 1,
+  isRetractable: 0 | 1,
   currentEcW: number,
   maxEcW: number,
 ];
@@ -734,9 +735,14 @@ export interface RadiatorState {
   /** Deploy state. Folding rads round-trip the player's toggle;
    *  fixed panels are always deployed. */
   isDeployed: boolean;
-  /** True iff the radiator can be retracted/extended. Folding rads
-   *  expose a toggle; fixed panels don't. */
+  /** True iff the radiator can be deployed at all (has a deploy
+   *  animation). Folding rads true; fixed panels false. */
   isDeployable: boolean;
+  /** True iff a deployable radiator can be retracted after extension.
+   *  One-shot deployables leave this false — the UI offers an EXT
+   *  button while retracted and no control once deployed. Always
+   *  false on fixed panels (no deploy in the first place). */
+  isRetractable: boolean;
   /** Live EC draw, W. 0 for passive panels (no pumps); >0 for
    *  folding rads that run a working fluid loop. */
   currentEcW: number;
@@ -1111,7 +1117,7 @@ export type NovaInfoFuelCellFrame    = ['F', maxOutputW: number, lh2RateKgs: num
 export type NovaInfoSolarFrame       = ['S', chargeRateW: number, isTracking: 0 | 1, isDeployable: 0 | 1];
 export type NovaInfoRtgFrame         = ['R', referencePowerW: number, halfLifeDays: number, thermalOutputW: number, maxOpTempC: number, vacuumRejectionW: number, atmRejectionW: number];
 export type NovaInfoWheelFrame       = ['W', pitchTorqueKnm: number, yawTorqueKnm: number, rollTorqueKnm: number, electricRateW: number];
-export type NovaInfoRadiatorFrame    = ['X', vacuumCoolingW: number, atmCoolingW: number, ecPerWattCooling: number, isDeployable: 0 | 1];
+export type NovaInfoRadiatorFrame    = ['X', vacuumCoolingW: number, atmCoolingW: number, ecPerWattCooling: number, isDeployable: 0 | 1, isRetractable: 0 | 1];
 export type NovaInfoLightFrame       = ['L', drawW: number];
 export type NovaInfoCommandFrame     = ['C', idleDrawW: number, testLoadRateW: number];
 export type NovaInfoProbeFrame       = ['P', idleDrawW: number, testLoadRateW: number, sasLevel: number, commandCapBytes: number, commandDecayBps: number, commandReceiveBps: number, inputCostBps: number];
@@ -1298,6 +1304,9 @@ export interface RadiatorSpec {
   /** Pump cost: W per W of cooling. 0 for passive panels. */
   ecPerWattCooling: number;
   isDeployable: boolean;
+  /** Deployable rads only: true = toggleable (EXT/RET), false = one-
+   *  shot (EXT then locked open). Always false on fixed panels. */
+  isRetractable: boolean;
 }
 
 export interface LightSpec {
@@ -1517,6 +1526,7 @@ export function decodePartInfo(f: NovaPartInfoFrame): NovaPartInfo | null {
         out.radiator.push({
           vacuumCoolingW: c[1], atmCoolingW: c[2],
           ecPerWattCooling: c[3], isDeployable: c[4] === 1,
+          isRetractable: c[5] === 1,
         });
         break;
       case 'L':
@@ -2002,8 +2012,9 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           maxCoolingW:     c[2],
           isDeployed:      c[3] === 1,
           isDeployable:    c[4] === 1,
-          currentEcW:      c[5],
-          maxEcW:          c[6],
+          isRetractable:   c[5] === 1,
+          currentEcW:      c[6],
+          maxEcW:          c[7],
         });
         break;
       case 'D':

@@ -62,7 +62,7 @@ namespace Nova.Core.Telemetry;
 //   "W" ReactionWheel — pitchTorqueKnm, yawTorqueKnm, rollTorqueKnm,
 //                       electricRateW
 //   "X" Radiator      — vacuumCoolingW, atmCoolingW,
-//                       ecPerWattCooling, isDeployable
+//                       ecPerWattCooling, isDeployable, isRetractable
 //   "L" Light         — drawW
 //   "C" Command       — idleDrawW, testLoadRateW
 //   "P" Probe         — idleDrawW, testLoadRateW, sasLevel,
@@ -327,6 +327,7 @@ public static class PartInfoFormatter {
         WriteNum(sb, r.AtmCoolingW, ref f);
         WriteNum(sb, r.EcPerWattCooling, ref f);
         WriteBit(sb, r.IsDeployable, ref f);
+        WriteBit(sb, r.IsRetractable, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

@@ -332,6 +332,9 @@ public static class PartFormatter {
         WriteNum(sb, radiator.CurrentMaxCoolingW, ref f);
         WriteBit(sb, radiator.IsDeployed, ref f);
         WriteBit(sb, radiator.IsDeployable, ref f);
+        WriteBit(sb, radiator.IsRetractable, ref f);
+        WriteNum(sb, radiator.CurrentEcW, ref f);
+        WriteNum(sb, radiator.MaxEcW, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

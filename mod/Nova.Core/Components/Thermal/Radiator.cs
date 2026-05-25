@@ -20,6 +20,12 @@ public class Radiator : VirtualComponent {
   public double EcPerWattCooling;
   public bool   IsDeployable;
   public bool   IsDeployed = true;
+  // True iff a deployable radiator can be retracted after extension.
+  // One-shot deployables (cfg `retractable = false`) leave this false
+  // — the UI shows an EXT button while retracted and no control once
+  // deployed. Fixed (non-deployable) panels leave this false too, but
+  // the UI gates on IsDeployable first so the value is moot for them.
+  public bool   IsRetractable = true;
 
   // True iff Load() consumed a RadiatorState from proto. The KSP-side
   // wrapper uses this to decide whether to drive the animation from

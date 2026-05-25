@@ -40,8 +40,8 @@ public static class SimComponentFactory {
       case "NovaLightModule":           return CreateLight(moduleNode);
       case "NovaRcsModule":             return CreateRcs(moduleNode);
       case "NovaReactionWheelModule":   return CreateReactionWheel(moduleNode);
-      case "NovaSolarModule":           return CreateSolarPanel(moduleNode);
-      case "NovaDeployableSolarModule": return CreateSolarPanel(moduleNode);
+      case "NovaSolarModule":           return CreateSolarPanel(moduleNode, deployable: false);
+      case "NovaDeployableSolarModule": return CreateSolarPanel(moduleNode, deployable: true);
       case "NovaDockingModule":         return CreateDockingPort(moduleNode);
       case "NovaCrewModule":            return CreateCrew(moduleNode);
       case "NovaCommandModule":         return CreateCommand(moduleNode);
@@ -203,8 +203,15 @@ public static class SimComponentFactory {
     return wheel;
   }
 
-  public static SolarPanel CreateSolarPanel(ConfigNode node) {
-    return new SolarPanel { ChargeRate = D(node, "chargeRate") };
+  public static SolarPanel CreateSolarPanel(ConfigNode node, bool deployable) {
+    // NovaDeployableSolarModule's `retractable` defaults to true; fixed
+    // (NovaSolarModule) panels can't be retracted in the first place,
+    // so the bit only matters for deployables. Mirrors the OnStart
+    // assignment in NovaDeployableSolarModule.
+    return new SolarPanel {
+      ChargeRate     = D(node, "chargeRate"),
+      IsRetractable  = deployable && BOr(node, "retractable", true),
+    };
   }
 
   public static Light CreateLight(ConfigNode node) {
@@ -297,10 +304,24 @@ public static class SimComponentFactory {
   }
 
   public static Radiator CreateRadiator(ConfigNode node) {
+    // Mirrors NovaRadiatorModule's cfg semantics: animationName drives
+    // deployability (folding rads vs fixed panels), `retractable`
+    // (default true) gates whether the deploy is one-shot. Sim has no
+    // OnStart path; we materialise both flags here so Sim consumers
+    // see the same capability bits as the in-game adapter would set.
+    var animationName = node.GetValue("animationName") ?? "";
+    var deployable = !string.IsNullOrEmpty(animationName);
     return new Radiator {
       VacuumCoolingW   = D(node, "vacuumCoolingW"),
       AtmCoolingW      = D(node, "atmCoolingW"),
       EcPerWattCooling = D(node, "ecPerWattCooling"),
+      IsDeployable     = deployable,
+      IsRetractable    = deployable && BOr(node, "retractable", true),
     };
+  }
+
+  private static bool BOr(ConfigNode n, string key, bool fallback) {
+    var v = n.GetValue(key);
+    return v == null ? fallback : bool.Parse(v);
   }
 }

@@ -132,6 +132,10 @@ public static class SimOpDispatcher {
       foreach (var c in runner.Vessel.GetComponents(partId)) {
         if (!(c is Radiator radiator)) continue;
         if (!radiator.IsDeployable) continue;
+        // Mirror NovaRadiatorModule.Retract: one-shot deployables stay
+        // open once extended (Sim has no editor scene, so the cfg flag
+        // is enforced unconditionally).
+        if (!deployed && !radiator.IsRetractable) continue;
         if (radiator.IsDeployed == deployed) continue;
         radiator.IsDeployed = deployed;
         toggled = true;
