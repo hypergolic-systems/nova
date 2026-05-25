@@ -9,10 +9,12 @@ namespace Nova.Components;
 // from the cfg; this module is responsible for keeping the component's
 // `IsDeployed` flag in sync with the part's deploy animation.
 //
-// Stock antennas keep their `ModuleDeployableAntenna` (the player can
-// still extend/retract via PAW); Nova reads the live `deployState` and
-// gates transmission through the comms graph. Fixed antennas (no
-// stock deploy module) stay permanently deployed.
+// Stock antennas keep their `ModuleDeployableAntenna` for animation
+// drive (we can't strip it without re-implementing the deploy clip),
+// but its PAW surface (Extend/Retract events, ExtendAction/RetractAction
+// action-group bindings, status readout) is suppressed in OnStart —
+// player-facing deploy lives on `setAntennaDeployed` via NovaPartTopic.
+// Fixed antennas (no stock deploy module) stay permanently deployed.
 //
 // No ICommAntenna — Nova owns its own graph; stock CommNet routing
 // is bypassed.
@@ -26,9 +28,17 @@ public class NovaAntennaModule : NovaPartModule {
     base.OnStart(state);
 
     antenna = Components?.OfType<Antenna>().FirstOrDefault();
-    if (antenna == null || state == StartState.Editor) return;
+    if (antenna == null) return;
 
     stockDeploy = part.FindModuleImplementing<ModuleDeployableAntenna>();
+    // Hide the stock module's PAW surface in *every* scene (editor,
+    // flight, EVA-unfocused) so the player never sees a duplicate
+    // control alongside Nova's UI. Done before the editor early-return
+    // because the PAW is visible in the VAB too.
+    if (stockDeploy != null) HideStockPaw(stockDeploy);
+
+    if (state == StartState.Editor) return;
+
     if (stockDeploy == null) {
       antenna.IsDeployed = true;
       lastDeployed = true;
@@ -96,4 +106,48 @@ public class NovaAntennaModule : NovaPartModule {
 
   private static bool IsExtended(ModuleDeployableAntenna m) =>
     m.deployState == ModuleDeployablePart.DeployState.EXTENDED;
+
+  // Suppress every player-visible affordance the stock deploy module
+  // exposes. We can't strip the module (it owns the deploy animation),
+  // but Nova's UI is the canonical deploy surface — duplicate buttons
+  // confuse the player and let them bypass Nova's `setAntennaDeployed`
+  // op (skipping any side effects like network invalidation that go
+  // through it). guiActive/guiActiveEditor/guiActiveUnfocused on events
+  // hide them from the PAW in flight / editor / EVA respectively; the
+  // .active flag controls fireability (kept untouched), so any non-PAW
+  // caller (Harmony, action groups stripped by .active=false on the
+  // action) can still invoke if needed. Stock startFSM rewrites
+  // .active on transitions but never .guiActive, so this stays sticky
+  // across animation state changes — SetUIWrite is only invoked from
+  // ModuleDockingNode, irrelevant to free-floating antennas.
+  private static void HideStockPaw(ModuleDeployableAntenna m) {
+    HideEvent(m.Events["Extend"]);
+    HideEvent(m.Events["Retract"]);
+    HideEvent(m.Events["EventRepairExternal"]);
+    HideAction(m.Actions["ExtendAction"]);
+    HideAction(m.Actions["RetractAction"]);
+    HideAction(m.Actions["ExtendPanelsAction"]);
+    HideField(m.Fields["status"]);
+  }
+
+  private static void HideEvent(BaseEvent e) {
+    if (e == null) return;
+    e.guiActive = false;
+    e.guiActiveEditor = false;
+    e.guiActiveUnfocused = false;
+    e.guiActiveUncommand = false;
+  }
+
+  private static void HideAction(BaseAction a) {
+    if (a == null) return;
+    a.active = false;
+    a.activeEditor = false;
+  }
+
+  private static void HideField(BaseField f) {
+    if (f == null) return;
+    f.guiActive = false;
+    f.guiActiveEditor = false;
+    f.guiActiveUnfocused = false;
+  }
 }
