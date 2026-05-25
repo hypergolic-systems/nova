@@ -166,7 +166,19 @@ public sealed class NovaEngineTopic : EngineTopic {
       // same shape it expects so HasMaterialChange / MarkDirty fire
       // correctly. The DG-side wire emission is overridden by our
       // WriteData below, so this list never reaches the wire — it's
-      // pure broadcaster bookkeeping.
+      // pure broadcaster bookkeeping. Propellant Amount/Capacity must
+      // be mirrored here or HasMaterialChange can't see fuel drain
+      // and the topic only re-emits on rate/status changes.
+      var dgProps = new List<PropellantFrame>(novaProps.Count);
+      for (int pi = 0; pi < novaProps.Count; pi++) {
+        var np = novaProps[pi];
+        dgProps.Add(new PropellantFrame {
+          Name = np.Name,
+          Abbreviation = np.Abbreviation,
+          Amount = np.Amount,
+          Capacity = np.Capacity,
+        });
+      }
       scratch.Add(new EngineFrame {
         Id = es.Part.flightID.ToString(),
         MapX = local.x,
@@ -176,7 +188,7 @@ public sealed class NovaEngineTopic : EngineTopic {
         MaxThrust = (float)es.Engine.Thrust,
         Isp = (float)es.Engine.Isp,
         CrossfeedPartIds = es.CrossfeedPartIds,
-        Propellants = new List<PropellantFrame>(0),
+        Propellants = dgProps,
       });
     }
     return true;
