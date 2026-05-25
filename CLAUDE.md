@@ -179,17 +179,15 @@ Nova's bundle externalizes `svelte`, `three`, `@threlte/core`, and every `@drago
 
 ## Game introspection
 
-Use `kspcli` for live game inspection / scripted scenes. From `~/dev/hgs/kspcli`:
+For live game inspection or scripted scenes, use `kspcli` — see the
+[`kspcli`](.claude/skills/kspcli/SKILL.md) skill for the current API,
+expression language, and workflow patterns (it's kept in lockstep with
+the binary; examples in this file would rot).
 
-```
-just install ~/dev/nova/game    # one-time, install kspcli mod into Nova's local KSP install
-just run -- start
-just run -- load_save default
-just run -- vessels
-just run -- eval <expression>
-```
-
-Don't add bridge/CLI commands inside Nova — they live in kspcli.
+Don't add bridge/CLI commands inside Nova — they live in kspcli. For
+game-side static methods invoked over `kspcli` (e.g. `NovaCli.LoadSave`,
+`NovaCli.LaunchVessel`), put them on a public static class in `Nova/`
+and call by short name from kspcli's evaluator.
 
 ## Headless simulator
 
