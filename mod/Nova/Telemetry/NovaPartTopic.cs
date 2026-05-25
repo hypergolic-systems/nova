@@ -108,6 +108,11 @@ namespace Nova.Telemetry;
 //                                IsDeployed flag. No-op on fixed
 //                                panels (IsDeployable=false). State
 //                                round-trips on save via RadiatorState.
+//   "setAntennaDeployed" [bool] — toggle a deployable antenna's
+//                                IsDeployed flag. No-op on fixed
+//                                antennas (cfg without animationName,
+//                                integrated antennas on probe cores).
+//                                State round-trips on save via AntennaState.
 //   "setTankCustom" [[[name, capacity, contents], ...]]
 //                              — replace the part's tank loadout with
 //                                the supplied resource/capacity/contents
@@ -281,6 +286,17 @@ public sealed class NovaPartTopic : Topic {
           return;
         }
         var module = _part?.FindModuleImplementing<NovaRadiatorModule>();
+        if (module == null) return;
+        if (deployed) module.Extend();
+        else module.Retract();
+        return;
+      }
+      case "setAntennaDeployed": {
+        if (args == null || args.Count < 1 || !(args[0] is bool deployed)) {
+          Debug.LogWarning(LogPrefix + Name + " setAntennaDeployed: expected [bool]");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaAntennaModule>();
         if (module == null) return;
         if (deployed) module.Extend();
         else module.Retract();

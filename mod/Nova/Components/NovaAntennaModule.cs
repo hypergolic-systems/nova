@@ -1,4 +1,5 @@
 using System.Linq;
+using UnityEngine;
 using Nova.Communications;
 using Nova.Core.Components.Communications;
 
@@ -6,23 +7,33 @@ namespace Nova.Components;
 
 // KSP-side wrapper for an antenna part. The Antenna virtual component
 // (TxPower, Gain, MaxRate, RefDistance) is built by ComponentFactory
-// from the cfg; this module is responsible for keeping the component's
-// `IsDeployed` flag in sync with the part's deploy animation.
+// from the cfg; this module owns the deploy animation and keeps the
+// component's IsDeployed flag in sync.
 //
-// Stock antennas keep their `ModuleDeployableAntenna` for animation
-// drive (we can't strip it without re-implementing the deploy clip),
-// but its PAW surface (Extend/Retract events, ExtendAction/RetractAction
-// action-group bindings, status readout) is suppressed in OnStart —
-// player-facing deploy lives on `setAntennaDeployed` via NovaPartTopic.
-// Fixed antennas (no stock deploy module) stay permanently deployed.
+// Nova drives the model animation itself — stock ModuleDeployableAntenna
+// is stripped via cfg patch on every deployable antenna part. The
+// player-facing extend/retract control lives on the `setAntennaDeployed`
+// op via NovaPartTopic. Fixed antennas (configs that don't set
+// `animationName`, integrated antennas on probe cores, …) skip all
+// animation logic and stay IsDeployed = true.
 //
-// No ICommAntenna — Nova owns its own graph; stock CommNet routing
-// is bypassed.
+// Cfg shape (on the NovaAntennaModule MODULE block):
+//   animationName = <clip name on the part model>   (omit for fixed)
+//   retractable   = true | false                    (default true)
+//
+// No ICommAntenna — Nova owns its own graph; stock CommNet routing is
+// bypassed.
 public class NovaAntennaModule : NovaPartModule {
 
   private Antenna antenna;
-  private ModuleDeployableAntenna stockDeploy;
-  private bool lastDeployed = true;
+
+  // Animation drive — non-null only when the cfg names a clip that
+  // resolves on the model. Fixed (no-anim) antennas leave both null
+  // and IsDeployed stays true for the part's lifetime.
+  private Animation anim;
+  private string animationName = "";
+  private bool retractable = true;
+  private bool animating;
 
   public override void OnStart(StartState state) {
     base.OnStart(state);
@@ -30,124 +41,147 @@ public class NovaAntennaModule : NovaPartModule {
     antenna = Components?.OfType<Antenna>().FirstOrDefault();
     if (antenna == null) return;
 
-    stockDeploy = part.FindModuleImplementing<ModuleDeployableAntenna>();
-    // Hide the stock module's PAW surface in *every* scene (editor,
-    // flight, EVA-unfocused) so the player never sees a duplicate
-    // control alongside Nova's UI. Done before the editor early-return
-    // because the PAW is visible in the VAB too.
-    if (stockDeploy != null) HideStockPaw(stockDeploy);
+    // Read animation config from the prefab MODULE block. The cfg
+    // belongs to NovaAntennaModule, not the stripped stock module —
+    // GetPrefabModuleConfig matches by `name = NovaAntennaModule`.
+    var cfg = GetPrefabModuleConfig();
+    if (cfg != null) {
+      animationName = cfg.GetValue("animationName") ?? "";
+      if (cfg.HasValue("retractable"))
+        bool.TryParse(cfg.GetValue("retractable"), out retractable);
+    }
 
-    if (state == StartState.Editor) return;
+    // Resolve the named animation. Two ways this can land at no-anim:
+    // (a) cfg omitted animationName — fixed antenna, no clip needed;
+    // (b) cfg names a clip the model doesn't carry (mesh-replacing
+    //     mod renamed it, common with ReStock-overhauled parts).
+    // Both fall through to "fixed-behaviour antenna stays deployed".
+    if (!string.IsNullOrEmpty(animationName)) {
+      anim = part.FindModelAnimators(animationName)?.FirstOrDefault();
+      if (anim != null) {
+        // Mirror stock startFSM: ClampForever holds the end pose when
+        // the clip finishes so the bell doesn't snap back to frame 0.
+        anim[animationName].wrapMode = WrapMode.ClampForever;
+      } else {
+        Debug.LogWarning($"[Nova/Antenna] {part.partInfo?.name}: "
+            + $"animationName='{animationName}' not found on model — "
+            + "treating as fixed antenna");
+        animationName = "";
+      }
+    }
 
-    if (stockDeploy == null) {
+    if (state == StartState.Editor) {
+      // VAB convention: antennas render extended so the player can see
+      // the deployed silhouette while building.
       antenna.IsDeployed = true;
-      lastDeployed = true;
+      if (anim != null) SetAnimationPosition(1f);
       return;
     }
 
-    if (antenna.LoadedFromSave) {
-      // Save load: Nova proto is source of truth. Push antenna.IsDeployed
-      // into the stock module so its `deployState` matches what the
-      // player saved — Nova's save path doesn't run stock OnLoad, so
-      // without this `deployState` stays at the prefab default and the
-      // FixedUpdate below would overwrite the loaded IsDeployed value
-      // with `false`, taking the antenna offline despite the visual
-      // pose suggesting it's extended.
-      SyncStockFromVirtual();
-      lastDeployed = antenna.IsDeployed;
-    } else {
-      // Fresh launch: stock deployState carries the editor-time intent
-      // (RETRACTED by default, matching stock convention that the
-      // player has to extend deployable antennas after launch). Pull
-      // the value rather than push, so we don't override the cfg
-      // default with the virtual component's `true` default.
-      lastDeployed = IsExtended(stockDeploy);
-      antenna.IsDeployed = lastDeployed;
-    }
+    // Three flight cases — same shape as NovaDeployableSolarModule /
+    // NovaRadiatorModule:
+    //   1. Loaded from save (LoadedFromSave) — use proto value already
+    //      in antenna.IsDeployed.
+    //   2. Fresh launch + deployable — start retracted (stock convention:
+    //      player has to extend deployable antennas after launch).
+    //   3. Fresh launch + fixed — IsDeployed stays at the component
+    //      default (true), set explicitly here for clarity.
+    bool deployed;
+    if (antenna.LoadedFromSave) deployed = antenna.IsDeployed;
+    else if (anim != null)      deployed = false;
+    else                        deployed = true;
+
+    antenna.IsDeployed = deployed;
+    if (anim != null) SetAnimationPosition(deployed ? 1f : 0f);
+    NovaCommunicationsAddon.Instance?.Network?.Invalidate();
   }
 
-  // Called after `VirtualComponent.Load` in the matched-vessel quickload
-  // path (NovaSaveLoader.ApplyVesselState). Stock OnStart already ran
-  // with whatever pre-quickload deployState was sitting on the module;
-  // re-sync after Load has updated antenna.IsDeployed to the saved
-  // value.
+  // Matched-vessel quickload hook (NovaSaveLoader.ApplyVesselState).
+  // VirtualComponent.Load has just refreshed antenna.IsDeployed from
+  // proto — snap the animation to match and invalidate the network
+  // (the graph treats deploy-state changes as topology events).
   public override void OnNovaStateRestored() {
-    if (antenna == null || stockDeploy == null) return;
-    SyncStockFromVirtual();
-    lastDeployed = antenna.IsDeployed;
+    if (antenna == null) return;
+    if (anim != null) SetAnimationPosition(antenna.IsDeployed ? 1f : 0f);
+    animating = false;
     NovaCommunicationsAddon.Instance?.Network?.Invalidate();
+  }
+
+  // Player-facing extend/retract — called from NovaPartTopic on the
+  // `setAntennaDeployed` op. Not exposed in the stock PAW (Nova owns
+  // its player-facing UI).
+  public void Extend() {
+    if (antenna == null) return;
+    if (animating || antenna.IsDeployed) return;
+    if (anim == null) {
+      // No animation (fixed antenna or cfg/mesh mismatch). Flip state
+      // instantly; the mesh stays wherever it defaulted.
+      antenna.IsDeployed = true;
+      OnDeployStateChanged();
+      return;
+    }
+
+    // SetAnimationPosition leaves the AnimationState disabled. Unity's
+    // legacy Play() doesn't reliably re-enable a stopped state, so
+    // flip enabled/weight ourselves before playing.
+    anim[animationName].normalizedTime = 0f;
+    anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? 5f : 1f;
+    anim[animationName].enabled = true;
+    anim[animationName].weight = 1f;
+    anim.Play(animationName);
+    animating = true;
+  }
+
+  public void Retract() {
+    if (antenna == null) return;
+    if (animating || !antenna.IsDeployed) return;
+    if (!retractable && !HighLogic.LoadedSceneIsEditor) return;
+    if (anim == null) {
+      antenna.IsDeployed = false;
+      OnDeployStateChanged();
+      return;
+    }
+
+    anim[animationName].normalizedTime = 1f;
+    anim[animationName].speed = HighLogic.LoadedSceneIsEditor ? -5f : -1f;
+    anim[animationName].enabled = true;
+    anim[animationName].weight = 1f;
+    anim.Play(animationName);
+    animating = true;
   }
 
   public void FixedUpdate() {
-    if (antenna == null || stockDeploy == null) return;
-    var nowDeployed = IsExtended(stockDeploy);
-    if (nowDeployed == lastDeployed) return;
-    antenna.IsDeployed = nowDeployed;
-    lastDeployed = nowDeployed;
+    if (!animating || anim == null || antenna == null) return;
+
+    var time = anim[animationName].normalizedTime;
+    if (anim[animationName].speed > 0 && time >= 1f) {
+      anim.Stop(animationName);
+      SetAnimationPosition(1f);
+      animating = false;
+      antenna.IsDeployed = true;
+      OnDeployStateChanged();
+    } else if (anim[animationName].speed < 0 && time <= 0f) {
+      anim.Stop(animationName);
+      SetAnimationPosition(0f);
+      animating = false;
+      antenna.IsDeployed = false;
+      OnDeployStateChanged();
+    }
+  }
+
+  private void OnDeployStateChanged() {
     // Deploy state change is a topology event for the comm graph —
-    // pairwise rates and the per-vessel path-to-home may all change.
+    // pairwise rates and per-vessel path-to-home may all change.
     NovaCommunicationsAddon.Instance?.Network?.Invalidate();
   }
 
-  // Push antenna.IsDeployed → stock deployState and re-run startFSM so
-  // the animation pose snaps to the right end-frame. startFSM is what
-  // stock OnStart calls to set animation normalizedTime per deployState
-  // — invoking it again with the corrected state is the cheapest way
-  // to get the visual back in sync without re-implementing the pose
-  // logic ourselves.
-  private void SyncStockFromVirtual() {
-    var target = antenna.IsDeployed
-        ? ModuleDeployablePart.DeployState.EXTENDED
-        : ModuleDeployablePart.DeployState.RETRACTED;
-    if (stockDeploy.deployState == target) return;
-    stockDeploy.deployState = target;
-    stockDeploy.startFSM();
-  }
-
-  private static bool IsExtended(ModuleDeployableAntenna m) =>
-    m.deployState == ModuleDeployablePart.DeployState.EXTENDED;
-
-  // Suppress every player-visible affordance the stock deploy module
-  // exposes. We can't strip the module (it owns the deploy animation),
-  // but Nova's UI is the canonical deploy surface — duplicate buttons
-  // confuse the player and let them bypass Nova's `setAntennaDeployed`
-  // op (skipping any side effects like network invalidation that go
-  // through it). guiActive/guiActiveEditor/guiActiveUnfocused on events
-  // hide them from the PAW in flight / editor / EVA respectively; the
-  // .active flag controls fireability (kept untouched), so any non-PAW
-  // caller (Harmony, action groups stripped by .active=false on the
-  // action) can still invoke if needed. Stock startFSM rewrites
-  // .active on transitions but never .guiActive, so this stays sticky
-  // across animation state changes — SetUIWrite is only invoked from
-  // ModuleDockingNode, irrelevant to free-floating antennas.
-  private static void HideStockPaw(ModuleDeployableAntenna m) {
-    HideEvent(m.Events["Extend"]);
-    HideEvent(m.Events["Retract"]);
-    HideEvent(m.Events["EventRepairExternal"]);
-    HideAction(m.Actions["ExtendAction"]);
-    HideAction(m.Actions["RetractAction"]);
-    HideAction(m.Actions["ExtendPanelsAction"]);
-    HideField(m.Fields["status"]);
-  }
-
-  private static void HideEvent(BaseEvent e) {
-    if (e == null) return;
-    e.guiActive = false;
-    e.guiActiveEditor = false;
-    e.guiActiveUnfocused = false;
-    e.guiActiveUncommand = false;
-  }
-
-  private static void HideAction(BaseAction a) {
-    if (a == null) return;
-    a.active = false;
-    a.activeEditor = false;
-  }
-
-  private static void HideField(BaseField f) {
-    if (f == null) return;
-    f.guiActive = false;
-    f.guiActiveEditor = false;
-    f.guiActiveUnfocused = false;
+  private void SetAnimationPosition(float time) {
+    if (anim == null) return;
+    anim[animationName].normalizedTime = time;
+    anim[animationName].speed = 0f;
+    anim[animationName].enabled = true;
+    anim[animationName].weight = 1f;
+    anim.Sample();
+    anim.Stop(animationName);
   }
 }
