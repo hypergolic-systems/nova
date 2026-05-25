@@ -78,6 +78,24 @@ public class NovaVesselModule : VesselModule {
     GameEvents.onVesselsUndocking.Add(OnVesselsUndocking);
     GameEvents.onVesselGoOnRails.Add(OnVesselGoOnRails);
     GameEvents.onVesselGoOffRails.Add(OnVesselGoOffRails);
+    if (vessel != null) vessel.OnFlyByWire += OnFlyByWireSolveAttitude;
+  }
+
+  // Torque/RCS/gimbal application is wired through OnFlyByWire so it
+  // runs inside FlightInputHandler.FixedUpdate → FeedInputFeed, which
+  // sequences as: OnAutopilotUpdate (stock SAS writes ctrlState) →
+  // OnPostAutopilotUpdate → OnFlyByWire (← here). That gives us the
+  // current tick's ctrlState (no stale read) AND lands part.torque
+  // before FlightIntegrator.FixedUpdate zeros and applies the
+  // accumulator — both legs of the SAS↔wheel control loop close in the
+  // same physics tick instead of one tick apart. A NovaVesselModule.
+  // FixedUpdate hook would race the integrator on Unity script order
+  // and inject a 1-tick phase delay around stock SAS's PID, which
+  // drove a bang-bang oscillation at saturation on high-authority,
+  // low-MOI vessels (e.g. probe + Inline Reaction Wheel).
+  private void OnFlyByWireSolveAttitude(FlightCtrlState cs) {
+    if (Virtual == null || vessel == null) return;
+    SolveAttitude();
   }
 
   private void OnDestroy() {
@@ -87,6 +105,7 @@ public class NovaVesselModule : VesselModule {
     GameEvents.onVesselsUndocking.Remove(OnVesselsUndocking);
     GameEvents.onVesselGoOnRails.Remove(OnVesselGoOnRails);
     GameEvents.onVesselGoOffRails.Remove(OnVesselGoOffRails);
+    if (vessel != null) vessel.OnFlyByWire -= OnFlyByWireSolveAttitude;
     Virtual?.Systems?.Transmission?.CancelActive();
     CancelCommandLink();
     if (vessel != null)
@@ -579,7 +598,10 @@ public class NovaVesselModule : VesselModule {
     if (Virtual.Context == null) Virtual.Context = new KspVesselContext(vessel);
     PullCommandRefill();
     AuthorizeControlForThisTick();
-    SolveAttitude();
+
+    // SolveAttitude runs in OnFlyByWire below — same physics tick as
+    // stock SAS's PID output, torque lands before FlightIntegrator's
+    // accumulator pass.
     Virtual.Tick(Planetarium.GetUniversalTime());
 
     // Telemetry: post-tick part state is fresh — mark dirty so the
@@ -644,23 +666,6 @@ public class NovaVesselModule : VesselModule {
   private bool gimbalRefreshPending;
   private const double GimbalCoMThreshold = 0.1;
 
-  // RCS input cached from Update() to match stock ModuleRCS timing.
-  private Vec3d cachedInputLin;
-  private Vec3d cachedInputRot;
-  private bool inputReady;
-
-  /// <summary>
-  /// Read control input in Update (same timing as stock ModuleRCS) so we
-  /// see post-FlightInputHandler sign conventions.
-  /// </summary>
-  public void Update() {
-    if (Virtual == null || vessel == null) return;
-
-    var cs = vessel.ctrlState;
-    cachedInputRot = new Vec3d(-cs.pitch, -cs.roll, -cs.yaw);
-    cachedInputLin = new Vec3d(-cs.X, -cs.Z, cs.Y);
-    inputReady = true;
-  }
 
   private void CollectModules() {
     if (!rcsModulesDirty && cachedRcsModules != null) return;
@@ -702,9 +707,12 @@ public class NovaVesselModule : VesselModule {
       foreach (var mod in cachedRcsModules) mod.ClearThrottles();
     }
 
-    if (!inputReady) return;
-    var inputRot = cachedInputRot;
-    var inputLin = cachedInputLin;
+    // ctrlState is the fresh post-SAS value because this runs from the
+    // OnFlyByWire callback, fired after OnAutopilotUpdate within the
+    // same FeedInputFeed pass.
+    var cs = vessel.ctrlState;
+    var inputRot = new Vec3d(-cs.pitch, -cs.roll, -cs.yaw);
+    var inputLin = new Vec3d(-cs.X, -cs.Z, cs.Y);
 
     // StoredCommands gate — when the ledger couldn't pay for this
     // tick's input (see AuthorizeControlForThisTick), drive the rest
@@ -917,7 +925,6 @@ public class NovaVesselModule : VesselModule {
 
     // Log periodically.
     if (rcsLogCounter++ % 50 == 0) {
-      var cs = vessel.ctrlState;
       NovaLog.Log($"[Attitude] ctrlState: pitch={cs.pitch:F3} yaw={cs.yaw:F3} roll={cs.roll:F3} X={cs.X:F3} Y={cs.Y:F3} Z={cs.Z:F3}");
       NovaLog.Log($"[Attitude] input: force={input.DesiredForce} torque={input.DesiredTorque} CoM={input.CoM}");
     }
