@@ -201,7 +201,7 @@ public class CommunicationsNetwork {
   }
 
   // Walk every non-home endpoint and store its path-to-home summary
-  // (path bottleneck + direct-edge SNR/rate/ceiling) on the endpoint
+  // (HasPath, BottleneckBps, NextHopId, ordered Path) on the endpoint
   // itself. Designed to run once per Solve so per-frame readers
   // (NovaCommsTopic) can poll the cached fields without re-running
   // MaxRatePath.Find every Update — that search allocates several
@@ -209,6 +209,11 @@ public class CommunicationsNetwork {
   // endpoint's own summary is reset to default; the network has no
   // notion of "home" outside this call, so leaving the field set
   // would lie about a self-link.
+  //
+  // Live first-hop link stats (SNR, rate, ceiling, noise floor) are
+  // NOT stored here — they vary continuously with distance and would
+  // freeze between bucket-event-driven Solves. Callers recompute via
+  // ComputeLinkStats(Path[0]) per frame instead.
   public void RefreshHomePathSummaries(Endpoint home) {
     if (home == null) return;
     foreach (var ep in endpoints) {
@@ -231,24 +236,49 @@ public class CommunicationsNetwork {
         summary.Path = path;
       }
 
-      foreach (var l in graph.Links) {
-        if (l.From == ep && l.To == home) {
-          summary.DirectSnr = l.Snr;
-          summary.DirectRateBps = l.RateBps;
-          break;
-        }
-      }
-      summary.DirectMaxRateBps = LinkMaxCeiling(ep, home);
-      summary.DirectSnrFloor = DirectSnrFloor(ep, home);
-
       ep.PathToHome = summary;
     }
   }
 
-  // SNR threshold below which the direct ep→home link's quantised
-  // rate falls into bucket 0 — the practical "signal lost" line at
-  // the displayed (symmetric) SNR. Derived from the bucket-1 Shannon
-  // cutoff for each direction's best TX antenna:
+  // Live stats for a candidate link (from, to) at UT, symmetric across
+  // the two directions and matching the math Solve uses to populate
+  // Link.Snr / Link.RateBps / Link.MaxRateBps:
+  //   • SNR: min over the two TX→RX directions.
+  //   • Rate: min(fwdRate, revRate), then bucket-floored against the
+  //     symmetric ceiling (RateBuckets.Quantize) — same shape Solve
+  //     ships on the Link so the wire value the UI bars consume here
+  //     agrees with what the routing/allocator actually sees.
+  //   • MaxRate: symmetric min of antenna ceilings.
+  //   • SnrFloor: lower of the two directions' bucket-1 cutoffs (the
+  //     displayed-SNR value at which the link drops to zero rate).
+  // Called by per-frame readers — NovaCommsTopic walks Path[0] each
+  // Update so the dB readout tracks distance even between Solves
+  // (Solve cadence is bucket-event-driven; without this the value
+  // freezes once geometry sits in the top rate bucket, and during
+  // time warp it stops moving at all).
+  //
+  // Occlusion is NOT folded in here. The caller filters on
+  // PathToHome.HasPath, which is false when the first hop is blocked
+  // (a blocked link has 0 effective rate and MaxRatePath drops it),
+  // so live readers only invoke this for genuinely-clear first hops.
+  public static (double snr, double rate, double maxRate, double snrFloor)
+      ComputeLinkStats(Endpoint from, Endpoint to, double ut) {
+    if (from == null || to == null) return (0, 0, 0, 0);
+    var distance = (from.PositionAt(ut) - to.PositionAt(ut)).Magnitude;
+    BestPair(from, to, distance, out var fwdSnr, out var fwdRate);
+    BestPair(to, from, distance, out var revSnr, out var revRate);
+    var snr = Math.Min(fwdSnr, revSnr);
+    var rawRate = Math.Min(fwdRate, revRate);
+    var maxRate = Math.Min(LinkMaxCeiling(from, to), LinkMaxCeiling(to, from));
+    var rate = RateBuckets.Quantize(rawRate, maxRate);
+    var snrFloor = LinkSnrFloor(from, to);
+    return (snr, rate, maxRate, snrFloor);
+  }
+
+  // SNR threshold below which the link's quantised rate falls into
+  // bucket 0 — the practical "signal lost" line at the displayed
+  // (symmetric) SNR. Derived from the bucket-1 Shannon cutoff for
+  // each direction's best TX antenna:
   //
   //   shannon = 1/N  ⇒  SNR_thresh = (1 + SNR_ref)^(1/N) − 1
   //
@@ -260,7 +290,7 @@ public class CommunicationsNetwork {
   // the two directions' bucket-1 thresholds. KSC's threshold (~−60
   // dB for a 1e9·1e3² antenna) never binds because its own SNR is
   // orders of magnitude higher than the vessel's.
-  private static double DirectSnrFloor(Endpoint a, Endpoint b) {
+  private static double LinkSnrFloor(Endpoint a, Endpoint b) {
     var thA = BestPairFloor(a, b);
     var thB = BestPairFloor(b, a);
     if (thA <= 0) return thB;
@@ -284,27 +314,6 @@ public class CommunicationsNetwork {
       if (thresh < best) best = thresh;
     }
     return double.IsPositiveInfinity(best) ? 0 : best;
-  }
-
-  // Per-tick refresh of just the direct-edge live SNR on every
-  // endpoint's PathToHome summary. Solve-cadence is event-driven —
-  // when the link sits in the highest rate bucket nothing forecasts
-  // a transition, so re-solves stop and the cached SNR freezes. The
-  // SNR itself varies continuously with distance (1/r²), so for the
-  // dB display we recompute it each FixedUpdate from live positions
-  // without touching the (bucket-quantised) rate or path topology.
-  public void RefreshHomeDirectSnrs(Endpoint home, double ut) {
-    if (home == null) return;
-    var homePos = home.PositionAt(ut);
-    foreach (var ep in endpoints) {
-      if (ep == null || ep == home) continue;
-      if (!ep.PathToHome.HasPath) continue;
-      var d = (ep.PositionAt(ut) - homePos).Magnitude;
-      BestPair(ep, home, d, out var snr, out _);
-      var summary = ep.PathToHome;
-      summary.DirectSnr = snr;
-      ep.PathToHome = summary;
-    }
   }
 
   private void Integrate(double dt) {

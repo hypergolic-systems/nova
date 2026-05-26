@@ -257,20 +257,16 @@ public class NovaCommunicationsAddon : MonoBehaviour {
       // Refresh per-endpoint path-to-KSC caches so per-vessel
       // telemetry topics can read connectivity state without
       // running MaxRatePath.Find every frame. Tied to Solve cadence
-      // (event-driven), not Update — between solves nothing relevant
-      // changes about the routing.
+      // (event-driven), not Update — between solves the routing
+      // topology is stable. Live first-hop link stats are NOT cached
+      // here; NovaCommsTopic recomputes them per Update from Path[0]
+      // so SNR / rate / dB-floor track distance during time warp.
       Network.RefreshHomePathSummaries(kscEndpoint);
       sw.Stop();
       var maxDt = Network.MaxTickDt();
       nextSolveUT = ut + maxDt;
       NovaLog.Log($"[Comms] solve: {sw.Elapsed.TotalMilliseconds:F3}ms ({Network.Endpoints.Count} ep, {Network.Graph.Links.Count} links) | next in {maxDt:F1}s");
     }
-
-    // SNR varies continuously with distance, but the bucket-quantised
-    // rate fields only change at discrete transitions. Above the top
-    // bucket, no transition fires and the cached SNR freezes. Refresh
-    // it independently every FixedUpdate so the dB readout tracks live.
-    Network.RefreshHomeDirectSnrs(kscEndpoint, ut);
 
     if (ut - lastLogUT < LogIntervalSeconds) return;
     lastLogUT = ut;

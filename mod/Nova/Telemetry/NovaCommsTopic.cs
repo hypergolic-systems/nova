@@ -20,25 +20,30 @@ namespace Nova.Telemetry;
 //   [vesselId,
 //    hasPathToKsc,           // 0/1
 //    bottleneckBps,           // bytes/sec along the chosen path; 0 if no path
-//    directSnr,               // direct vessel→KSC link SNR (linear); 0 if no direct edge
-//    directRateBps,           // direct vessel→KSC link RateBps (theoretical capacity
-//                             // before path bottlenecks); 0 if no direct edge
-//    directMaxRateBps,        // antenna-pair hardware ceiling along vessel→KSC.
-//    directSnrFloor,          // linear SNR threshold below which the direct edge
-//                             // drops to zero rate (bucket-1 cutoff for the chosen
-//                             // antenna pair). Display as the link's noise floor.
-//    peerLabel,               // "KSC" for direct, "KSC (via NAME)" when the chosen
-//                             // path's first hop is a relay vessel. Empty when DARK.
+//    linkSnr,                 // first-hop link SNR (linear); 0 if DARK
+//    linkRateBps,             // first-hop link RateBps (live, before path bottleneck)
+//    linkMaxRateBps,          // first-hop antenna-pair hardware ceiling
+//    linkSnrFloor,            // linear SNR threshold below which the first hop
+//                             // drops to zero rate (bucket-1 cutoff for the
+//                             // chosen antenna pair). Display as the link's
+//                             // noise floor.
+//    peerLabel,               // "KSC" for direct, "KSC (via NAME)" when the
+//                             // chosen path's first hop is a relay vessel.
+//                             // Empty when DARK.
 //    txActive,                // 0/1 — is a Packet currently in flight
 //    txRateBps,               // current allocated rate of the active Packet
 //    txDeliveredBytes,        // cumulative
 //    txTotalBytes]
 //
-// All path/connectivity fields read from `Endpoint.PathToHome`, which
-// CommunicationsNetwork refreshes once per Solve. Update() poll-and-
-// compares against the last emitted state and only MarkDirty's when a
-// field would actually change on the wire — keeping the broadcaster
-// quiet when nothing's moving (the common case at rest).
+// HasPath / BottleneckBps / NextHopId read from `Endpoint.PathToHome`,
+// which CommunicationsNetwork refreshes once per Solve. Link stats
+// (SNR / rate / ceiling / floor) are recomputed live per Update via
+// `CommunicationsNetwork.ComputeLinkStats(Path[0])` so they track
+// distance even when no Solve has fired — Solve cadence is bucket-
+// event-driven and would otherwise freeze the dB readout during time
+// warp once geometry sits inside the top bucket. Update() poll-and-
+// compares against the last emitted state and only MarkDirty's when
+// a field would actually change on the wire.
 public sealed class NovaCommsTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -53,10 +58,10 @@ public sealed class NovaCommsTopic : Topic {
   // the change-detector saw.
   private bool _hasPath;
   private double _bottleneckBps;
-  private double _directSnr;
-  private double _directRateBps;
-  private double _directMaxRateBps;
-  private double _directSnrFloor;
+  private double _linkSnr;
+  private double _linkRateBps;
+  private double _linkMaxRateBps;
+  private double _linkSnrFloor;
   private string _peerLabel = "";
   private bool _txActive;
   private double _txRateBps;
@@ -87,16 +92,17 @@ public sealed class NovaCommsTopic : Topic {
 
   private void SampleAndUpdate(bool forceEmit) {
     var summary = ReadPathSummary();
+    var (linkSnr, linkRate, linkMaxRate, linkSnrFloor) = ComputeFirstHopStats(summary);
     var peerLabel = ResolvePeerLabel(summary);
     var (txActive, txRate, txDelivered, txTotal) = ReadTransmission();
 
     bool changed = forceEmit
         || summary.HasPath != _hasPath
         || summary.BottleneckBps != _bottleneckBps
-        || summary.DirectSnr != _directSnr
-        || summary.DirectRateBps != _directRateBps
-        || summary.DirectMaxRateBps != _directMaxRateBps
-        || summary.DirectSnrFloor != _directSnrFloor
+        || linkSnr != _linkSnr
+        || linkRate != _linkRateBps
+        || linkMaxRate != _linkMaxRateBps
+        || linkSnrFloor != _linkSnrFloor
         || peerLabel != _peerLabel
         || txActive != _txActive
         || txRate != _txRateBps
@@ -107,10 +113,10 @@ public sealed class NovaCommsTopic : Topic {
 
     _hasPath = summary.HasPath;
     _bottleneckBps = summary.BottleneckBps;
-    _directSnr = summary.DirectSnr;
-    _directRateBps = summary.DirectRateBps;
-    _directMaxRateBps = summary.DirectMaxRateBps;
-    _directSnrFloor = summary.DirectSnrFloor;
+    _linkSnr = linkSnr;
+    _linkRateBps = linkRate;
+    _linkMaxRateBps = linkMaxRate;
+    _linkSnrFloor = linkSnrFloor;
     _peerLabel = peerLabel;
     _txActive = txActive;
     _txRateBps = txRate;
@@ -118,6 +124,22 @@ public sealed class NovaCommsTopic : Topic {
     _txTotal = txTotal;
 
     MarkDirty();
+  }
+
+  // Live first-hop stats: walks the chosen path's first link and
+  // recomputes (SNR, rate, ceiling, noise floor) from current
+  // endpoint positions at Planetarium.GetUniversalTime(). Returns
+  // zeros when the vessel has no path, mirroring the DARK state on
+  // the wire. Tied to Update() so the dB readout tracks distance
+  // smoothly during time warp — Solve cadence is bucket-event-driven
+  // and would otherwise freeze these values between transitions.
+  private static (double snr, double rate, double maxRate, double snrFloor)
+      ComputeFirstHopStats(PathSummary s) {
+    if (!s.HasPath || s.Path == null || s.Path.Count == 0) return (0, 0, 0, 0);
+    var firstHop = s.Path[0];
+    if (firstHop == null) return (0, 0, 0, 0);
+    var ut = Planetarium.GetUniversalTime();
+    return CommunicationsNetwork.ComputeLinkStats(firstHop.From, firstHop.To, ut);
   }
 
   // Build the "PEER" string for the UI. Direct paths read as plain
@@ -172,8 +194,8 @@ public sealed class NovaCommsTopic : Topic {
   public override void WriteData(StringBuilder sb) {
     CommsFormatter.Write(sb, _vesselGuid,
         _hasPath, _bottleneckBps,
-        _directSnr, _directRateBps, _directMaxRateBps,
-        _directSnrFloor, _peerLabel,
+        _linkSnr, _linkRateBps, _linkMaxRateBps,
+        _linkSnrFloor, _peerLabel,
         _txActive, _txRateBps, _txDelivered, _txTotal);
   }
 }

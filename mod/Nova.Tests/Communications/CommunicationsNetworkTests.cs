@@ -228,6 +228,71 @@ public class CommunicationsNetworkTests {
   }
 
   [TestMethod]
+  public void ComputeLinkStats_MatchesSolveTimeLinkValues() {
+    // Symmetric pair at 20 m — the same antennas BestPair walks in
+    // Solve. Live ComputeLinkStats(from, to, ut) must reproduce the
+    // per-Link snr / rate values (it's the same math), and the
+    // symmetric maxRate / snrFloor have to be positive for a usable
+    // link. This is the per-frame path the topic uses to keep the
+    // dB readout moving between Solves.
+    var a = At("A", Vec3d.Zero, Std());
+    var b = At("B", new Vec3d(20, 0, 0), Std());
+
+    var (snr, rate, maxRate, snrFloor) = CommunicationsNetwork.ComputeLinkStats(a, b, 0);
+
+    Assert.AreEqual(25, snr, 1e-9);            // matches Solve_TwoEndpoints
+    Assert.AreEqual(700, rate, 1e-6);          // bucket-7 floor of 705.96
+    Assert.AreEqual(1000, maxRate, 1e-9);      // antenna ceiling
+    Assert.IsTrue(snrFloor > 0);               // bucket-1 cutoff nonzero
+    Assert.IsTrue(snrFloor < snr);             // we're above the floor
+  }
+
+  [TestMethod]
+  public void ComputeLinkStats_DistanceMoves_SnrChanges() {
+    // The whole point of moving the live-refresh out of Solve cadence
+    // is so SNR tracks distance smoothly. Same antennas at 20 m vs
+    // 40 m must give a 4× SNR ratio (inverse-square on distance).
+    var a = At("A", Vec3d.Zero, Std());
+    var bNear = At("B", new Vec3d(20, 0, 0), Std());
+    var bFar  = At("B", new Vec3d(40, 0, 0), Std());
+
+    var (snrNear, _, _, _) = CommunicationsNetwork.ComputeLinkStats(a, bNear, 0);
+    var (snrFar,  _, _, _) = CommunicationsNetwork.ComputeLinkStats(a, bFar,  0);
+
+    Assert.AreEqual(snrNear / 4.0, snrFar, 1e-9);
+  }
+
+  [TestMethod]
+  public void ComputeLinkStats_RelayPath_FirstHopIsVesselToRelay() {
+    // A — B — home; A's path to home is A→B→home. The topic feeds
+    // ComputeLinkStats(Path[0].From, Path[0].To) → that's A→B (the
+    // relay link, not the geometric A→home which would be too far
+    // for a usable rate). This is what surfaces "link quality for
+    // relay links" on the SYS panel.
+    var net = new CommunicationsNetwork();
+    var a = At("A", Vec3d.Zero, Std());
+    var b = At("B", new Vec3d(20, 0, 0), Std());
+    var home = At("home", new Vec3d(40, 0, 0), Std());
+    net.AddEndpoint(a);
+    net.AddEndpoint(b);
+    net.AddEndpoint(home);
+
+    net.Solve(0);
+    net.RefreshHomePathSummaries(home);
+
+    Assert.IsTrue(a.PathToHome.HasPath);
+    var firstHop = a.PathToHome.Path[0];
+    Assert.AreEqual("A", firstHop.From.Id);
+    Assert.AreEqual("B", firstHop.To.Id);
+
+    var (snr, rate, _, _) = CommunicationsNetwork.ComputeLinkStats(
+        firstHop.From, firstHop.To, 0);
+    // First-hop A→B at 20 m: matches the symmetric pair test (25, 700).
+    Assert.AreEqual(25, snr, 1e-9);
+    Assert.AreEqual(700, rate, 1e-6);
+  }
+
+  [TestMethod]
   public void RefreshHomePathSummaries_NoPath_PathIsNull() {
     // Two endpoints far enough apart that the link drops to bucket 0
     // (no positive-rate route). PathToHome.HasPath is false and the

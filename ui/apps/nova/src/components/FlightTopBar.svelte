@@ -127,10 +127,10 @@
   const linkUp = $derived(comms.current?.hasPathToKsc ?? false);
   const bars = $derived(
     linkUp
-      ? rateBars(comms.current?.directRateBps ?? 0, comms.current?.directMaxRateBps ?? 0)
+      ? rateBars(comms.current?.linkRateBps ?? 0, comms.current?.linkMaxRateBps ?? 0)
       : 0,
   );
-  const snrDb = $derived(formatSnrDb(comms.current?.directSnr ?? 0));
+  const snrDb = $derived(formatSnrDb(comms.current?.linkSnr ?? 0));
   const warpIdx = $derived(
     tw.current ? warpIndex(tw.current.rate, tw.current.mode) : 0,
   );

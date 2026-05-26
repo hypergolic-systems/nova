@@ -229,17 +229,21 @@
     ksp.send(NovaPartTopic(partId), 'setAntennaDeployed', deployed);
   }
 
-  // ── COMMUNICATIONS — link readout (KSC peer) ─────────────────
+  // ── COMMUNICATIONS — link readout (first-hop peer) ───────────
+  // `link*` fields describe the *first hop* on the chosen path: for
+  // direct links the vessel→KSC edge, for relayed links the vessel→
+  // relay edge. Bars and SNR therefore reflect the link the player's
+  // vessel is actually using, not the geometric direct edge to KSC.
   const linkUp        = $derived(comms.current?.hasPathToKsc ?? false);
-  const directRate    = $derived(comms.current?.directRateBps ?? 0);
-  const directMaxRate = $derived(comms.current?.directMaxRateBps ?? 0);
+  const linkRate      = $derived(comms.current?.linkRateBps ?? 0);
+  const linkMaxRate   = $derived(comms.current?.linkMaxRateBps ?? 0);
   const bottleneck    = $derived(comms.current?.bottleneckBps ?? 0);
-  const directSnr     = $derived(comms.current?.directSnr ?? 0);
-  const directSnrFloor= $derived(comms.current?.directSnrFloor ?? 0);
+  const linkSnr       = $derived(comms.current?.linkSnr ?? 0);
+  const linkSnrFloor  = $derived(comms.current?.linkSnrFloor ?? 0);
   const peerLabel     = $derived(comms.current?.peerLabel ?? '');
-  const bars          = $derived(linkUp ? rateBars(directRate, directMaxRate) : 0);
-  const linkPct       = $derived(linkUp && directMaxRate > 0
-      ? Math.round(100 * Math.min(1, directRate / directMaxRate))
+  const bars          = $derived(linkUp ? rateBars(linkRate, linkMaxRate) : 0);
+  const linkPct       = $derived(linkUp && linkMaxRate > 0
+      ? Math.round(100 * Math.min(1, linkRate / linkMaxRate))
       : 0);
 </script>
 
@@ -403,20 +407,21 @@
 
         <!-- Spec readout. PEER sits at the top — "KSC" for direct
              links, "KSC (via NAME)" when the chosen path's first hop
-             is a relay vessel. SNR drops Noise Floor immediately
-             beneath so the dB above noise reads as the visible
-             difference. Three tightly-set numerics below; tabular
-             nums and a fixed label gutter line them up like a
-             printed datasheet. -->
+             is a relay vessel. SNR / Noise Floor / Link rate describe
+             the FIRST HOP (vessel→peer) — for relayed paths that's
+             the link the vessel itself manages, which is what the
+             player actually controls. Bottleneck is the rate-limiting
+             link across the whole path (may be downstream of the
+             first hop on a multi-hop relay chain). -->
         <dl class="link__readout">
           <dt>Peer</dt>
           <dd>{linkUp ? (peerLabel || '—') : '—'}</dd>
           <dt>SNR</dt>
-          <dd>{formatSnrDb(directSnr)}</dd>
+          <dd>{formatSnrDb(linkSnr)}</dd>
           <dt>Noise Floor</dt>
-          <dd>{formatSnrDb(directSnrFloor)}</dd>
-          <dt>Direct</dt>
-          <dd>{linkUp ? `${fmtRateBps(directRate).mag} ${fmtRateBps(directRate).unit}` : '—'}</dd>
+          <dd>{formatSnrDb(linkSnrFloor)}</dd>
+          <dt>Link</dt>
+          <dd>{linkUp ? `${fmtRateBps(linkRate).mag} ${fmtRateBps(linkRate).unit}` : '—'}</dd>
           <dt>Bottleneck</dt>
           <dd>{linkUp ? `${fmtRateBps(bottleneck).mag} ${fmtRateBps(bottleneck).unit}` : '—'}</dd>
         </dl>

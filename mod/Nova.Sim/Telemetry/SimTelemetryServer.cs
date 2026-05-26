@@ -317,8 +317,8 @@ public sealed class SimTelemetryServer : IDisposable {
     // the UI's LINK chip renders DARK rather than missing.
     CommsFormatter.Write(sb, _runner.VesselGuid,
         hasPath: false, bottleneckBps: 0,
-        directSnr: 0, directRateBps: 0, directMaxRateBps: 0,
-        directSnrFloor: 0, peerLabel: "",
+        linkSnr: 0, linkRateBps: 0, linkMaxRateBps: 0,
+        linkSnrFloor: 0, peerLabel: "",
         txActive: false, txRateBps: 0, txDeliveredBytes: 0, txTotalBytes: 0);
   }
 

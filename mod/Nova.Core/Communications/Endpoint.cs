@@ -79,26 +79,18 @@ public class Endpoint {
 }
 
 // Cached connectivity summary from one endpoint to a designated home.
-// Refreshed by CommunicationsNetwork once per Solve; readers can
-// poll without allocating. `Direct*` fields cover the single direct
-// edge (vessel→home) — they're 0 when no direct edge exists (vessel
-// reachable only via relay), in which case `HasPath`/`BottleneckBps`
-// still reflect the relayed path. `NextHopId` is the Id of the
-// first endpoint along the chosen vessel→home path: equals home.Id
-// when direct, equals a relay vessel's Id otherwise — empty when
-// HasPath is false.
-// `DirectSnrFloor` is the linear SNR threshold below which the
-// direct edge's quantised rate drops to zero — the noise floor for
-// THIS antenna pair, not the model-wide N0 = 1.0. Computed from the
-// chosen TX antenna's reference SNR via the bucket-1 cutoff
-// (1 + SNR_ref)^(1/N) − 1.
+// Refreshed by CommunicationsNetwork once per Solve; readers can poll
+// without allocating. `BottleneckBps` is the rate-limiting link rate
+// along the chosen source→home path; `NextHopId` is the Id of the
+// first endpoint along that path (equals home.Id when direct, equals
+// a relay vessel's Id otherwise — empty when HasPath is false).
+// Live first-hop link stats (SNR, rate, ceiling, noise floor) are
+// not cached here; readers compute them per-frame via
+// `CommunicationsNetwork.ComputeLinkStats` from `Path[0]` so they
+// track distance continuously instead of freezing between Solves.
 public struct PathSummary {
   public bool HasPath;
   public double BottleneckBps;
-  public double DirectSnr;
-  public double DirectRateBps;
-  public double DirectMaxRateBps;
-  public double DirectSnrFloor;
   public string NextHopId;
   // Ordered Links along the chosen path source→home, populated once
   // per Solve by RefreshHomePathSummaries. Null on the home endpoint
