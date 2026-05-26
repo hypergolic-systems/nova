@@ -55,6 +55,9 @@ namespace Nova.Core.Telemetry;
 //                           [[typeId, condition(0..2), exposedAtUt,
 //                             exposedSubjectId, massKg], ...]
 //   "D" Decoupler         — fullSeparation, canFullSeparate, ejectionForce
+//   "J" LandingLeg        — position(0..1), targetPosition(0|1), activated,
+//                           isMoving, requiresStaging, startsDeployed,
+//                           currentEcW, motorPowerW
 //   "E" Engine (chemical) — active, status(0..4), flameout, throttle,
 //                           currentThrustKn, maxThrustKn, ispS
 //   "N" NuclearEngine     — state(0..4), coreTempK, throttleActual,
@@ -355,6 +358,28 @@ public static class PartFormatter {
         WriteBit(sb, decoupler.FullSeparation, ref f);
         WriteBit(sb, decoupler.CanFullSeparate, ref f);
         WriteNum(sb, decoupler.EjectionForce, ref f);
+        JsonWriter.End(sb, ']');
+        return true;
+      }
+      case LandingLeg leg: {
+        // Position / TargetPosition flow live during deploy/retract so
+        // the UI can render motion; the (RequiresStaging, StartsDeployed)
+        // pair is the editor-tunable shape, echoed in flight so the SYS
+        // panel can show "needs staging" without cross-joining structure.
+        // CurrentEcW is pre-multiplied (Activity × MotorPowerW); only
+        // non-zero while moving.
+        JsonWriter.Sep(sb, ref first);
+        JsonWriter.Begin(sb, '[');
+        bool f = true;
+        WriteKind(sb, "J", ref f);
+        WriteNum(sb, leg.Position, ref f);
+        WriteNum(sb, leg.TargetPosition, ref f);
+        WriteBit(sb, leg.Activated, ref f);
+        WriteBit(sb, leg.IsMoving, ref f);
+        WriteBit(sb, leg.RequiresStaging, ref f);
+        WriteBit(sb, leg.StartsDeployed, ref f);
+        WriteNum(sb, leg.CurrentEcW, ref f);
+        WriteNum(sb, leg.MaxEcW, ref f);
         JsonWriter.End(sb, ']');
         return true;
       }

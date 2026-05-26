@@ -69,7 +69,8 @@
         || p.state.light.length > 0
         || p.state.ion.length > 0
         || hasTankCooler(p)
-        || hasRadiatorWithEc(p);
+        || hasRadiatorWithEc(p)
+        || p.state.landingLeg.length > 0;
   }
   function hasRadiatorWithEc(p: NovaPartHandle): boolean {
     if (!p.state) return false;
@@ -204,7 +205,7 @@
   // inflow), even when the motor is being driven from buffered
   // energy. The wheel's expandable detail lines surface that
   // separately so the energy balance stays visible.
-  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'radiator' | 'ion';
+  type ConsumerRowKind = 'command' | 'probe' | 'wheel' | 'light' | 'radiator' | 'ion' | 'leg';
   interface ConsumerRow {
     key: string;
     partId: string;
@@ -213,12 +214,24 @@
     /** Bus-facing W. For Command/Probe this is idleRate + testLoadRate;
      *  for Wheel it is the refill device's busRate (motor draw is shown
      *  in the wheel-detail Torque sub-row, not here); for Light it's
-     *  light.rate; for Ion it's currentEcW (or ratedPowerW in editor). */
+     *  light.rate; for Ion it's currentEcW (or ratedPowerW in editor);
+     *  for the aggregated landing-leg row it's the vessel-wide sum of
+     *  leg currentEcW (flight) / motorPowerW (editor). */
     busRate: number;
     command?: CommandState;
     probe?: ProbeState;
     wheel?: WheelState;
     ion?: IonEngineState;
+    /** Set on aggregated rows (kind === 'leg'): part ids covered by
+     *  the aggregate so the row's hover highlight tints every member
+     *  part. Per-part rows leave this undefined and use `partId`. */
+    aggregatedPartIds?: string[];
+    /** Set on the aggregated landing-leg row: total leg count + the
+     *  count currently in motion, used by the legRow snippet for the
+     *  "Landing Legs (4)" label and the optional motion badge. */
+    legCount?: number;
+    legMovingCount?: number;
+    legMaxEcW?: number;
   }
 
   // Tank cryocooler row — same data shape as ThermalView's CoolerRow.
@@ -362,6 +375,7 @@
     if (kind === 'wheel') return 'wheel';
     if (kind === 'radiator') return 'radiator';
     if (kind === 'ion') return 'ion';
+    if (kind === 'leg') return 'leg';
     return 'light';
   }
 
@@ -371,8 +385,50 @@
     return 'S' + stage;
   }
 
-  const consumerRows = $derived.by((): ConsumerRow[] =>
-    consumers.flatMap(buildConsumerRows));
+  // Build the synthetic aggregated landing-leg row. Legs are a
+  // fleet-of-many on most landers (3 / 4 / 6 of the same part) and
+  // their EC story is a single number — sum of currentEcW across all
+  // legs, almost always 0 except for the few seconds of an active
+  // deploy/retract. Per-part rows would just be N repeated copies of
+  // the same readout, so we amalgamate into one row labelled
+  // "Landing Legs (N)" with the aggregate draw.
+  const landingLegAggregate = $derived.by((): ConsumerRow | null => {
+    let count = 0;
+    let moving = 0;
+    let sumCurrent = 0;
+    let sumMax = 0;
+    const partIds: string[] = [];
+    for (const p of consumers) {
+      if (!p.state || p.state.landingLeg.length === 0) continue;
+      partIds.push(p.struct.id);
+      for (const leg of p.state.landingLeg) {
+        count += 1;
+        if (leg.isMoving) moving += 1;
+        sumCurrent += leg.currentEcW;
+        sumMax += leg.motorPowerW;
+      }
+    }
+    if (count === 0) return null;
+    return {
+      key: 'legs-aggregate',
+      // partId isn't really meaningful for the aggregate — use the
+      // first leg-bearing part for cases that still read it.
+      partId: partIds[0],
+      partTitle: count > 1 ? `Landing Legs (${count})` : 'Landing Leg',
+      kind: 'leg',
+      busRate: isEditor ? sumMax : sumCurrent,
+      aggregatedPartIds: partIds,
+      legCount: count,
+      legMovingCount: moving,
+      legMaxEcW: sumMax,
+    };
+  });
+
+  const consumerRows = $derived.by((): ConsumerRow[] => {
+    const rows = consumers.flatMap(buildConsumerRows);
+    if (landingLegAggregate) rows.push(landingLegAggregate);
+    return rows;
+  });
 
   // Per-part consumption total. Flight: live bus-facing draw (matches
   // the per-row totals). Editor: design-rated bus draws — wheel
@@ -408,6 +464,12 @@
     // the LP-throttled draw.
     for (const r of p.state.radiator)
       total += isEditor ? r.maxEcW : r.currentEcW;
+    // Landing legs. Flight: current draw, zero unless actively moving.
+    // Editor: motor peak (informational; in the editor balance, a
+    // motor that's only on during deploy is a low-duty load — but we
+    // surface it so the player sees the spec figure).
+    for (const leg of p.state.landingLeg)
+      total += isEditor ? leg.motorPowerW : leg.currentEcW;
     return total;
   }
 
@@ -735,6 +797,40 @@
     <span class="pwr__row-rate"
           class:pwr__row-rate--neg={!isZero(row.busRate)}
           class:pwr__row-rate--zero={isZero(row.busRate)}>
+      {r.mag}<em>{r.unit}</em>
+    </span>
+  </li>
+{/snippet}
+
+<!-- Landing-leg aggregated row. One synthetic row per vessel summing
+     `currentEcW` across every leg part. EC is zero unless a leg is
+     actively deploying/retracting (legs don't draw power at rest);
+     when motion is happening, the row shows the live draw and a
+     small badge counts how many of the N legs are moving. Hover
+     tints every leg part on the vessel. -->
+{#snippet legRow(row: ConsumerRow)}
+  {@const r = fmtRate(row.busRate)}
+  {@const maxFmt = fmtRate(row.legMaxEcW ?? 0)}
+  {@const moving = row.legMovingCount ?? 0}
+  {@const total = row.legCount ?? 0}
+  <li class="pwr__row"
+      onmouseenter={() => highlightOn(row.aggregatedPartIds ?? [row.partId])}
+      onmouseleave={highlightOff}>
+    <span class="pwr__row-chev-spacer" aria-hidden="true"></span>
+    <span class="pwr__row-icon">
+      <ComponentIcon kind="leg" />
+    </span>
+    <span class="pwr__row-name">{row.partTitle}</span>
+    {#if moving > 0}
+      <span class="pwr__leg-moving"
+            title={`${moving} of ${total} legs in motion`}>
+        {moving}/{total} ▸
+      </span>
+    {/if}
+    <span class="pwr__row-rate"
+          class:pwr__row-rate--neg={!isZero(row.busRate)}
+          class:pwr__row-rate--zero={isZero(row.busRate)}
+          title={`Current draw: ${r.mag} ${r.unit} · Motor peak: ${maxFmt.mag} ${maxFmt.unit}`}>
       {r.mag}<em>{r.unit}</em>
     </span>
   </li>
@@ -1149,6 +1245,8 @@
               {@render wheelRow(row, row.wheel)}
             {:else if row.kind === 'ion' && row.ion}
               {@render ionRow(row, row.ion)}
+            {:else if row.kind === 'leg'}
+              {@render legRow(row)}
             {:else}
               {@render consumerFlatRow(row)}
             {/if}
@@ -1980,6 +2078,20 @@
     border-color: var(--warn);
     box-shadow: 0 0 4px var(--warn-glow);
     text-shadow: 0 0 4px var(--warn-glow);
+  }
+
+  /* Landing-leg "in motion" badge. Sits between the row title and the
+     rate column on the aggregated row when at least one leg is
+     currently deploying/retracting. Borrows the warn palette so the
+     badge reads as "this is briefly drawing significant power" — it
+     fades back to invisible the moment all legs are stationary. */
+  .pwr__leg-moving {
+    color: var(--warn);
+    font-size: 0.85em;
+    letter-spacing: 0.04em;
+    margin-left: auto;
+    margin-right: 0.6em;
+    opacity: 0.85;
   }
 
   /* Cryocooler stage toggle. Fixed width so OFF / ON / S1 / S2 all

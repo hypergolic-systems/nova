@@ -193,6 +193,7 @@ message PartState {
   SolarPanelState     solar_panel     = 18;
   AntennaState        antenna         = 19;
   MysteryGooState     mystery_goo     = 20;
+  LandingLegState     landing_leg     = 21;
 }
 
 message TankVolumeState {
@@ -274,6 +275,25 @@ message SolarPanelState {
 // deployState` doesn't survive Nova's proto save path).
 message AntennaState {
   bool is_deployed = 1;
+}
+
+// Landing-leg deploy state. `requires_staging` and `starts_deployed`
+// are editor-tunable properties — persist across loads, applied as
+// fresh-spawn defaults by NovaLandingLegModule.OnStart. `activated`
+// is the staging-gate runtime flag (set on OnActive when
+// requires_staging=true; born true when requires_staging=false).
+// `position` is the continuous deploy fraction (0=stowed,
+// 1=extended); `target_position` is the player's current request
+// (equals position at rest, 0 or 1 while in motion). A mid-deploy
+// freeze (EC starvation) round-trips: a quicksaved half-deployed
+// leg reloads at the same position with target_position still set,
+// and resumes if the bus recovers.
+message LandingLegState {
+  bool   requires_staging = 1;
+  bool   starts_deployed  = 2;
+  bool   activated        = 3;
+  double position         = 4;
+  double target_position  = 5;
 }
 
 // NTR (LV-N) reactor state. The reactor sits in one of five state-

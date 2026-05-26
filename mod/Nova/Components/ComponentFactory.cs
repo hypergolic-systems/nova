@@ -43,6 +43,7 @@ public static class ComponentFactory {
     ["NovaRtgModule"] = "Rtg",
     ["NovaRadiatorModule"] = "Radiator",
     ["NovaMysteryGooModule"] = "MysteryGoo",
+    ["NovaLandingLegModule"] = "LandingLeg",
   };
 
   public static void RegisterModuleMapping(string moduleName, string typeName) {
@@ -87,6 +88,7 @@ public static class ComponentFactory {
       "Rtg" => CreateRtg(moduleNode),
       "Radiator" => CreateRadiator(moduleNode),
       "MysteryGoo" => CreateMysteryGoo(moduleNode),
+      "LandingLeg" => CreateLandingLeg(moduleNode),
       _ => throw new System.Exception($"Unknown component type '{typeName}' for module '{moduleName}'"),
     };
   }
@@ -401,6 +403,18 @@ public static class ComponentFactory {
       Capacity              = int.Parse(node.GetValue("capacity")),
       AllowedSampleTypeIds  = node.GetValues("allowedSampleType").ToList(),
       InitialSampleTypeIds  = node.GetValues("initialSample").ToList(),
+    };
+  }
+
+  public static LandingLeg CreateLandingLeg(ConfigNode node) {
+    // Editor-tunable bools (RequiresStaging / StartsDeployed) are NOT
+    // read here — NovaLandingLegModule applies the KSPField defaults
+    // in OnStart only when LoadedFromSave is false, so a persisted
+    // editor flip survives the round-trip. Activated / Position /
+    // TargetPosition are runtime state set OnStart or Load.
+    return new LandingLeg {
+      MotorPowerW   = double.Parse(node.GetValue("motorPowerW")),
+      DeploySeconds = double.Parse(node.GetValue("deploySeconds")),
     };
   }
 }

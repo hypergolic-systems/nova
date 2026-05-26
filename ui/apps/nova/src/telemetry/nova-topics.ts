@@ -180,6 +180,25 @@ export type NovaDecouplerFrame = [
   ejectionForce: number,
 ];
 
+// Landing leg. Position lerps under direct C# control during motion
+// (animation clip stepped by Activity × deploy rate); a starved EC
+// bus freezes the leg in its current half-deployed pose. The
+// (requiresStaging, startsDeployed) pair is editor-tunable and
+// persists; (activated, position, targetPosition) is the runtime
+// state. CurrentEcW is pre-multiplied (Activity × motorPowerW) and
+// is 0 while stationary.
+export type NovaLandingLegFrame = [
+  'J',
+  position: number,
+  targetPosition: number,
+  activated: 0 | 1,
+  isMoving: 0 | 1,
+  requiresStaging: 0 | 1,
+  startsDeployed: 0 | 1,
+  currentEcW: number,
+  motorPowerW: number,
+];
+
 // LV-N NTR reactor. `state` maps to ReactorState enum below; `throttleSetpoint`
 // is what the slew is currently chasing (player input, gated by MinThrottle,
 // or 0 when shutdown is queued). `currentThrustKn` is reactor-state-gated
@@ -362,6 +381,7 @@ export type NovaComponentFrame =
   | NovaFuelCellFrame
   | NovaRtgFrame
   | NovaDecouplerFrame
+  | NovaLandingLegFrame
   | NovaEngineFrame
   | NovaNuclearFrame
   | NovaIonFrame
@@ -800,6 +820,41 @@ export interface RadiatorState {
   maxEcW: number;
 }
 
+/** Live landing-leg state. Editor-tunable shape (requiresStaging,
+ *  startsDeployed) and runtime state (activated, position,
+ *  targetPosition, isMoving, EC draw) round-trip on every solver tick.
+ *  EC is zero unless the leg is moving — design choice, not a bug. */
+export interface LandingLegState {
+  /** Current deploy fraction, 0..1. 0 = fully retracted, 1 = fully
+   *  extended. Lerps under direct C# control during motion. */
+  position: number;
+  /** Player's commanded target (0 or 1). Equal to position at rest,
+   *  the opposite when the leg is in motion. */
+  targetPosition: number;
+  /** Staging-gate flag. False blocks the gear key from doing
+   *  anything to this leg. Born true when requiresStaging is false;
+   *  flips true on the first stage-activation that includes the
+   *  part, or on a setLandingLegActivated UI op. */
+  activated: boolean;
+  /** True iff position != targetPosition — i.e. the leg is actively
+   *  moving toward a target. Derived from position/target on emit
+   *  for UI convenience. */
+  isMoving: boolean;
+  /** Editor-tunable: when true, the leg shows a staging-stack
+   *  icon and won't respond to G until staged. Persists across
+   *  loads via the proto. */
+  requiresStaging: boolean;
+  /** Editor-tunable: when true, the leg spawns at position=1 on a
+   *  fresh launch; when false, position=0. Persists. */
+  startsDeployed: boolean;
+  /** Live EC draw, watts. Always 0 while stationary — legs don't
+   *  consume power at rest. While moving = Activity × motorPowerW. */
+  currentEcW: number;
+  /** Design-spec peak motor power, watts. Editor / spec view uses
+   *  this when the LP isn't running. */
+  motorPowerW: number;
+}
+
 export interface AntennaState {
   /** Hardware-rated data rate ceiling, bits per second. Reached on a
    *  self-link at exactly `refDistanceM` — the comms graph scales
@@ -1008,6 +1063,7 @@ export interface NovaPart {
   nuclear: NuclearReactorState[];
   ion: IonEngineState[];
   goo: GooState[];
+  landingLeg: LandingLegState[];
 }
 
 // One instrument's decoded science payload. `experimentIds` is the
@@ -2078,6 +2134,7 @@ export function decodePart(f: NovaPartFrame): NovaPart {
     nuclear: [],
     ion: [],
     goo: [],
+    landingLeg: [],
   };
   for (const c of components) {
     switch (c[0]) {
@@ -2198,6 +2255,18 @@ export function decodePart(f: NovaPartFrame): NovaPart {
           fullSeparation:  c[1] === 1,
           canFullSeparate: c[2] === 1,
           ejectionForce:   c[3],
+        });
+        break;
+      case 'J':
+        out.landingLeg.push({
+          position:        c[1],
+          targetPosition:  c[2],
+          activated:       c[3] === 1,
+          isMoving:        c[4] === 1,
+          requiresStaging: c[5] === 1,
+          startsDeployed:  c[6] === 1,
+          currentEcW:      c[7],
+          motorPowerW:     c[8],
         });
         break;
       case 'E':

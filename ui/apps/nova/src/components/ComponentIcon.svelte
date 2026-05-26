@@ -27,7 +27,8 @@
     | 'thermometer'
     | 'mysteryGoo'
     | 'rtg'
-    | 'radiator';
+    | 'radiator'
+    | 'leg';
 
   let { kind }: { kind: ComponentKind } = $props();
 </script>
@@ -262,6 +263,17 @@
       <line x1="2.6" y1="6"   x2="3.8" y2="6" />
       <line x1="8.2" y1="6"   x2="9.4" y2="6" />
     </g>
+  {:else if kind === 'leg'}
+    <!-- Landing leg: angled strut emerging from an attach plate at the
+         top with a small contact pad at the bottom. Reads as
+         "deployable landing strut" — visually distinct from the
+         radiator's vertical-fins spine and from the antenna's mast. -->
+    <g stroke="currentColor" stroke-width="0.95" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <line x1="2.4" y1="2.2" x2="9.6" y2="2.2" />
+      <line x1="5.5" y1="2.4" x2="3.4" y2="9.8" />
+      <line x1="6.5" y1="2.4" x2="8.6" y2="9.8" />
+    </g>
+    <ellipse cx="6" cy="10.4" rx="3.2" ry="0.95" fill="currentColor" />
   {:else if kind === 'crew'}
     <!-- Single torso silhouette: round head over a trapezoidal body.
          Deliberately abstract — reads as "person" without committing

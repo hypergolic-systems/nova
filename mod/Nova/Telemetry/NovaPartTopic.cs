@@ -193,6 +193,33 @@ namespace Nova.Telemetry;
 //                                nuclear engines (use setReactorActive)
 //                                and on tripped ion engines (call
 //                                setIonResetTrip first).
+//   "setLandingLegDeployed" [bool]
+//                              — extend or retract a landing leg
+//                                (true = extend, false = retract).
+//                                Flight-only. Gated by leg.Activated
+//                                — pre-stage requests are silent
+//                                no-ops. Mid-deploy requests in the
+//                                opposite direction reverse motion;
+//                                same-direction requests are no-ops.
+//   "setLandingLegActivated" [bool]
+//                              — flip the staging-gate Activated
+//                                flag without re-staging. Flight-only.
+//                                Recovery path for "forgot to stage"
+//                                and a manual disarm if the player
+//                                wants to immobilise a leg.
+//   "setLandingLegRequiresStaging" [bool]
+//                              — editor-only. Editor-tunable: when
+//                                true the leg shows a staging-stack
+//                                icon (STRUT) and must be staged
+//                                before G works; when false the leg
+//                                is born activated. Round-trips on
+//                                save via LandingLegState.
+//   "setLandingLegStartsDeployed" [bool]
+//                              — editor-only. Editor-tunable initial
+//                                pose: when true the leg spawns
+//                                extended on the launchpad; when
+//                                false it spawns retracted. Editor
+//                                preview snaps the model to match.
 public sealed class NovaPartTopic : Topic {
   private const string LogPrefix = "[Nova/Telemetry] ";
 
@@ -397,6 +424,65 @@ public sealed class NovaPartTopic : Topic {
         if (!active) engine.Throttle = 0;
         var vesselModule = _part?.vessel?.GetComponent<NovaVesselModule>();
         vesselModule?.Virtual?.Invalidate();
+        MarkDirty();
+        return;
+      }
+      case "setLandingLegDeployed": {
+        if (args == null || args.Count < 1 || !(args[0] is bool deployed)) {
+          Debug.LogWarning(LogPrefix + Name + " setLandingLegDeployed: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.FLIGHT) {
+          Debug.Log(LogPrefix + Name + " setLandingLegDeployed rejected outside flight");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaLandingLegModule>();
+        if (module == null) return;
+        if (deployed) module.Extend();
+        else module.Retract();
+        return;
+      }
+      case "setLandingLegActivated": {
+        if (args == null || args.Count < 1 || !(args[0] is bool active)) {
+          Debug.LogWarning(LogPrefix + Name + " setLandingLegActivated: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.FLIGHT) {
+          Debug.Log(LogPrefix + Name + " setLandingLegActivated rejected outside flight");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaLandingLegModule>();
+        if (module == null) return;
+        module.SetActivated(active);
+        return;
+      }
+      case "setLandingLegRequiresStaging": {
+        if (args == null || args.Count < 1 || !(args[0] is bool req)) {
+          Debug.LogWarning(LogPrefix + Name + " setLandingLegRequiresStaging: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          Debug.Log(LogPrefix + Name + " setLandingLegRequiresStaging rejected outside editor");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaLandingLegModule>();
+        if (module == null) return;
+        module.SetRequiresStaging(req);
+        MarkDirty();
+        return;
+      }
+      case "setLandingLegStartsDeployed": {
+        if (args == null || args.Count < 1 || !(args[0] is bool deployed)) {
+          Debug.LogWarning(LogPrefix + Name + " setLandingLegStartsDeployed: expected [bool]");
+          return;
+        }
+        if (HighLogic.LoadedScene != GameScenes.EDITOR) {
+          Debug.Log(LogPrefix + Name + " setLandingLegStartsDeployed rejected outside editor");
+          return;
+        }
+        var module = _part?.FindModuleImplementing<NovaLandingLegModule>();
+        if (module == null) return;
+        module.SetStartsDeployed(deployed);
         MarkDirty();
         return;
       }
