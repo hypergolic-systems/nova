@@ -43,6 +43,7 @@
   import { onDestroy, untrack } from 'svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
+  import Subsection from '../common/Subsection.svelte';
   import { siPrefix, fmtMag, fmtBytes } from '../../util/units';
 
   interface Props { vesselId: string; }
@@ -56,9 +57,12 @@
   const cmdParts = untrack(() => useNovaParts(() => vesselId));
   const comms    = useComms(() => vesselId);
 
-  type NodeKey = 'storedCommands' | 'comms';
-  let expanded = $state<Record<NodeKey, boolean>>({ storedCommands: true, comms: true });
-  function toggleNode(k: NodeKey): void { expanded[k] = !expanded[k]; }
+  // Subsection open state — in-memory only, defaults open. The
+  // parent (System) accordion already gates whether these render
+  // at all, so persisting their nested state would be over-
+  // remembering.
+  let cmdsOpen   = $state(true);
+  let commsOpen  = $state(true);
 
   const stageOps = useStageOps();
   function highlightOn(ids: readonly string[]): void { stageOps.setHighlightParts(ids); }
@@ -247,14 +251,6 @@
       : 0);
 </script>
 
-{#snippet chev(open: boolean)}
-  <svg class="sys__chev" class:sys__chev--open={open}
-       viewBox="0 0 8 8" aria-hidden="true">
-    <path d="M2.2 1.4 L5.8 4 L2.2 6.6" fill="none" stroke="currentColor"
-          stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-  </svg>
-{/snippet}
-
 {#snippet flowLane(label: string, rate: number, kind: 'in' | 'out')}
   {@const mag = flowMagnitude(rate)}
   {@const r = fmtRateBps(rate)}
@@ -299,31 +295,26 @@
 <section class="sys">
 
   <!-- STORED COMMANDS ────────────────────────────────────────── -->
-  <div class="sys__node">
-    <button type="button" class="sys__node-head"
-            aria-expanded={expanded.storedCommands}
-            onclick={() => toggleNode('storedCommands')}>
-      {@render chev(expanded.storedCommands)}
-      <span class="sys__node-title">STORED COMMANDS</span>
+  <Subsection title="Stored Commands" bind:open={cmdsOpen}>
+    {#snippet summary()}
       {#if probeEntries.length === 0}
-        <span class="sys__node-summary sys__rate-zero">—</span>
+        <span class="sys__rate-zero">—</span>
       {:else}
         {@const s = fmtRateBpsSigned(totalNet)}
-        <span class="sys__node-summary"
+        <span class="sys__chip"
               class:sys__rate-pos={totalNet > RATE_EPSILON}
               class:sys__rate-neg={totalNet < -RATE_EPSILON}
               class:sys__rate-zero={isZero(totalNet)}>
           {s.sign}{s.mag}<em>{s.unit}</em>
         </span>
       {/if}
-    </button>
+    {/snippet}
 
-    {#if expanded.storedCommands}
-      <div class="sys__sub">
-        {#if probeEntries.length === 0}
-          <p class="sys__empty">No probe core on this vessel.</p>
-        {:else}
-          {#each probeEntries as e (e.key)}
+    <div class="sys__sub">
+      {#if probeEntries.length === 0}
+        <p class="sys__empty">No probe core on this vessel.</p>
+      {:else}
+        {#each probeEntries as e (e.key)}
             {@const fill = e.capacity > 0 ? e.bytes / e.capacity : 0}
             <div class="ctrl"
                  onmouseenter={() => highlightOn([e.partId])}
@@ -369,28 +360,22 @@
                 {@render flowLane('DECAY',     e.decay,     'out')}
               </ul>
             </div>
-          {/each}
-        {/if}
-      </div>
-    {/if}
-  </div>
+        {/each}
+      {/if}
+    </div>
+  </Subsection>
 
   <!-- COMMUNICATIONS ────────────────────────────────────────── -->
-  <div class="sys__node">
-    <button type="button" class="sys__node-head"
-            aria-expanded={expanded.comms}
-            onclick={() => toggleNode('comms')}>
-      {@render chev(expanded.comms)}
-      <span class="sys__node-title">COMMUNICATIONS</span>
-      <span class="sys__node-summary"
+  <Subsection title="Communications" bind:open={commsOpen}>
+    {#snippet summary()}
+      <span class="sys__chip"
             class:sys__rate-pos={linkUp}
             class:sys__rate-neg={!linkUp}>
         {linkUp ? 'LINKED' : 'DARK'}
       </span>
-    </button>
+    {/snippet}
 
-    {#if expanded.comms}
-      <div class="sys__sub">
+    <div class="sys__sub">
         <!-- Status strip: lamp + state label + signal bars + percent.
              A single horizontal cluster reads as a transponder face;
              the lamp colour drives the eye, the bars carry magnitude. -->
@@ -542,58 +527,40 @@
           {/if}
         </div>
       </div>
-    {/if}
-  </div>
+  </Subsection>
 </section>
 
 <style>
   .sys {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
   }
 
-  /* ── Top-level node + accordion head ─────────────────────── */
-  .sys__node { display: flex; flex-direction: column; }
-  .sys__node-head {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 4px 5px 0;
-    background: transparent; border: 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--fg);
-    font-family: var(--font-display);
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    cursor: pointer;
-    transition: color 160ms ease, border-color 160ms ease;
-  }
-  .sys__node-head:hover { color: var(--accent); }
-  .sys__node-title { flex: 1 1 auto; text-align: left; }
-  .sys__node-summary {
-    flex: 0 0 auto;
+  /* Subsection-head summary chip — a small bordered pill the size
+     of the head text, mirroring the AccordionSection's right-edge
+     summary vocabulary but at the subordinate register. Reads as
+     a status indicator regardless of fold state. */
+  .sys__chip {
+    display: inline-flex;
+    align-items: baseline;
+    padding: 1px 5px;
+    border: 1px solid var(--line);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 9.5px;
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
-    padding: 1px 6px;
-    border: 1px solid var(--line);
   }
-  .sys__node-summary em {
+  .sys__chip em {
     font-style: normal;
     color: var(--fg-mute);
     padding-left: 2px;
   }
-  .sys__chev {
-    flex: 0 0 auto;
-    width: 8px; height: 8px;
-    color: var(--fg-mute);
-    transition: transform 160ms ease, color 160ms ease;
-  }
-  .sys__chev--open { transform: rotate(90deg); color: var(--accent); }
 
   .sys__sub {
-    padding: 8px 0 0 0;
-    display: flex; flex-direction: column; gap: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .sys__empty {
     margin: 0;
