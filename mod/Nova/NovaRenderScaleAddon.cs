@@ -3,12 +3,18 @@ namespace Nova;
 using Dragonglass.Hud;
 using UnityEngine;
 
-// Nova opts into Dragonglass's 2× CEF supersampling. The cost (4×
-// CEF GPU work, ~100 MB extra HUD texture at 1920×1080, ~400 MB at
-// 4K) buys us text and SVG that survive CEF's grayscale anti-aliasing
-// without thickening every glyph or restricting our font palette.
-// Subpixel AA is unreachable in Unity's offscreen-then-composite
-// pipeline regardless of OS — see notes in SidecarHost.SetRenderScale.
+// Nova opts into Dragonglass's 1.5× CEF supersampling — a sweet-spot
+// middle ground. Cost is ~2.25× the 1× baseline (vs 4× for full 2×
+// SS) but buys roughly 75% of the glyph-crispness win: enough to
+// rescue text and SVG from CEF's grayscale-AA softness without the
+// 4× HUD-texture memory hit of integer-2× supersampling. Subpixel
+// AA is unreachable in Unity's offscreen-then-composite pipeline
+// regardless of OS — see notes in SidecarHost.SetRenderScale.
+//
+// Trade-off: non-integer downsample has minor bilinear-phase
+// artifacts on hairline geometry (1px borders can shimmer faintly),
+// but is well-behaved at this ratio. Apple ships the same pattern
+// for macOS "More Space" Retina mode.
 //
 // Must run at Startup.Instantly: Dragonglass's SidecarBootstrap
 // coroutine spawns the sidecar one frame past Instantly, and the
@@ -18,7 +24,7 @@ using UnityEngine;
 [KSPAddon(KSPAddon.Startup.Instantly, true)]
 public class NovaRenderScaleAddon : MonoBehaviour {
   void Awake() {
-    SidecarHost.SetRenderScale(2);
-    NovaLog.Log("requested 2x CEF render scale (supersampled HUD)");
+    SidecarHost.SetRenderScale(1.5f);
+    NovaLog.Log("requested 1.5x CEF render scale (supersampled HUD)");
   }
 }
