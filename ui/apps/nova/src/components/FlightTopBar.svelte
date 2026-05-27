@@ -153,7 +153,7 @@
 </script>
 
 {#if flight.vesselId}
-  <div class="ftb">
+  <div class="ftb nova-surface">
     <!-- ── MET + Timewarp gauge ──────────────────────────── -->
     <section class="ftb__cell ftb__cell--clock">
       <div class="ftb__clock-row">
@@ -218,33 +218,59 @@
         </span>
       </div>
     </section>
+
+    <!-- Bezel rule — fills the negative space between the LINK cell and
+         the rack's left edge. Reads as an engineered empty bay rather
+         than as missing UI. The line sits on the same baseline as the
+         inter-cell `border-left` rules so the strip looks continuous. -->
+    <div class="ftb__bezel-rule" aria-hidden="true"></div>
   </div>
 {/if}
 
 <style>
-  /* Fixed-position bar pinned to the top of the viewport. The flight
-     hud cluster lives bottom-anchored, so a 56 px top strip never
-     overlaps. */
+  /* Fixed-position telemetry strip running the full width of the
+     viewport. The rack starts BELOW this strip (top: 48 px) so the
+     strip is the topmost band — the conventional dashboard layout
+     where the header dominates and the sidebar is subordinated.
+     The flight HUD's navball cluster lives bottom-anchored, so a
+     48 px top band never overlaps. */
   .ftb {
     position: fixed;
     top: 0;
-    left: 50%;
-    transform: translateX(-50%);
+    left: 0;
+    right: 0;
     display: flex;
     align-items: stretch;
     gap: 0;
     height: 48px;
     background: var(--bg-panel-strong);
-    border: 1px solid var(--line-accent);
-    border-top: none;
-    border-bottom-left-radius: 4px;
-    border-bottom-right-radius: 4px;
+    border-bottom: 1px solid var(--line-accent);
+    border-radius: 0;
     box-shadow: 0 0 18px rgba(0, 0, 0, 0.55);
     color: var(--fg);
     font-family: var(--font-mono);
     user-select: none;
-    z-index: 50;
+    z-index: 60; /* above the rack (50) so the rack's border-left
+                    doesn't tick up into the strip's lower edge */
     pointer-events: auto;
+  }
+
+  /* Bezel rule — etched line in the empty bay between LINK and rack.
+     Sits at the same vertical center as the inter-cell borders so the
+     strip reads as one engineered chassis. */
+  .ftb__bezel-rule {
+    flex: 1 1 auto;
+    align-self: center;
+    height: 1px;
+    margin: 0 16px 0 8px;
+    background: linear-gradient(
+      to right,
+      var(--line) 0,
+      var(--line) 65%,
+      var(--line-accent) 95%,
+      transparent 100%
+    );
+    opacity: 0.7;
   }
 
   /* Fixed widths per cell so chips/values appearing or disappearing

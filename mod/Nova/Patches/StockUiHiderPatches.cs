@@ -218,26 +218,27 @@ public static class StockUiHiderPatches
 
     // ApplicationLauncher is the persistent app-button strip stock
     // KSP shows along the screen edge — Engineer's Report, Stock dV,
-    // Alarm Clock, KSPedia, Action Groups, Crew Manifest, etc. In
-    // the editor it lives along the bottom; UIs that draft their
-    // own analysis tools (Δv, mass, crew rosters) want it gone so
-    // those affordances don't double up.
+    // Alarm Clock, KSPedia, Action Groups, Crew Manifest, etc. Nova
+    // ships its own analysis surfaces (Δv, mass, crew rosters) in
+    // both Editor and Flight, so the stock strip is suppressed in
+    // both scenes. Space Center and Tracking Station keep it (still
+    // useful for stock-game flows we don't replace).
     //
     // ApplicationLauncher is `DontDestroyOnLoad`, so a one-shot
-    // `Hide()` would persist into Flight too — unwanted, since
-    // Flight may still need stock app buttons. We scope by patching
-    // `Show()` to short-circuit while we're in the editor scene,
-    // and additionally calling `Hide()` once on each EditorAny scene entry
-    // to wipe whatever visibility state stock left behind from the previous scene.
-    // OnDestroy of the addon (scene exit) calls `Show()` so Flight
-    // and the Space Center see the launcher again.
+    // `Hide()` would persist into other scenes. We scope by patching
+    // `Show()` to short-circuit while we're in Editor or Flight,
+    // and additionally calling `Hide()` once on each scene entry
+    // to wipe whatever visibility state stock left behind from the
+    // previous scene. OnDestroy of each per-scene addon (scene exit)
+    // calls `Show()` so re-entry to Space Center / TS sees the launcher.
     [HarmonyPatch(typeof(ApplicationLauncher), nameof(ApplicationLauncher.Show))]
     public static class ApplicationLauncherShowPatch
     {
         [HarmonyPrefix]
         public static bool Prefix()
         {
-            if (HighLogic.LoadedScene == GameScenes.EDITOR) return false;
+            var scene = HighLogic.LoadedScene;
+            if (scene == GameScenes.EDITOR || scene == GameScenes.FLIGHT) return false;
             return true;
         }
     }
@@ -301,6 +302,54 @@ public class ApplicationLauncherEditorHider : MonoBehaviour
         launcher.Hide();
         _applied = true;
         NovaLog.Log(LogPrefix + "hid ApplicationLauncher (editor toolbar)");
+    }
+
+    private void OnDestroy()
+    {
+        var launcher = ApplicationLauncher.Instance;
+        if (launcher != null) launcher.Show();
+    }
+}
+
+// Flight-scene counterpart to ApplicationLauncherEditorHider. Same
+// poll-once-then-stop pattern; Show() on scene exit so Space Center
+// / Tracking Station regain the launcher.
+//
+// Kept as a separate addon (rather than combining Flight + EditorAny)
+// because [KSPAddon] doesn't allow multi-scene start enums, and
+// explicit per-scene addons keep each scene's intent surface-readable.
+[KSPAddon(KSPAddon.Startup.Flight, once: false)]
+public class ApplicationLauncherFlightHider : MonoBehaviour
+{
+    private const string LogPrefix = "[Nova/uihide] ";
+    private const float PollWindow = 3.0f;
+    private float _started;
+    private bool _applied;
+
+    private void Start()
+    {
+        _started = Time.realtimeSinceStartup;
+        TryApply();
+    }
+
+    private void Update()
+    {
+        if (_applied) { enabled = false; return; }
+        if (Time.realtimeSinceStartup - _started > PollWindow)
+        {
+            enabled = false;
+            return;
+        }
+        TryApply();
+    }
+
+    private void TryApply()
+    {
+        var launcher = ApplicationLauncher.Instance;
+        if (launcher == null) return;
+        launcher.Hide();
+        _applied = true;
+        NovaLog.Log(LogPrefix + "hid ApplicationLauncher (flight toolbar)");
     }
 
     private void OnDestroy()

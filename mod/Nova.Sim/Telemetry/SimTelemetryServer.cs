@@ -33,6 +33,7 @@ namespace Nova.Sim.Telemetry;
 //   NovaOrbit/<guid>
 //   NovaComms/<guid>            (always emits "no-link" for now)
 //   NovaVesselStructure/<guid>
+//   NovaVesselState/<guid>      (no atmosphere/integrator: situation frozen at 5/Orbiting)
 //
 // Topics the UI may request but the sim doesn't yet emit are silently
 // no-op'd: subscribe succeeds, no frames flow. Add formatters and a
@@ -78,6 +79,7 @@ public sealed class SimTelemetryServer : IDisposable {
 
     // 10Hz publish cadence — same as Dragonglass's persistent host.
     _publishTimer = new Timer(_ => PublishOnce(), null, 100, 100);
+    _last = this;
     Console.WriteLine("[ws] listening on ws://0.0.0.0:" + _port);
   }
 
@@ -247,6 +249,10 @@ public sealed class SimTelemetryServer : IDisposable {
       WriteVesselStructureFrame(sb, shipIdOverride: null);
       return true;
     }
+    if (TryPrefix(topic, "NovaVesselState/", out _)) {
+      WriteVesselStateFrame(sb);
+      return true;
+    }
     if (topic == "NovaEditorShipStructure/editor") {
       // Editor-side singleton. The in-game mod publishes this with a
       // fixed shipId="editor" (NovaEditorShipStructureTopic.cs:34);
@@ -320,6 +326,56 @@ public sealed class SimTelemetryServer : IDisposable {
         linkSnr: 0, linkRateBps: 0, linkMaxRateBps: 0,
         linkSnrFloor: 0, peerLabel: "",
         txActive: false, txRateBps: 0, txDeliveredBytes: 0, txTotalBytes: 0);
+  }
+
+  // Synthetic NovaVesselState frame for the loaded VirtualVessel.
+  // Wet mass via Σ Staging.ActiveNodes().Mass() — Nova.Core stores
+  // part dry masses in kg (NovaSaveLoader and SimVesselLoader both
+  // multiply prefab.mass × 1000 before AddPart), so Node.Mass() is
+  // already SI; no further unit conversion. Part count via AllPartIds.
+  // Situation pinned to Orbiting (5) because the sim has no flight
+  // integrator to drive transitions — the UI's status pip stays
+  // steady-green in sim mode. Crew is 0 (sim has no Kerbal model).
+  private void WriteVesselStateFrame(StringBuilder sb) {
+    string id, name, bodyName;
+    double massKg;
+    int partCount;
+    const int situation = 5; // Vessel.Situations.Orbiting
+    const int crewCount = 0;
+    const int crewCapacity = 0;
+    lock (_runner.Lock) {
+      id = _runner.VesselGuid;
+      name = _runner.VesselName;
+      bodyName = _runner.Context?.BodyName ?? "";
+      var virt = _runner.Vessel;
+      double sumKg = 0;
+      int n = 0;
+      if (virt != null) {
+        foreach (var _pid in virt.AllPartIds()) n++;
+        if (virt.Systems?.Staging != null) {
+          foreach (var node in virt.Systems.Staging.ActiveNodes()) sumKg += node.Mass();
+        }
+      }
+      massKg = sumKg;
+      partCount = n;
+    }
+    VesselStateFormatter.Write(sb, id, name, situation, bodyName,
+        massKg, partCount, crewCount, crewCapacity);
+  }
+
+  // kspcli debug helper: builds a NovaVesselState frame for the
+  // currently loaded vessel and returns it as a JSON string. Invoke
+  // via:
+  //   kspcli --udp 127.0.0.1:9877 eval 'Nova.Sim.Telemetry.SimTelemetryServer.DumpVesselState()'
+  // Static so kspcli's evaluator can resolve it without a server
+  // instance — uses the most-recently-started SimTelemetryServer.
+  private static SimTelemetryServer _last;
+  public static string DumpVesselState() {
+    var srv = _last;
+    if (srv == null) return "(no SimTelemetryServer instance)";
+    var sb = new StringBuilder();
+    srv.WriteVesselStateFrame(sb);
+    return sb.ToString();
   }
 
   private void WriteVesselStructureFrame(StringBuilder sb, string shipIdOverride) {

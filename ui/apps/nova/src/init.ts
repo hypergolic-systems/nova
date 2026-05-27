@@ -15,6 +15,18 @@ import {
   CAP_EDITOR_STAGING,
   CAP_EDITOR_TOOLBAR,
 } from '@dragonglass/telemetry/core';
+import novaOverridesCss from './theme/nova-overrides.css?inline';
+
+// Adopt Nova's design-token overrides after Dragonglass's runtime.css.
+// document.adoptedStyleSheets resolves in array order, so appending
+// here lets these tokens win over DG's :root defaults without `!important`.
+// Per-scene CSS (flight.ts, editor.ts) adopts on top of this.
+const novaOverridesSheet = new CSSStyleSheet();
+novaOverridesSheet.replaceSync(novaOverridesCss);
+document.adoptedStyleSheets = [
+  ...document.adoptedStyleSheets,
+  novaOverridesSheet,
+];
 
 // Capabilities Nova owns:
 //   flight/ui      — Nova draws navball, staging, tapes; DG suppresses

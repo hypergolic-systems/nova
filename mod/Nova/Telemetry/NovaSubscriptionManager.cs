@@ -14,6 +14,7 @@ namespace Nova.Telemetry;
 //
 // Recognised topic prefixes:
 //   NovaVesselStructure/<vesselGuid>  → NovaVesselStructureTopic
+//   NovaVesselState/<vesselGuid>      → NovaVesselStateTopic
 //   NovaOrbit/<vesselGuid>            → NovaOrbitTopic
 //   NovaComms/<vesselGuid>            → NovaCommsTopic
 //   NovaPart/<partId>                 → NovaPartTopic
@@ -21,12 +22,13 @@ namespace Nova.Telemetry;
 //   NovaStorage/<partId>              → NovaStorageTopic
 public sealed class NovaSubscriptionManager : MonoBehaviour {
   private const string LogPrefix = "[Nova/Telemetry] ";
-  private const string VesselPrefix  = "NovaVesselStructure/";
-  private const string OrbitPrefix   = "NovaOrbit/";
-  private const string CommsPrefix   = "NovaComms/";
-  private const string PartPrefix    = "NovaPart/";
-  private const string SciencePrefix = "NovaScience/";
-  private const string StoragePrefix = "NovaStorage/";
+  private const string VesselPrefix      = "NovaVesselStructure/";
+  private const string VesselStatePrefix = "NovaVesselState/";
+  private const string OrbitPrefix       = "NovaOrbit/";
+  private const string CommsPrefix       = "NovaComms/";
+  private const string PartPrefix        = "NovaPart/";
+  private const string SciencePrefix     = "NovaScience/";
+  private const string StoragePrefix     = "NovaStorage/";
 
   private void OnEnable() {
     SubscriptionBus.SubscribeRequested += OnSubscribe;
@@ -43,6 +45,12 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(VesselPrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselPrefix, out var vessel)) {
         AttachOrEnable<NovaVesselStructureTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(VesselStatePrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, VesselStatePrefix, out var vessel)) {
+        AttachOrEnable<NovaVesselStateTopic>(vessel.gameObject);
       }
       return;
     }
@@ -82,6 +90,12 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(VesselPrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselPrefix, out var vessel)) {
         DisableIfPresent<NovaVesselStructureTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(VesselStatePrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, VesselStatePrefix, out var vessel)) {
+        DisableIfPresent<NovaVesselStateTopic>(vessel.gameObject);
       }
       return;
     }

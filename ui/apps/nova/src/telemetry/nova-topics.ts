@@ -421,6 +421,21 @@ export type NovaVesselStructureFrame = [
   parts: NovaPartStructFrame[],
 ];
 
+// Per-vessel dynamic state. Re-emitted when any field changes; mass /
+// crew / situation / body are step functions in ordinary play.
+//   situation: integer Vessel.Situations (0..7) — see VesselSituation
+//   massKg:    SI base (wire is always SI; KSP-native tonnes × 1000)
+export type NovaVesselStateFrame = [
+  vesselId: string,
+  vesselName: string,
+  situation: number,
+  bodyName: string,
+  totalMassKg: number,
+  partCount: number,
+  crewCount: number,
+  crewCapacity: number,
+];
+
 // ---------- UI-facing types ------------------------------------
 
 export interface NovaResourceFlow {
@@ -1112,12 +1127,43 @@ export interface NovaVesselStructure {
   parts: NovaPartStruct[];
 }
 
+// KSP's Vessel.Situations enum (mirrored ordinal-for-ordinal). The
+// label and status-tier mapping live in the UI — the wire only
+// carries the integer so historical records stay intact across any
+// future label rewording.
+export enum VesselSituation {
+  Landed = 0,
+  Splashed = 1,
+  Prelaunch = 2,
+  Flying = 3,
+  SubOrbital = 4,
+  Orbiting = 5,
+  Escaping = 6,
+  Docked = 7,
+}
+
+export interface NovaVesselState {
+  vesselId: string;
+  name: string;
+  situation: VesselSituation;
+  bodyName: string;
+  massKg: number;
+  partCount: number;
+  crewCount: number;
+  crewCapacity: number;
+}
+
 // ---------- Topic factories ------------------------------------
 
 export const NovaVesselStructureTopic = (
   vesselId: string,
 ): Topic<NovaVesselStructureFrame> =>
   topic<NovaVesselStructureFrame>(`NovaVesselStructure/${vesselId}`);
+
+export const NovaVesselStateTopic = (
+  vesselId: string,
+): Topic<NovaVesselStateFrame> =>
+  topic<NovaVesselStateFrame>(`NovaVesselState/${vesselId}`);
 
 // Editor-scene parallel of NovaVesselStructureTopic. Single-instance
 // (ship id constant `"editor"`) since the VAB/SPH only ever holds one
@@ -2105,6 +2151,31 @@ export function decodeStructure(
       title: shortenPartTitle(partTitle),
       parentId,
     })),
+  };
+}
+
+export function decodeVesselState(
+  f: NovaVesselStateFrame,
+): NovaVesselState {
+  const [
+    vesselId,
+    name,
+    situation,
+    bodyName,
+    massKg,
+    partCount,
+    crewCount,
+    crewCapacity,
+  ] = f;
+  return {
+    vesselId,
+    name,
+    situation: situation as VesselSituation,
+    bodyName,
+    massKg,
+    partCount,
+    crewCount,
+    crewCapacity,
   };
 }
 

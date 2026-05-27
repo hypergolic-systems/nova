@@ -1,261 +1,141 @@
 <script lang="ts">
-  // Vessel-overview floating panel. Tabbed body — only Power is wired
-  // up for the first cut; the other chips render disabled so the
-  // visual rhythm is right when more views land.
+  // Vessel rack — docked to the right edge of the viewport, full
+  // height, with a stack of multi-open accordion sections. Replaces
+  // the previous FloatingWindow + tabbed layout.
   //
-  // Mounted always-on while in Flight (open/close UX is deferred).
-  // Default position docks to the right edge of the viewport at min
-  // width and 75% height so the panel reads as a side-rail readout
-  // and doesn't compete with the altimeter / navball cluster on the
-  // bottom or the resource readout on the top-right of stock UI.
+  // Per-section open/closed state hydrates from localStorage so the
+  // player's rack disposition (e.g. POWER open, others collapsed)
+  // persists across scene reloads. The default disposition is
+  // Vessel + Power open; everything else collapsed.
+  //
+  // Each section's content is gated on `flight.vesselId` so the rack
+  // shell stays mounted even between vessels (during scene
+  // transitions or save loads), while view bodies wait for an
+  // active vessel.
 
+  import { onMount } from 'svelte';
   import { useFlightData } from '@dragonglass/telemetry/svelte';
-  import { FloatingWindow } from '@dragonglass/windows';
-  import { useNovaVesselStructure } from '../telemetry/use-nova-vessel-structure.svelte';
   import { useNovaParts } from '../telemetry/use-nova-parts.svelte';
-  import PowerView from './power/PowerView.svelte';
-  import TanksView from './tanks/TanksView.svelte';
-  import ScienceView from './science/ScienceView.svelte';
+  import SideRack from './SideRack.svelte';
+  import Accordion from './common/Accordion.svelte';
+  import AccordionSection from './common/AccordionSection.svelte';
+  import VesselSection from './vessel/VesselSection.svelte';
   import SystemView from './system/SystemView.svelte';
+  import PowerView from './power/PowerView.svelte';
   import ThermalView from './thermal/ThermalView.svelte';
   import PrpView from './prp/PrpView.svelte';
+  import TanksView from './tanks/TanksView.svelte';
+  import ScienceView from './science/ScienceView.svelte';
 
-  const MIN_W = 300;
-  const MIN_H = 260;
-  const EDGE_MARGIN = 16;
+  type SectionId =
+    | 'vessel'
+    | 'system'
+    | 'power'
+    | 'thermal'
+    | 'prp'
+    | 'tank'
+    | 'science';
 
-  // Read viewport once at mount — FloatingWindow seeds its initial
-  // pos/size from these and then owns them. Subsequent viewport
-  // resizes don't re-dock the panel (matches the FloatingWindow
-  // contract: defaults are initial values, not a binding).
-  const initialW = MIN_W;
-  const initialH = Math.max(MIN_H, Math.round(window.innerHeight * 0.75));
-  const initialX = Math.max(EDGE_MARGIN, window.innerWidth - initialW - EDGE_MARGIN);
-  const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
+  const STORAGE_KEY = 'nova.rack.sections';
 
-  type TabId = 'system' | 'power' | 'thermal' | 'prp' | 'tank' | 'science';
+  // Default rack disposition: identity + power open on first load.
+  // The rest stay collapsed so the rack reads as a compact spine
+  // until the player explicitly opens a subsystem.
+  const DEFAULTS: Record<SectionId, boolean> = {
+    vessel: true,
+    system: false,
+    power: true,
+    thermal: false,
+    prp: false,
+    tank: false,
+    science: false,
+  };
 
-  interface Tab {
-    id: TabId;
-    short: string;
-    label: string;
-  }
+  let open = $state<Record<SectionId, boolean>>({ ...DEFAULTS });
 
-  // Disabled placeholder tabs (PRP / RCS / ATT) lived here while the
-  // visual rhythm was being prototyped. Now that the row carries five
-  // live views, dim placeholders just crowd the chip strip — re-add
-  // entries here as those views land.
-  const tabs: Tab[] = [
-    { id: 'system',     short: 'SYS', label: 'Systems'   },
-    { id: 'power',      short: 'PWR', label: 'Power'     },
-    { id: 'thermal',    short: 'THM', label: 'Thermal'   },
-    { id: 'prp',        short: 'PRP', label: 'Propulsion' },
-    { id: 'tank',       short: 'TNK', label: 'Tanks'     },
-    { id: 'science',    short: 'SCI', label: 'Science'   },
-  ];
+  onMount(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<Record<SectionId, boolean>>;
+      // Merge over defaults so a freshly-added section gets its default
+      // expansion (not `false` from an absent key).
+      for (const k of Object.keys(DEFAULTS) as SectionId[]) {
+        if (typeof parsed[k] === 'boolean') open[k] = parsed[k] as boolean;
+      }
+    } catch {
+      // Corrupt storage — keep defaults silently.
+    }
+  });
+
+  // Persist whenever any section toggles. $effect tracks the whole
+  // record by deep-reading every key. Cheap (7 booleans, one write).
+  $effect(() => {
+    const snapshot: Record<SectionId, boolean> = {
+      vessel: open.vessel,
+      system: open.system,
+      power: open.power,
+      thermal: open.thermal,
+      prp: open.prp,
+      tank: open.tank,
+      science: open.science,
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+      /* quota / disabled — ignore */
+    }
+  });
 
   const flight = useFlightData();
-  const structureRef = useNovaVesselStructure(() => flight.vesselId);
-  const vesselName = $derived(structureRef.current?.name ?? '');
-
-  let activeTab = $state<TabId>('system');
-  let z = $state(100);
-
-  function raise(): void {
-    z++;
-  }
 </script>
 
-<FloatingWindow
-  defaultPos={{ x: initialX, y: initialY }}
-  defaultSize={{ w: initialW, h: initialH }}
-  minSize={{ w: MIN_W, h: MIN_H }}
-  {z}
-  onRaise={raise}
->
-  {#snippet header()}
-    <div class="vp__head">
-      <span class="vp__brand">◇ VESSEL</span>
-      <span class="vp__head-spacer"></span>
-      <span class="vp__name">{vesselName}</span>
-    </div>
-  {/snippet}
+<SideRack>
+  <Accordion>
+    <!-- VESSEL — identity + live state. Always-on (renders an empty
+         dash row when no vessel is loaded). -->
+    <VesselSection vesselId={() => flight.vesselId} bind:open={open.vessel} />
 
-  <nav class="vp__tabs" aria-label="Subsystems">
-    {#each tabs as t (t.id)}
-      <button
-        type="button"
-        class="vp__chip"
-        class:vp__chip--active={activeTab === t.id}
-        title={t.label}
-        onclick={() => (activeTab = t.id)}
-      >
-        <span class="vp__chip-short">{t.short}</span>
-      </button>
-    {/each}
-  </nav>
+    <!-- SYSTEM — vessel-wide power/comms/staging overview. -->
+    <AccordionSection id="system" title="System" bind:open={open.system}>
+      {#if flight.vesselId}
+        <SystemView vesselId={flight.vesselId} />
+      {/if}
+    </AccordionSection>
 
-  <div class="vp__scroll">
-    {#if activeTab === 'system' && flight.vesselId}
-      <SystemView vesselId={flight.vesselId} />
-    {:else if activeTab === 'power' && flight.vesselId}
-      <PowerView parts={() => useNovaParts(() => flight.vesselId)} />
-    {:else if activeTab === 'thermal' && flight.vesselId}
-      <ThermalView vesselId={flight.vesselId} />
-    {:else if activeTab === 'prp' && flight.vesselId}
-      <PrpView vesselId={flight.vesselId} />
-    {:else if activeTab === 'tank' && flight.vesselId}
-      <TanksView vesselId={flight.vesselId} />
-    {:else if activeTab === 'science' && flight.vesselId}
-      <ScienceView vesselId={flight.vesselId} />
-    {/if}
-  </div>
-</FloatingWindow>
+    <!-- POWER — solar, batteries, fuel cells, RTGs, draw/supply. -->
+    <AccordionSection id="power" title="Power" bind:open={open.power}>
+      {#if flight.vesselId}
+        <PowerView parts={() => useNovaParts(() => flight.vesselId)} />
+      {/if}
+    </AccordionSection>
 
-<style>
-  /* Window chrome — let the FloatingWindow primitive own drag /
-     resize, dress it here with Nova's visual language. The :global
-     selector reaches into the package's class names because the
-     FloatingWindow component scopes its own styles. */
+    <!-- THERMAL — radiators, coolers, heat budget. -->
+    <AccordionSection id="thermal" title="Thermal" bind:open={open.thermal}>
+      {#if flight.vesselId}
+        <ThermalView vesselId={flight.vesselId} />
+      {/if}
+    </AccordionSection>
 
-  :global(.fw) {
-    background: var(--bg-panel-strong);
-    border: 1px solid var(--line-accent);
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    box-shadow: inset 0 0 0 1px rgba(126, 245, 184, 0.05);
-    backdrop-filter: blur(14px) saturate(125%);
-    -webkit-backdrop-filter: blur(14px) saturate(125%);
-  }
+    <!-- PROPULSION — engines, gimbals, throttles. -->
+    <AccordionSection id="prp" title="Propulsion" bind:open={open.prp}>
+      {#if flight.vesselId}
+        <PrpView vesselId={flight.vesselId} />
+      {/if}
+    </AccordionSection>
 
-  :global(.fw__header) {
-    min-height: 26px;
-    padding: 4px 10px;
-    border-bottom: 1px solid var(--line);
-  }
+    <!-- TANKS — by-resource flow rates + per-tank breakdown. -->
+    <AccordionSection id="tank" title="Tanks" bind:open={open.tank}>
+      {#if flight.vesselId}
+        <TanksView vesselId={flight.vesselId} />
+      {/if}
+    </AccordionSection>
 
-  /* Body owns the layout (header sits above it; tabs and scroll area
-     stack inside). Scrolling lives on `.vp__scroll`, not here, so the
-     pinned tab nav stays put when long subsystem trees scroll. */
-  :global(.fw__body) {
-    padding: 0;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-
-  /* Header content. */
-  .vp__head {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-  .vp__brand {
-    font-family: var(--font-display);
-    font-size: 13px;
-    letter-spacing: 0.18em;
-    color: var(--accent);
-    text-shadow: 0 0 6px var(--accent-glow);
-    flex: 0 0 auto;
-  }
-  .vp__head-spacer {
-    flex: 1 1 auto;
-  }
-  .vp__name {
-    flex: 0 1 auto;
-    min-width: 0;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* Subsystem chips — sub-tab navigation. Borrowed visually from the
-     workbench EngineeringPanel prototype: 1 px-bordered cells with a
-     bright accent on the active chip. Tab nav sits as a pinned header
-     above the scroll area — when a subsystem tree expands past the
-     viewport, the chips stay visible so the user can pivot without
-     scrolling back to the top. */
-  .vp__tabs {
-    flex: 0 0 auto;
-    display: flex;
-    gap: 4px;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--line);
-    background: var(--bg-elev);
-  }
-  .vp__chip {
-    flex: 0 0 auto;
-    padding: 3px 8px;
-    background: transparent;
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    cursor: pointer;
-    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
-  }
-  .vp__chip:hover {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-  }
-  .vp__chip--active {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: rgba(126, 245, 184, 0.08);
-    text-shadow: 0 0 6px var(--accent-glow);
-  }
-  .vp__chip-short {
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Scroll area: the only thing inside the panel body that scrolls.
-     `overflow-y: scroll` (not `auto`) keeps the gutter reserved at all
-     times — a tree expanding past the viewport doesn't reflow content
-     by 8 px when the thumb appears, and the styled track stays visible
-     as a consistent edge ornament regardless of fill height. */
-  .vp__scroll {
-    flex: 1 1 0;
-    min-height: 0;
-    padding: 10px;
-    overflow-y: scroll;
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-  /* Themed scrollbar — CEF supports the legacy -webkit pseudos. The
-     track has a 1 px-bordered well at all times so the gutter reads
-     as a real instrument-panel edge channel rather than a "missing"
-     scrollbar slot. */
-  .vp__scroll::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  .vp__scroll::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.25);
-    border-left: 1px solid var(--line);
-  }
-  .vp__scroll::-webkit-scrollbar-thumb {
-    background: rgba(126, 245, 184, 0.18);
-    border: 1px solid transparent;
-    background-clip: padding-box;
-    transition: background 200ms ease;
-  }
-  .vp__scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(126, 245, 184, 0.42);
-    background-clip: padding-box;
-  }
-  .vp__scroll::-webkit-scrollbar-corner {
-    background: rgba(0, 0, 0, 0.25);
-  }
-</style>
+    <!-- SCIENCE — experiments, storage, transmission. -->
+    <AccordionSection id="science" title="Science" bind:open={open.science}>
+      {#if flight.vesselId}
+        <ScienceView vesselId={flight.vesselId} />
+      {/if}
+    </AccordionSection>
+  </Accordion>
+</SideRack>

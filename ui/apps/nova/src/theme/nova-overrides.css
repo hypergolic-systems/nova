@@ -1,0 +1,102 @@
+/* Nova theme overrides — re-declares Dragonglass design tokens for
+ * Nova's scope. Loaded once via init.ts; adopted onto
+ * document.adoptedStyleSheets after Dragonglass's own runtime.css.
+ *
+ * Three goals:
+ *   1. Lift panel translucency so the rack blends with KSP's
+ *      teal-gray skybox instead of blacking it out.
+ *   2. Raise foreground contrast so secondary readouts are legible —
+ *      the old --fg-mute (#3a4760, ~26% L*) on a near-opaque dark
+ *      panel was a dark-gray-on-black accessibility failure.
+ *   3. Standardize on ONE typeface across the UI so the same vessel/
+ *      part name doesn't read as Unica One in one place and Azeret
+ *      Mono in another. Monospace is reserved for places that
+ *      genuinely need cell-grid alignment (see --font-tab).
+ *
+ * Constraint: NO `backdrop-filter: blur(...)` in this stack. The CEF
+ * page is itself transparent and composited externally over the KSP
+ * scene, so backdrop-filter has no pixels to sample. The translucent
+ * panels reveal the scene unblurred; the .nova-surface grain overlay
+ * (below) gives the panel its own visible texture so the bleed-
+ * through reads as filtered, not as raw scene-through.
+ *
+ * Font choice — IBM Plex Sans is the universal Nova face. It was
+ * designed for screen rendering at small sizes, has excellent
+ * tabular-nums (so most "column" readouts can stay sans), and ships
+ * with a matching mono (IBM Plex Mono) for the genuinely-mono cases.
+ * Critical for CEF on macOS, which only does grayscale anti-aliasing
+ * — thin-stroke mono faces like Azeret blur badly without subpixel
+ * AA. Plex Sans's wider strokes survive grayscale AA at 10-13 px.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Backgrounds — slight teal shift + meaningful translucency drop.
+   * 0.78 / 0.84 are the floors where small numerics stay crisp
+   * against a busy unblurred skybox; lower and the body text loses
+   * outline against bright clouds. */
+  --bg-panel:        rgba(12, 20, 32, 0.78);
+  --bg-panel-strong: rgba(10, 18, 30, 0.84);
+  --bg-elev:         rgba(20, 30, 44, 0.70);
+  --bg-panel-solid:  #0c1420;
+
+  /* Foreground — raise all three rungs. The new --fg-mute meets
+   * WCAG AA for body text against the new --bg-panel-strong. */
+  --fg:      #eef2f8;
+  --fg-dim:  #a8b6cd;
+  --fg-mute: #7384a0;
+
+  /* Typography — one face everywhere. Both DG tokens point at Plex
+   * Sans so the historical "display vs mono" split collapses into a
+   * single visual identity; --font-tab is the escape hatch for true
+   * cell-grid alignment (multi-row tank ledgers, ascii-art gauges,
+   * etc) and stays a real monospace. Components that need column-
+   * aligned digits can rely on `font-variant-numeric: tabular-nums`
+   * with Plex Sans — its tab figures align cleanly. */
+  --font-display: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:    'IBM Plex Sans', system-ui, sans-serif;
+  --font-tab:     'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Body inherits from --font-mono per DG's tokens.css default. With
+ * --font-mono pointed at Plex Sans, the whole document picks up the
+ * new face automatically. Tabular-nums set globally so any numeric
+ * field renders column-aligned without per-component opt-in. */
+body {
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum' 1, 'ss01' 1;
+}
+
+/* Frosted-glass texture without blur. A 1.5%-opacity SVG turbulence
+ * grain — one paint, no animation, no perf cost — gives Nova panels
+ * a tactile filter quality so the unblurred scene-bleed reads as a
+ * console finish rather than raw transparency. Apply `.nova-surface`
+ * to any panel root that wants the treatment.
+ *
+ * The surface must be position:relative (or any non-static) for
+ * `::after { inset: 0 }` to anchor to its box. */
+.nova-surface {
+  position: relative;
+}
+
+.nova-surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  /* Inline SVG noise filter, base frequency 0.9 (fine grain). */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.8 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.018;
+  mix-blend-mode: overlay;
+}
+
+/* Surface content lifts above the noise pseudo-element. Without
+ * this, the ::after layer can occlude pointer events even with
+ * pointer-events:none in some edge cases (DOM children with their
+ * own stacking context). Make body content explicit. */
+.nova-surface > * {
+  position: relative;
+  z-index: 1;
+}
