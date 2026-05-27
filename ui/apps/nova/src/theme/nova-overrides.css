@@ -27,9 +27,11 @@
  * Critical for CEF on macOS, which only does grayscale anti-aliasing
  * — thin-stroke mono faces like Azeret blur badly without subpixel
  * AA. Plex Sans's wider strokes survive grayscale AA at 10-13 px.
+ *
+ * The Google Fonts URL is injected via a <link> element from
+ * init.ts, not @import'd here — constructed stylesheets (which
+ * `CSSStyleSheet.replaceSync` produces) silently drop @import rules.
  */
-
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 
 :root {
   /* Backgrounds — slight teal shift + meaningful translucency drop.

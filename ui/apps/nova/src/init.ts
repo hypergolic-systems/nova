@@ -17,6 +17,19 @@ import {
 } from '@dragonglass/telemetry/core';
 import novaOverridesCss from './theme/nova-overrides.css?inline';
 
+// Load Nova's typeface family (IBM Plex Sans + IBM Plex Mono) via a
+// regular <link> in document.head — NOT @import inside the override
+// sheet. Constructed stylesheets (which CSSStyleSheet.replaceSync
+// produces) silently strip @import rules, so the @import we used to
+// have at the top of nova-overrides.css loaded nothing and the page
+// fell back to system-ui.
+const fontsLink = document.createElement('link');
+fontsLink.rel = 'stylesheet';
+fontsLink.href =
+  'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700' +
+  '&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap';
+document.head.appendChild(fontsLink);
+
 // Adopt Nova's design-token overrides after Dragonglass's runtime.css.
 // document.adoptedStyleSheets resolves in array order, so appending
 // here lets these tokens win over DG's :root defaults without `!important`.
