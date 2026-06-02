@@ -43,13 +43,17 @@
   .nova-badge {
     position: fixed;
     left: 22vw;
-    top: 10vh;
+    top: 9.75vh;
     z-index: 9000;
     display: grid;
-    grid-template-columns: 2px auto;
-    column-gap: 14px;
+    grid-template-columns: 0.14em auto;
+    column-gap: 1em;
     pointer-events: none;
     user-select: none;
+    /* Single scale axis — everything below is em-relative so the whole */
+    /* mark grows and shrinks as one with the viewport. Pure vh: the    */
+    /* badge tracks the game's render size 1:1, no pixel floor/ceiling. */
+    font-size: 2.34vh;
     /* Neon hypergolic orange — the color of an N2O4/UDMH flame at */
     /* ignition. Overrides DG's mint accent locally because this is */
     /* Nova's brand mark, not generic DG chrome. */
@@ -71,7 +75,7 @@
   .ignitor {
     position: relative;
     align-self: stretch;
-    width: 2px;
+    width: 0.14em;
     background: linear-gradient(
       180deg,
       transparent 0%,
@@ -80,8 +84,8 @@
       transparent 100%
     );
     box-shadow:
-      0 0 6px var(--signal-glow),
-      0 0 14px var(--signal-glow);
+      0 0 0.43em var(--signal-glow),
+      0 0 1em var(--signal-glow);
     transform-origin: bottom;
     transform: scaleY(0);
     opacity: 0;
@@ -102,13 +106,13 @@
     left: 50%;
     top: 0;
     transform: translate(-50%, -50%);
-    width: 6px;
-    height: 6px;
+    width: 0.43em;
+    height: 0.43em;
     border-radius: 50%;
     background: #ffffff;
     box-shadow:
-      0 0 10px var(--signal-soft),
-      0 0 24px var(--signal-glow);
+      0 0 0.71em var(--signal-soft),
+      0 0 1.71em var(--signal-glow);
     opacity: 0;
     transition: opacity 180ms ease;
   }
@@ -119,8 +123,8 @@
   /* ── mark column ── */
   .mark {
     display: grid;
-    gap: 5px;
-    padding: 2px 0;
+    gap: 0.36em;
+    padding: 0.14em 0;
     align-content: end;
   }
 
@@ -130,13 +134,13 @@
   /* backdrop. */
   .eyebrow {
     font-family: var(--font-display, 'Unica One', 'Azeret Mono', sans-serif);
-    font-size: 14px;
+    font-size: 1em;
     letter-spacing: 0.24em;
     text-transform: uppercase;
     color: var(--ink);
-    text-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+    text-shadow: 0 0 0.43em rgba(0, 0, 0, 0.6);
     opacity: 0;
-    transform: translateX(-4px);
+    transform: translateX(-0.29em);
     transition:
       opacity 320ms ease 240ms,
       transform 320ms ease 240ms;
@@ -150,13 +154,13 @@
   /* on left → right after the ignitor finishes. */
   .wordmark {
     font-family: var(--font-display, 'Unica One', 'Azeret Mono', sans-serif);
-    font-size: 38px;
+    font-size: 2.71em;
     line-height: 0.92;
     letter-spacing: 0.32em;
     color: var(--signal);
     text-shadow:
-      0 0 8px var(--signal-glow),
-      0 0 22px var(--signal-glow);
+      0 0 0.21em var(--signal-glow),
+      0 0 0.58em var(--signal-glow);
     /* Pad-right to compensate for the trailing letter-spacing's */
     /* phantom column — otherwise the rule looks shifted. */
     padding-right: 0.32em;
@@ -169,8 +173,8 @@
     font-style: normal;
     color: var(--signal-soft);
     text-shadow:
-      0 0 6px var(--signal-glow),
-      0 0 18px var(--signal-glow);
+      0 0 0.16em var(--signal-glow),
+      0 0 0.47em var(--signal-glow);
   }
   .is-mounted .wordmark {
     clip-path: inset(0 0 0 0);
@@ -182,7 +186,7 @@
   /* feels like the rule is "trailing" the wipe. */
   .rule {
     display: block;
-    height: 1px;
+    height: 0.07em;
     width: 0;
     background: linear-gradient(
       90deg,
@@ -190,7 +194,7 @@
       var(--signal-soft) 55%,
       transparent 100%
     );
-    box-shadow: 0 0 6px var(--signal-glow);
+    box-shadow: 0 0 0.43em var(--signal-glow);
     transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1) 880ms;
   }
   .is-mounted .rule { width: 100%; }
@@ -208,24 +212,24 @@
     100% { opacity: 0; }
   }
   @keyframes ignitor-breathe {
-    0%, 100% { box-shadow: 0 0 6px var(--signal-glow), 0 0 14px var(--signal-glow); }
-    50%      { box-shadow: 0 0 4px var(--signal-glow), 0 0 9px var(--signal-glow); }
+    0%, 100% { box-shadow: 0 0 0.43em var(--signal-glow), 0 0 1em var(--signal-glow); }
+    50%      { box-shadow: 0 0 0.29em var(--signal-glow), 0 0 0.64em var(--signal-glow); }
   }
   @keyframes wordmark-breathe {
     0%, 100% {
       text-shadow:
-        0 0 8px var(--signal-glow),
-        0 0 22px var(--signal-glow);
+        0 0 0.21em var(--signal-glow),
+        0 0 0.58em var(--signal-glow);
     }
     50% {
       text-shadow:
-        0 0 6px var(--signal-glow),
-        0 0 16px var(--signal-glow);
+        0 0 0.16em var(--signal-glow),
+        0 0 0.42em var(--signal-glow);
     }
   }
   @keyframes badge-float {
     0%, 100% { transform: translateY(0); }
-    50%      { transform: translateY(-2px); }
+    50%      { transform: translateY(-0.14em); }
   }
 
   @media (prefers-reduced-motion: reduce) {
