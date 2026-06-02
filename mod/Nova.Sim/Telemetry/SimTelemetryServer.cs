@@ -253,6 +253,10 @@ public sealed class SimTelemetryServer : IDisposable {
       WriteVesselStateFrame(sb);
       return true;
     }
+    if (TryPrefix(topic, "NovaCrewRoster/", out _)) {
+      WriteCrewRosterFrame(sb);
+      return true;
+    }
     if (topic == "NovaEditorShipStructure/editor") {
       // Editor-side singleton. The in-game mod publishes this with a
       // fixed shipId="editor" (NovaEditorShipStructureTopic.cs:34);
@@ -326,6 +330,30 @@ public sealed class SimTelemetryServer : IDisposable {
         linkSnr: 0, linkRateBps: 0, linkMaxRateBps: 0,
         linkSnrFloor: 0, peerLabel: "",
         txActive: false, txRateBps: 0, txDeliveredBytes: 0, txTotalBytes: 0);
+  }
+
+  // Per-vessel crew roster, derived from the .nvs SaveFile.crew slice
+  // captured at load time and filtered to the active vessel's persistent
+  // id. The sim doesn't simulate EVA / crew transfer, so the snapshot
+  // is static — no comparison logic needed, just translate the proto
+  // Kerbal list into the wire format on each subscribe / republish.
+  private void WriteCrewRosterFrame(StringBuilder sb) {
+    var crew = _runner.Crew;
+    var entries = new List<CrewRosterFormatter.KerbalEntry>(crew?.Count ?? 0);
+    if (crew != null) {
+      for (int i = 0; i < crew.Count; i++) {
+        var k = crew[i];
+        if (k == null || k.AssignedPartId == 0) continue;
+        entries.Add(new CrewRosterFormatter.KerbalEntry {
+          PartId    = k.AssignedPartId.ToString(),
+          Name      = k.Name ?? "",
+          TraitChar = CrewRosterFormatter.TraitChar(k.Trait),
+          Gender    = k.Gender,
+          Veteran   = k.Veteran,
+        });
+      }
+    }
+    CrewRosterFormatter.Write(sb, _runner.VesselGuid, entries);
   }
 
   // Synthetic NovaVesselState frame for the loaded VirtualVessel.

@@ -104,6 +104,7 @@ public static class Program {
         load.UniversalTime, load.MissionTime, load.LaunchTime) {
       WarpFactor = options.Warp,
       Editor = isEditor,
+      Crew = load.Crew,
     };
     runner.Start();
 

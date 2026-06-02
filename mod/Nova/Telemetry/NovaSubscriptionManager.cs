@@ -15,6 +15,7 @@ namespace Nova.Telemetry;
 // Recognised topic prefixes:
 //   NovaVesselStructure/<vesselGuid>  → NovaVesselStructureTopic
 //   NovaVesselState/<vesselGuid>      → NovaVesselStateTopic
+//   NovaCrewRoster/<vesselGuid>       → NovaCrewRosterTopic
 //   NovaOrbit/<vesselGuid>            → NovaOrbitTopic
 //   NovaComms/<vesselGuid>            → NovaCommsTopic
 //   NovaPart/<partId>                 → NovaPartTopic
@@ -24,6 +25,7 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
   private const string LogPrefix = "[Nova/Telemetry] ";
   private const string VesselPrefix      = "NovaVesselStructure/";
   private const string VesselStatePrefix = "NovaVesselState/";
+  private const string CrewRosterPrefix  = "NovaCrewRoster/";
   private const string OrbitPrefix       = "NovaOrbit/";
   private const string CommsPrefix       = "NovaComms/";
   private const string PartPrefix        = "NovaPart/";
@@ -51,6 +53,12 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(VesselStatePrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselStatePrefix, out var vessel)) {
         AttachOrEnable<NovaVesselStateTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(CrewRosterPrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, CrewRosterPrefix, out var vessel)) {
+        AttachOrEnable<NovaCrewRosterTopic>(vessel.gameObject);
       }
       return;
     }
@@ -96,6 +104,12 @@ public sealed class NovaSubscriptionManager : MonoBehaviour {
     if (topicName.StartsWith(VesselStatePrefix, StringComparison.Ordinal)) {
       if (TryResolveVessel(topicName, VesselStatePrefix, out var vessel)) {
         DisableIfPresent<NovaVesselStateTopic>(vessel.gameObject);
+      }
+      return;
+    }
+    if (topicName.StartsWith(CrewRosterPrefix, StringComparison.Ordinal)) {
+      if (TryResolveVessel(topicName, CrewRosterPrefix, out var vessel)) {
+        DisableIfPresent<NovaCrewRosterTopic>(vessel.gameObject);
       }
       return;
     }

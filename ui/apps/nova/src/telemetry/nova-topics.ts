@@ -436,6 +436,30 @@ export type NovaVesselStateFrame = [
   crewCapacity: number,
 ];
 
+// Per-kerbal tuple inside the per-vessel crew roster wire frame. Single-
+// char trait keeps the frame compact on a vessel with a full crew
+// complement; the decoder maps to the player-facing label.
+//   partId   — string, matches NovaPartStruct.id (the persistent part id)
+//   name     — full kerbal name as stored on the Kerbal proto / ProtoCrewMember
+//   trait    — P=Pilot, E=Engineer, S=Scientist, T=Tourist, ?=unknown
+//   gender   — 0=male, 1=female (mirrors Kerbal.gender)
+//   veteran  — 0/1 (the orange-suited founding four etc.)
+export type NovaKerbalFrame = [
+  partId: string,
+  name: string,
+  trait: string,
+  gender: 0 | 1,
+  veteran: 0 | 1,
+];
+
+// Per-vessel crew roster. Re-emitted on any membership / assignment
+// change — EVA, crew transfer, dock, undock, vessel split. The list is
+// the entire vessel's roster in one frame; the UI groups by partId.
+export type NovaCrewRosterFrame = [
+  vesselId: string,
+  crew: NovaKerbalFrame[],
+];
+
 // ---------- UI-facing types ------------------------------------
 
 export interface NovaResourceFlow {
@@ -1153,6 +1177,23 @@ export interface NovaVesselState {
   crewCapacity: number;
 }
 
+export type KerbalTrait = 'Pilot' | 'Engineer' | 'Scientist' | 'Tourist' | 'Unknown';
+
+export interface NovaKerbal {
+  /** Persistent part id this kerbal occupies. Match against NovaPartStruct.id. */
+  partId: string;
+  name: string;
+  trait: KerbalTrait;
+  /** 0=male, 1=female (matches Kerbal.gender in proto). */
+  gender: 0 | 1;
+  veteran: boolean;
+}
+
+export interface NovaCrewRoster {
+  vesselId: string;
+  crew: NovaKerbal[];
+}
+
 // ---------- Topic factories ------------------------------------
 
 export const NovaVesselStructureTopic = (
@@ -1164,6 +1205,11 @@ export const NovaVesselStateTopic = (
   vesselId: string,
 ): Topic<NovaVesselStateFrame> =>
   topic<NovaVesselStateFrame>(`NovaVesselState/${vesselId}`);
+
+export const NovaCrewRosterTopic = (
+  vesselId: string,
+): Topic<NovaCrewRosterFrame> =>
+  topic<NovaCrewRosterFrame>(`NovaCrewRoster/${vesselId}`);
 
 // Editor-scene parallel of NovaVesselStructureTopic. Single-instance
 // (ship id constant `"editor"`) since the VAB/SPH only ever holds one
@@ -2152,6 +2198,28 @@ export function decodeStructure(
       parentId,
     })),
   };
+}
+
+function decodeTrait(c: string): KerbalTrait {
+  switch (c) {
+    case 'P': return 'Pilot';
+    case 'E': return 'Engineer';
+    case 'S': return 'Scientist';
+    case 'T': return 'Tourist';
+    default:  return 'Unknown';
+  }
+}
+
+export function decodeCrewRoster(f: NovaCrewRosterFrame): NovaCrewRoster {
+  const [vesselId, crewFrames] = f;
+  const crew: NovaKerbal[] = crewFrames.map(([partId, name, trait, gender, veteran]) => ({
+    partId,
+    name,
+    trait: decodeTrait(trait),
+    gender,
+    veteran: veteran === 1,
+  }));
+  return { vesselId, crew };
 }
 
 export function decodeVesselState(

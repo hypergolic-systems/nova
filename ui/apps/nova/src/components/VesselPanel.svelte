@@ -29,6 +29,7 @@
   import PrpView from './prp/PrpView.svelte';
   import TanksView from './tanks/TanksView.svelte';
   import ScienceView from './science/ScienceView.svelte';
+  import CrewView from './crew/CrewView.svelte';
 
   type SectionId =
     | 'system'
@@ -36,7 +37,8 @@
     | 'thermal'
     | 'prp'
     | 'tank'
-    | 'science';
+    | 'science'
+    | 'crew';
 
   const STORAGE_KEY = 'nova.rack.sections';
 
@@ -51,9 +53,26 @@
     prp: false,
     tank: false,
     science: false,
+    crew: false,
   };
 
   let open = $state<Record<SectionId, boolean>>({ ...DEFAULTS });
+
+  // Each view publishes its current content presence here via a
+  // $bindable `hasContent` prop. Default true so the section renders
+  // optimistically on the first frame before the view's $effect
+  // runs — a one-frame flash of an empty section is preferable to a
+  // one-frame flash of a missing-then-appearing section as data
+  // arrives. The view's $effect overwrites this on mount.
+  let has = $state<Record<SectionId, boolean>>({
+    system: true,
+    power: true,
+    thermal: true,
+    prp: true,
+    tank: true,
+    science: true,
+    crew: true,
+  });
 
   onMount(() => {
     try {
@@ -76,6 +95,7 @@
       prp: open.prp,
       tank: open.tank,
       science: open.science,
+      crew: open.crew,
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
@@ -93,44 +113,83 @@
 
   <Accordion>
     <!-- SYSTEM — vessel-wide power/comms/staging overview. -->
-    <AccordionSection id="system" title="System" bind:open={open.system}>
+    <AccordionSection
+      id="system" title="System"
+      bind:open={open.system}
+      vacant={!has.system}
+    >
       {#if flight.vesselId}
-        <SystemView vesselId={flight.vesselId} />
+        <SystemView vesselId={flight.vesselId} bind:hasContent={has.system} />
+      {/if}
+    </AccordionSection>
+
+    <!-- CREW — kerbals aboard, grouped by part. Auto-hides when
+         the vessel is uncrewed (probe-only flights). -->
+    <AccordionSection
+      id="crew" title="Crew"
+      bind:open={open.crew}
+      vacant={!has.crew}
+    >
+      {#if flight.vesselId}
+        <CrewView vesselId={flight.vesselId} bind:hasContent={has.crew} />
       {/if}
     </AccordionSection>
 
     <!-- POWER — solar, batteries, fuel cells, RTGs, draw/supply. -->
-    <AccordionSection id="power" title="Power" bind:open={open.power}>
+    <AccordionSection
+      id="power" title="Power"
+      bind:open={open.power}
+      vacant={!has.power}
+    >
       {#if flight.vesselId}
-        <PowerView parts={() => useNovaParts(() => flight.vesselId)} />
+        <PowerView
+          parts={() => useNovaParts(() => flight.vesselId)}
+          bind:hasContent={has.power}
+        />
       {/if}
     </AccordionSection>
 
     <!-- THERMAL — radiators, coolers, heat budget. -->
-    <AccordionSection id="thermal" title="Thermal" bind:open={open.thermal}>
+    <AccordionSection
+      id="thermal" title="Thermal"
+      bind:open={open.thermal}
+      vacant={!has.thermal}
+    >
       {#if flight.vesselId}
-        <ThermalView vesselId={flight.vesselId} />
+        <ThermalView vesselId={flight.vesselId} bind:hasContent={has.thermal} />
       {/if}
     </AccordionSection>
 
     <!-- PROPULSION — engines, gimbals, throttles. -->
-    <AccordionSection id="prp" title="Propulsion" bind:open={open.prp}>
+    <AccordionSection
+      id="prp" title="Propulsion"
+      bind:open={open.prp}
+      vacant={!has.prp}
+    >
       {#if flight.vesselId}
-        <PrpView vesselId={flight.vesselId} />
+        <PrpView vesselId={flight.vesselId} bind:hasContent={has.prp} />
       {/if}
     </AccordionSection>
 
     <!-- TANKS — by-resource flow rates + per-tank breakdown. -->
-    <AccordionSection id="tank" title="Tanks" bind:open={open.tank}>
+    <AccordionSection
+      id="tank" title="Tanks"
+      bind:open={open.tank}
+      vacant={!has.tank}
+    >
       {#if flight.vesselId}
-        <TanksView vesselId={flight.vesselId} />
+        <TanksView vesselId={flight.vesselId} bind:hasContent={has.tank} />
       {/if}
     </AccordionSection>
 
     <!-- SCIENCE — experiments, storage, transmission. -->
-    <AccordionSection id="science" title="Science" bind:open={open.science}>
+    <AccordionSection
+      id="science" title="Science"
+      bind:open={open.science}
+      vacant={!has.science}
+    >
       {#if flight.vesselId}
-        <ScienceView vesselId={flight.vesselId} />
+        <ScienceView vesselId={flight.vesselId} bind:hasContent={has.science} />
       {/if}
     </AccordionSection>
   </Accordion>

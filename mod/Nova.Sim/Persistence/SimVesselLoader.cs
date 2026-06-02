@@ -42,6 +42,10 @@ public static class SimVesselLoader {
     public double UniversalTime; // 0 from .nvc; saved UT from .nvs
     public double MissionTime;
     public double LaunchTime;
+    // Kerbals from `SaveFile.crew` whose `assigned_vessel_id` matches
+    // this vessel's persistent id. Empty for .nvc loads (craft files
+    // have no save-level roster).
+    public IReadOnlyList<Proto.Kerbal> Crew = Array.Empty<Proto.Kerbal>();
   }
 
   public static LoadResult LoadCraft(string path, PartDatabase db, double simTime = 0) {
@@ -75,10 +79,23 @@ public static class SimVesselLoader {
       if (idx < 0 || idx >= save.Vessels.Count) idx = 0;
       var v = save.Vessels[idx];
       var state = v.State;
-      return BuildFromVessel(v, state?.Name, db,
+      var result = BuildFromVessel(v, state?.Name, db,
           simTime: save.UniversalTime,
           missionTime: state?.MissionTime ?? 0,
           launchTime: state?.LaunchTime ?? 0);
+      // Filter the save-level Kerbal roster down to the active vessel.
+      // `Kerbal.assigned_vessel_id` is the proto's vessel persistent_id —
+      // match against VesselStructure.PersistentId, not the GUID string.
+      var vesselPid = v.Structure?.PersistentId ?? 0u;
+      if (vesselPid != 0u && save.Crews != null && save.Crews.Count > 0) {
+        var crew = new List<Proto.Kerbal>();
+        for (int i = 0; i < save.Crews.Count; i++) {
+          var k = save.Crews[i];
+          if (k != null && k.AssignedVesselId == vesselPid) crew.Add(k);
+        }
+        result.Crew = crew;
+      }
+      return result;
     }
   }
 

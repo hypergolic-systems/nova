@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Nova.Core.Components;
 using Nova.Sim.Universe;
@@ -32,7 +33,30 @@ public sealed class SimRunner {
   // PartModule.Components is populated from prefab config and no
   // NovaVesselModule.Virtual exists.
   public bool Editor { get; set; }
+  // Snapshot of the crew aboard the active vessel as loaded from the
+  // .nvs file. The sim doesn't simulate EVA / transfers, so this
+  // doesn't change at runtime — the formatter reads it directly and
+  // emits a static frame.
+  public IReadOnlyList<Nova.Core.Persistence.Protos.Kerbal> Crew { get; set; }
+      = Array.Empty<Nova.Core.Persistence.Protos.Kerbal>();
   public readonly object Lock = new object();
+
+  // Diagnostic — append a synthetic kerbal to the runtime crew roster.
+  // Useful when iterating on the CREW UI against a save whose active
+  // vessel is uncrewed (probe missions, etc.). Invoke via kspcli:
+  //   kspcli '$0.InjectTestCrew("<partId>", "Jebediah Kerman", "Pilot")'
+  // The next NovaCrewRoster/<guid> emit will include the new entry.
+  public void InjectTestCrew(string partId, string name, string trait) {
+    var list = new List<Nova.Core.Persistence.Protos.Kerbal>(Crew);
+    var k = new Nova.Core.Persistence.Protos.Kerbal();
+    k.Name = name;
+    k.Trait = trait;
+    k.Gender = 0;
+    k.Veteran = false;
+    k.AssignedPartId = uint.TryParse(partId, out var pid) ? pid : 0u;
+    list.Add(k);
+    Crew = list;
+  }
 
   private const double TickIntervalSec = 1.0 / 60.0;
   private Thread _thread;
