@@ -41,23 +41,19 @@
   import { onDestroy } from 'svelte';
   import { siPrefix, fmtMag } from '../../util/units';
   import ComponentIcon from '../ComponentIcon.svelte';
+  import Subheading from '../common/Subheading.svelte';
+  import Chip from '../common/Chip.svelte';
 
-  interface Props { vesselId: string }
-  const { vesselId }: Props = $props();
+  interface Props {
+    vesselId: string;
+    /** Bound out: true when the view has hardware to render. */
+    hasContent?: boolean;
+  }
+  let { vesselId, hasContent = $bindable(true) }: Props = $props();
 
   const vesselParts = useNovaParts(() => vesselId);
   const ksp = getKsp();
 
-  // ── Sub-section visibility ──────────────────────────────────────────
-  // All three open by default; the empty-state messages keep the slot
-  // visually filled when no parts of a kind are installed.
-  type NodeKey = 'engines' | 'reactors' | 'ions';
-  let expanded = $state<Record<NodeKey, boolean>>({
-    engines: true,
-    reactors: true,
-    ions: true,
-  });
-  function toggle(k: NodeKey): void { expanded[k] = !expanded[k]; }
 
   // ── Partitioning ────────────────────────────────────────────────────
   function isChemicalEngine(p: NovaPartHandle): boolean {
@@ -72,6 +68,12 @@
   const chemEngines = $derived(vesselParts.current.filter(isChemicalEngine));
   const reactors    = $derived(vesselParts.current.filter(isReactor));
   const ionDrives   = $derived(vesselParts.current.filter(isIonDrive));
+
+  $effect(() => {
+    hasContent = chemEngines.length > 0
+              || reactors.length > 0
+              || ionDrives.length > 0;
+  });
 
   function engineOf(p: NovaPartHandle) { return p.state?.engine[0]; }
   function reactorOf(p: NovaPartHandle) { return p.state?.nuclear[0]; }
@@ -261,39 +263,15 @@
   onDestroy(() => stageOps.setHighlightParts([]));
 </script>
 
-{#snippet chev(open: boolean)}
-  <svg class="prp__chev" class:prp__chev--open={open}
-       viewBox="0 0 8 8" aria-hidden="true">
-    <path d="M2.2 1.4 L5.8 4 L2.2 6.6" fill="none" stroke="currentColor"
-          stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-  </svg>
-{/snippet}
-
-{#snippet emptyMsg(text: string)}
-  <p class="prp__empty">
-    <span class="prp__empty-rule"></span>
-    <span class="prp__empty-text">{text}</span>
-    <span class="prp__empty-rule"></span>
-  </p>
-{/snippet}
-
 <section class="prp">
   <!-- ENGINES ─ chemical thrusters ─────────────────────────────────── -->
-  <div class="prp__node">
-    <button type="button" class="prp__node-head"
-            aria-expanded={expanded.engines}
-            onclick={() => toggle('engines')}>
-      {@render chev(expanded.engines)}
-      <span class="prp__node-title">ENGINES</span>
-      {#if chemEngines.length > 0}
-        <span class="prp__node-count">{chemEngines.length}</span>
-      {/if}
-    </button>
-    {#if expanded.engines}
-      {#if chemEngines.length === 0}
-        {@render emptyMsg('NO CHEMICAL HARDWARE')}
-      {:else}
-        <ul class="prp__rows">
+  {#if chemEngines.length > 0}
+  <Subheading title="Engines">
+    {#snippet summary()}
+      <span class="prp__head-count">{chemEngines.length}</span>
+    {/snippet}
+
+      <ul class="prp__rows">
           {#each chemEngines as p (p.struct.id)}
             {@const e = engineOf(p)}
             {#if e}
@@ -312,21 +290,19 @@
                       title="Engine state — wire-emitted status byte">
                   {label}
                 </span>
-                <button type="button"
-                        class="ce__btn"
-                        class:ce__btn--off={!e.active}
-                        class:ce__btn--on={e.active}
-                        aria-label={e.active ? 'Shut down engine' : 'Start engine'}
-                        title={e.active
-                          ? 'Shut down without un-staging'
-                          : 'Start engine — needs propellant in pool'}
-                        onclick={(ev) => { ev.stopPropagation();
-                          setEngineActive(p.struct.id, !e.active); }}>
-                  <span class="ce__btn-glyph" aria-hidden="true">
-                    {#if e.active}■{:else}▸{/if}
-                  </span>
-                  <span class="ce__btn-label">{e.active ? 'STOP' : 'START'}</span>
-                </button>
+                <Chip
+                  kind="latch"
+                  intent={e.active ? 'warn' : 'idle'}
+                  pressed={e.active}
+                  glyph={e.active ? '■' : '▸'}
+                  label={e.active ? 'STOP' : 'START'}
+                  aria-label={e.active ? 'Shut down engine' : 'Start engine'}
+                  title={e.active
+                    ? 'Shut down without un-staging'
+                    : 'Start engine — needs propellant in pool'}
+                  onclick={(ev) => { ev.stopPropagation();
+                    setEngineActive(p.struct.id, !e.active); }}
+                />
                 <span class="ce__thrust"
                       class:ce__thrust--zero={e.currentThrustKn < 0.001}
                       title="Realised thrust this tick / rated thrust">
@@ -337,26 +313,17 @@
             {/if}
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 
   <!-- REACTORS ─ nuclear engines ───────────────────────────────────── -->
-  <div class="prp__node">
-    <button type="button" class="prp__node-head"
-            aria-expanded={expanded.reactors}
-            onclick={() => toggle('reactors')}>
-      {@render chev(expanded.reactors)}
-      <span class="prp__node-title">REACTORS</span>
-      {#if reactors.length > 0}
-        <span class="prp__node-count">{reactors.length}</span>
-      {/if}
-    </button>
-    {#if expanded.reactors}
-      {#if reactors.length === 0}
-        {@render emptyMsg('NO NUCLEAR HARDWARE')}
-      {:else}
-        <ul class="prp__rows">
+  {#if reactors.length > 0}
+  <Subheading title="Reactors">
+    {#snippet summary()}
+      <span class="prp__head-count">{reactors.length}</span>
+    {/snippet}
+
+      <ul class="prp__rows">
           {#each reactors as p (p.struct.id)}
             {@const r = reactorOf(p)}
             {#if r}
@@ -389,20 +356,19 @@
                         title="Reactor state machine phase">
                     {stateLabel}{#if r.shutdownRequested}·SHDN{/if}
                   </span>
-                  <button type="button"
-                          class="rx__btn"
-                          class:rx__btn--off={!running}
-                          class:rx__btn--on={running}
-                          aria-label={running ? 'Shut down reactor' : 'Start reactor'}
-                          title={running
-                            ? 'SHUTDOWN — auto-sequences from BURN through IDLE'
-                            : 'STARTUP — Cold → Warming → Idle'}
-                          onclick={() => setReactorActive(p.struct.id, !running)}>
-                    <span class="rx__btn-glyph" aria-hidden="true">
-                      {#if running}■{:else}▸{/if}
-                    </span>
-                    <span class="rx__btn-label">{running ? 'STOP' : 'START'}</span>
-                  </button>
+                  <Chip
+                    kind="latch"
+                    intent={running ? 'warn' : 'idle'}
+                    size="lg"
+                    pressed={running}
+                    glyph={running ? '■' : '▸'}
+                    label={running ? 'STOP' : 'START'}
+                    aria-label={running ? 'Shut down reactor' : 'Start reactor'}
+                    title={running
+                      ? 'SHUTDOWN — auto-sequences from BURN through IDLE'
+                      : 'STARTUP — Cold → Warming → Idle'}
+                    onclick={() => setReactorActive(p.struct.id, !running)}
+                  />
                 </header>
 
                 <div class="rx__meter">
@@ -526,26 +492,17 @@
             {/if}
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 
   <!-- ION DRIVES ─ NSTAR-class thrusters ──────────────────────────── -->
-  <div class="prp__node">
-    <button type="button" class="prp__node-head"
-            aria-expanded={expanded.ions}
-            onclick={() => toggle('ions')}>
-      {@render chev(expanded.ions)}
-      <span class="prp__node-title">ION DRIVES</span>
-      {#if ionDrives.length > 0}
-        <span class="prp__node-count">{ionDrives.length}</span>
-      {/if}
-    </button>
-    {#if expanded.ions}
-      {#if ionDrives.length === 0}
-        {@render emptyMsg('NO ION HARDWARE')}
-      {:else}
-        <ul class="prp__rows">
+  {#if ionDrives.length > 0}
+  <Subheading title="Ion Drives">
+    {#snippet summary()}
+      <span class="prp__head-count">{ionDrives.length}</span>
+    {/snippet}
+
+      <ul class="prp__rows">
           {#each ionDrives as p (p.struct.id)}
             {@const d = ionOf(p)}
             {#if d}
@@ -583,13 +540,15 @@
                     {label}
                   </span>
                   {#if d.tripped}
-                    <button type="button" class="ir__reset"
-                            aria-label="Clear trip latch"
-                            title="Clear trip latch. Engine stays unstaged — re-stage to relight."
-                            onclick={() => resetIonTrip(p.struct.id)}>
-                      <span class="ir__reset-glyph" aria-hidden="true">↺</span>
-                      <span class="ir__reset-label">RESET</span>
-                    </button>
+                    <Chip
+                      kind="action"
+                      intent="alert"
+                      glyph="↺"
+                      label="RESET"
+                      aria-label="Clear trip latch"
+                      title="Clear trip latch. Engine stays unstaged — re-stage to relight."
+                      onclick={() => resetIonTrip(p.struct.id)}
+                    />
                   {/if}
                 </header>
 
@@ -688,9 +647,8 @@
             {/if}
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 </section>
 
 <style>
@@ -705,28 +663,9 @@
     flex-direction: column;
     gap: 6px;
   }
-  .prp__node {
-    border: 1px solid var(--line);
-    background: var(--bg-elev);
-  }
-  .prp__node-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 4px 8px;
-    background: transparent;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    cursor: pointer;
-  }
-  .prp__node-title { flex: 1 1 auto; text-align: left; }
-  .prp__node-count {
-    flex: 0 0 auto;
+  /* Subheading summary chip — small bordered count badge that sits
+     in the Subheading's right-aligned summary slot. */
+  .prp__head-count {
     padding: 0 5px;
     color: var(--fg-mute);
     font-family: var(--font-mono);
@@ -734,31 +673,7 @@
     border: 1px solid var(--line);
     line-height: 1.4;
   }
-  .prp__chev {
-    width: 8px;
-    height: 8px;
-    flex: 0 0 auto;
-    color: var(--fg-mute);
-    transition: transform 160ms ease;
-  }
-  .prp__chev--open { transform: rotate(90deg); }
   .prp__rows { list-style: none; margin: 0; padding: 0; }
-  .prp__empty {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    padding: 10px;
-    color: var(--fg-mute);
-    font-family: var(--font-display);
-    font-size: 10px;
-    letter-spacing: 0.14em;
-  }
-  .prp__empty-rule {
-    flex: 1 1 auto;
-    height: 1px;
-    background: var(--line);
-  }
 
   /* ── Chemical engine row ─────────────────────────────────────── */
   .ce {
@@ -829,54 +744,6 @@
   .ce__state--normal  { color: var(--accent); }
   .ce__state--caution { color: var(--warn);   animation: prp-pulse 1.6s ease-in-out infinite; }
   .ce__state--danger  { color: var(--alert);  animation: prp-pulse 1.6s ease-in-out infinite; }
-
-  /* On/off rocker — same shape as the reactor button, just smaller. */
-  .ce__btn {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 5px 2px 4px;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 9px;
-    letter-spacing: 0.16em;
-    cursor: pointer;
-    transition:
-      color 160ms ease,
-      border-color 160ms ease,
-      background 160ms ease,
-      box-shadow 160ms ease;
-  }
-  .ce__btn-glyph {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1;
-  }
-  .ce__btn-label { line-height: 1; }
-  .ce__btn--off {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-  }
-  .ce__btn--off:hover {
-    color: var(--accent-soft);
-    border-color: var(--accent);
-    background: rgba(126, 245, 184, 0.08);
-    box-shadow: 0 0 6px var(--accent-glow);
-  }
-  .ce__btn--on {
-    color: var(--warn);
-    border-color: rgba(240, 180, 41, 0.45);
-  }
-  .ce__btn--on:hover {
-    color: #ffd070;
-    border-color: var(--warn);
-    background: rgba(240, 180, 41, 0.10);
-    box-shadow: 0 0 6px var(--warn-glow);
-  }
-  .ce__btn:active { transform: translateY(1px); }
 
   .ce__thrust {
     flex: 0 0 auto;
@@ -978,52 +845,6 @@
     color: var(--warn);
     border-style: dashed;
   }
-  .rx__btn {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 6px 2px 5px;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 9px;
-    letter-spacing: 0.16em;
-    cursor: pointer;
-    transition:
-      color 160ms ease,
-      border-color 160ms ease,
-      background 160ms ease,
-      box-shadow 160ms ease;
-  }
-  .rx__btn-glyph {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1;
-  }
-  .rx__btn-label { line-height: 1; }
-  .rx__btn--off {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-  }
-  .rx__btn--off:hover {
-    color: var(--accent-soft);
-    border-color: var(--accent);
-    background: rgba(126, 245, 184, 0.08);
-    box-shadow: 0 0 6px var(--accent-glow);
-  }
-  .rx__btn--on {
-    color: var(--warn);
-    border-color: rgba(240, 180, 41, 0.45);
-  }
-  .rx__btn--on:hover {
-    color: #ffd070;
-    border-color: var(--warn);
-    background: rgba(240, 180, 41, 0.10);
-    box-shadow: 0 0 6px var(--warn-glow);
-  }
-  .rx__btn:active { transform: translateY(1px); }
   .rx__meter {
     display: flex;
     flex-direction: column;
@@ -1431,39 +1252,6 @@
     background: rgba(60, 12, 12, 0.42);
     animation: prp-pulse 1.4s ease-in-out infinite;
   }
-  .ir__reset {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 6px 2px 5px;
-    background: var(--bg);
-    border: 1px solid var(--alert);
-    color: var(--alert);
-    font-family: var(--font-display);
-    font-size: 9px;
-    letter-spacing: 0.16em;
-    cursor: pointer;
-    transition:
-      color 160ms ease,
-      border-color 160ms ease,
-      background 160ms ease,
-      box-shadow 160ms ease;
-    box-shadow: 0 0 5px rgba(255, 82, 82, 0.32);
-  }
-  .ir__reset-glyph {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1;
-  }
-  .ir__reset-label { line-height: 1; }
-  .ir__reset:hover {
-    color: #ffb0b0;
-    border-color: #ff7575;
-    background: rgba(255, 82, 82, 0.10);
-    box-shadow: 0 0 8px rgba(255, 82, 82, 0.5);
-  }
-  .ir__reset:active { transform: translateY(1px); }
   .ir__meter {
     display: flex;
     flex-direction: column;

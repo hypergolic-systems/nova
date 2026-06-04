@@ -19,11 +19,17 @@
     title: string;
     /** Two-way bound open state. Parent reads/writes; defaults open. */
     open?: boolean;
+    /** When true, the entire section (head + body) is removed from the
+     *  flow. Used by the panel to hide categories that have no hardware
+     *  on the current vessel. */
+    vacant?: boolean;
     /** Optional small monogram glyph left of the title. */
     kindIcon?: Snippet;
     /** Right-edge collapsed-state summary; rendered open OR collapsed. */
     summary?: Snippet<[{ open: boolean }]>;
-    /** Body, rendered only when `open` is true. */
+    /** Body slot. Always mounted so the child view's reactive state
+     *  (e.g. hasContent) stays current whether the section is open or
+     *  collapsed — collapsed only hides via the `hidden` attribute. */
     children?: Snippet;
   }
 
@@ -31,6 +37,7 @@
     id,
     title,
     open = $bindable(true),
+    vacant = false,
     kindIcon,
     summary,
     children,
@@ -44,7 +51,17 @@
   }
 </script>
 
-<section class="acs" class:acs--open={open}>
+<!-- The section is ALWAYS rendered (and the child view ALWAYS
+     mounted) — `vacant` only adds a `display:none` class. If we
+     gated the whole `<section>` on `{#if !vacant}` instead, an
+     empty initial parts list would set hasContent=false, unmount
+     the view, and the view could never recompute when data
+     arrived. Hiding via CSS keeps the predicate-flow alive. -->
+<section
+  class="acs"
+  class:acs--open={open}
+  class:acs--vacant={vacant}
+>
   <button
     type="button"
     id={headId}
@@ -82,8 +99,18 @@
     {/if}
   </button>
 
-  {#if open && children}
-    <div id={bodyId} class="acs__body" role="region" aria-labelledby={headId}>
+  <!-- Body is ALWAYS mounted so the child view's reactive state
+       (especially hasContent → vacant feedback to the parent) stays
+       current whether the section is open or collapsed. The hidden
+       attribute applies the appropriate CSS/AT semantics. -->
+  {#if children}
+    <div
+      id={bodyId}
+      class="acs__body"
+      role="region"
+      aria-labelledby={headId}
+      hidden={!open}
+    >
       {@render children()}
     </div>
   {/if}
@@ -104,6 +131,13 @@
         rgba(126, 245, 184, 0.04) 0,
         rgba(126, 245, 184, 0) 60%
       );
+  }
+  /* Vacant — the child view reported no content for the current
+     vessel. Hidden via display:none rather than {#if} so the view
+     stays mounted (its reactive predicate keeps running) and
+     re-appears the instant any matching hardware shows up. */
+  .acs--vacant {
+    display: none;
   }
 
   .acs__head {

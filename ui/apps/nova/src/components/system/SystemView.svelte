@@ -29,12 +29,12 @@
   //
   //                   Antennas live as a sub-list beneath the link
   //                   readout: one row per installed antenna with a
-  //                   one-line stats summary and (for deployable parts)
-  //                   an EXT/RET button. Rows use a 4-column grid that
-  //                   reserves the control slot for every row — so the
-  //                   stats line never reflows when a button toggles
-  //                   between EXT and RET, and the fixed-antenna case
-  //                   (no button) sits in exactly the same geometry.
+  //                   one-line stats summary and a single chip in
+  //                   column 3 that doubles as state indicator (LED
+  //                   stripe lit when extended) and toggle (click to
+  //                   flip). Non-deployable / one-shot-locked rows
+  //                   render a static marker in the same 46px slot
+  //                   so the row geometry never shifts across types.
 
   import { useNovaParts } from '../../telemetry/use-nova-parts.svelte';
   import { useComms } from '../../telemetry/use-comms.svelte';
@@ -43,11 +43,16 @@
   import { onDestroy, untrack } from 'svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
-  import Subsection from '../common/Subsection.svelte';
+  import Subheading from '../common/Subheading.svelte';
+  import Chip from '../common/Chip.svelte';
   import { siPrefix, fmtMag, fmtBytes } from '../../util/units';
 
-  interface Props { vesselId: string; }
-  const { vesselId }: Props = $props();
+  interface Props {
+    vesselId: string;
+    /** Bound out: true when the view has hardware to render. */
+    hasContent?: boolean;
+  }
+  let { vesselId, hasContent = $bindable(true) }: Props = $props();
 
   const ksp = getKsp();
 
@@ -56,13 +61,6 @@
 
   const cmdParts = untrack(() => useNovaParts(() => vesselId));
   const comms    = useComms(() => vesselId);
-
-  // Subsection open state — in-memory only, defaults open. The
-  // parent (System) accordion already gates whether these render
-  // at all, so persisting their nested state would be over-
-  // remembering.
-  let cmdsOpen   = $state(true);
-  let commsOpen  = $state(true);
 
   const stageOps = useStageOps();
   function highlightOn(ids: readonly string[]): void { stageOps.setHighlightParts(ids); }
@@ -216,6 +214,10 @@
     antennaEntries.reduce((n, e) => n + (e.isDeployed ? 1 : 0), 0),
   );
 
+  $effect(() => {
+    hasContent = probeEntries.length > 0 || antennaEntries.length > 0;
+  });
+
   // Distance display: same SI-prefix scaling the bps helper uses, but
   // attached to metres. RA-100 at 1.58 Gm vs an integrated antenna at
   // 1 km share a single column without the tiny ones collapsing to 0.
@@ -295,25 +297,19 @@
 <section class="sys">
 
   <!-- STORED COMMANDS ────────────────────────────────────────── -->
-  <Subsection title="Stored Commands" bind:open={cmdsOpen}>
+  {#if probeEntries.length > 0}
+  <Subheading title="Stored Commands">
     {#snippet summary()}
-      {#if probeEntries.length === 0}
-        <span class="sys__rate-zero">—</span>
-      {:else}
-        {@const s = fmtRateBpsSigned(totalNet)}
-        <span class="sys__chip"
-              class:sys__rate-pos={totalNet > RATE_EPSILON}
-              class:sys__rate-neg={totalNet < -RATE_EPSILON}
-              class:sys__rate-zero={isZero(totalNet)}>
-          {s.sign}{s.mag}<em>{s.unit}</em>
-        </span>
-      {/if}
+      {@const s = fmtRateBpsSigned(totalNet)}
+      <span class="sys__chip"
+            class:sys__rate-pos={totalNet > RATE_EPSILON}
+            class:sys__rate-neg={totalNet < -RATE_EPSILON}
+            class:sys__rate-zero={isZero(totalNet)}>
+        {s.sign}{s.mag}<em>{s.unit}</em>
+      </span>
     {/snippet}
 
     <div class="sys__sub">
-      {#if probeEntries.length === 0}
-        <p class="sys__empty">No probe core on this vessel.</p>
-      {:else}
         {#each probeEntries as e (e.key)}
             {@const fill = e.capacity > 0 ? e.bytes / e.capacity : 0}
             <div class="ctrl"
@@ -361,12 +357,13 @@
               </ul>
             </div>
         {/each}
-      {/if}
     </div>
-  </Subsection>
+  </Subheading>
+  {/if}
 
   <!-- COMMUNICATIONS ────────────────────────────────────────── -->
-  <Subsection title="Communications" bind:open={commsOpen}>
+  {#if antennaEntries.length > 0}
+  <Subheading title="Communications">
     {#snippet summary()}
       <span class="sys__chip"
             class:sys__rate-pos={linkUp}
@@ -412,14 +409,13 @@
         </dl>
 
         <!-- Antenna roster. Sub-heading + per-antenna rows. Each row is
-             a four-column grid: icon | name+stats stack | status pill |
-             control slot. The control slot is fixed-width and always
-             rendered — when the antenna is fixed (no deploy mechanism)
-             or one-shot-and-locked-open, the slot still occupies its
-             46-pixel column with a static glyph so neighbouring rows
-             don't shift as deploy state changes. The stats line and
-             the control slot live in different grid columns, so the
-             stats line's right edge stays put when EXT toggles to RET. -->
+             a three-column grid: icon | name+stats stack | chip-or-static.
+             The chip in column 3 is a `latch` — its LED stripe shows
+             current state (lit accent = extended), and its label is
+             the verb that fires on click (RET when up, EXT when down),
+             matching the engine/reactor START/STOP convention. Non-
+             deployable and one-shot-locked rows render a static marker
+             in the same 46px slot so the column anchors across types. -->
         <div class="ant">
           <div class="ant__head">
             <span class="ant__head-title">Antennas</span>
@@ -473,61 +469,48 @@
                     </span>
                   </div>
 
-                  <!-- Status pill. Fixed width — "EXT"/"RET"/"FIX" all
-                       occupy the same footprint, so the deploy control
-                       to the right anchors to a consistent x-position
-                       whichever state the antenna is in. -->
-                  {#if !a.isDeployable}
-                    <span class="ant__status ant__status--fixed"
-                          title="Integrated / non-deployable antenna">FIX</span>
-                  {:else if a.isDeployed}
-                    <span class="ant__status ant__status--on"
-                          title="Extended — contributing to the comms graph">EXT</span>
-                  {:else}
-                    <span class="ant__status ant__status--off"
-                          title="Retracted — antenna inactive">RET</span>
-                  {/if}
-
-                  <!-- Deploy control slot. Always rendered, fixed
-                       46-px column. Four cases:
-                         • non-deployable        → static "—" glyph
-                         • deployable, retracted → clickable EXT
-                         • deployable+retractable, extended → clickable RET
-                         • one-shot, already extended → static "lock" glyph
-                       Static cases use the same width as the buttons
-                       so the row's right edge never shifts. -->
-                  {#if !a.isDeployable}
-                    <span class="ant__btn ant__btn--placeholder"
-                          aria-hidden="true">—</span>
-                  {:else if !a.isDeployed}
-                    <button type="button"
-                            class="ant__btn ant__btn--ext"
-                            aria-label={`Extend ${a.partTitle}`}
-                            title="Extend antenna"
-                            onclick={(e) => { e.stopPropagation();
-                                              setAntennaDeployed(a.partId, true); }}>
-                      EXT
-                    </button>
-                  {:else if a.isRetractable}
-                    <button type="button"
-                            class="ant__btn ant__btn--ret"
-                            aria-label={`Retract ${a.partTitle}`}
-                            title="Retract antenna"
-                            onclick={(e) => { e.stopPropagation();
-                                              setAntennaDeployed(a.partId, false); }}>
-                      RET
-                    </button>
-                  {:else}
-                    <span class="ant__btn ant__btn--placeholder"
-                          title="One-shot deployable — cannot retract">⌖</span>
-                  {/if}
+                  <!-- One slot: a latch chip that shows current state
+                       (LED lit when extended) AND offers the toggle on
+                       click. Label is the verb that fires on click —
+                       matches the engine/reactor START/STOP convention.
+                       Non-deployable antennas get a single static FIX
+                       marker; one-shot-already-extended gets the chip
+                       lit but disabled so the LED still reads "this
+                       one is up" without offering a retract that the
+                       mod would reject. -->
+                  <span class="ant__ctl">
+                    {#if !a.isDeployable}
+                      <span class="ant__static"
+                            title="Integrated / non-deployable antenna">FIX</span>
+                    {:else if a.isDeployed && !a.isRetractable}
+                      <span class="ant__static ant__static--locked"
+                            title="Deployed (one-shot — cannot retract)">EXT</span>
+                    {:else}
+                      <Chip
+                        kind="latch"
+                        intent={a.isDeployed ? 'ok' : 'idle'}
+                        pressed={a.isDeployed}
+                        label={a.isDeployed ? 'RET' : 'EXT'}
+                        minWidth="46px"
+                        aria-label={a.isDeployed
+                          ? `Retract ${a.partTitle}`
+                          : `Extend ${a.partTitle}`}
+                        title={a.isDeployed
+                          ? 'Currently extended — click to retract'
+                          : 'Currently retracted — click to extend'}
+                        onclick={(e) => { e.stopPropagation();
+                                          setAntennaDeployed(a.partId, !a.isDeployed); }}
+                      />
+                    {/if}
+                  </span>
                 </li>
               {/each}
             </ul>
           {/if}
         </div>
       </div>
-  </Subsection>
+  </Subheading>
+  {/if}
 </section>
 
 <style>
@@ -537,10 +520,10 @@
     gap: 6px;
   }
 
-  /* Subsection-head summary chip — a small bordered pill the size
-     of the head text, mirroring the AccordionSection's right-edge
-     summary vocabulary but at the subordinate register. Reads as
-     a status indicator regardless of fold state. */
+  /* Subheading summary chip — a small bordered pill the size of
+     the head text, mirroring the AccordionSection's right-edge
+     summary vocabulary at the subordinate register. Reads as a
+     status indicator next to the (non-collapsible) heading. */
   .sys__chip {
     display: inline-flex;
     align-items: baseline;
@@ -562,13 +545,7 @@
     flex-direction: column;
     gap: 10px;
   }
-  .sys__empty {
-    margin: 0;
-    color: var(--fg-mute);
-    font-style: italic;
-  }
-
-  .sys__rate-pos  { color: var(--accent); border-color: var(--accent-dim); }
+  .sys__rate-pos { color: var(--accent); border-color: var(--accent-dim); }
   .sys__rate-neg  { color: var(--warn);   border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
   .sys__rate-zero { color: var(--fg-mute); }
 
@@ -880,17 +857,14 @@
     flex-direction: column;
   }
 
-  /* The four columns are: icon | name+stats stack | status pill
-     | control slot. ALL of these are explicit so the stats line
-     can't drift when the control toggles between EXT and RET,
-     and so a fixed-antenna row aligns perfectly with a deployable
-     one above it. Status pill uses `max-content` so the layout
-     stays compact, but its content is fixed-width (3-char pill)
-     so it doesn't drift either. Control slot is a hard 46px so
-     EXT/RET/—/⌖ all sit in identical real estate. */
+  /* Three columns: icon | name+stats stack | control slot. The chip
+     in column 3 is the single source of truth — its LED stripe shows
+     current state (lit = extended), its label is the action that
+     fires on click. Non-deployable / one-shot rows get a static
+     marker in the same slot so the column anchors. */
   .ant__row {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) max-content 46px;
+    grid-template-columns: 16px minmax(0, 1fr) 46px;
     column-gap: 10px;
     align-items: center;
     padding: 5px 2px;
@@ -955,102 +929,33 @@
   }
   .ant__stat--mute { color: var(--fg-dim); }
 
-  /* Tri-state status pill. Fixed width (3 caps + a smidge of
-     tracking) so EXT / RET / FIX all land in the same envelope —
-     the eye sees the color change, not a width change. */
-  .ant__status {
+  /* Column 3: chip or static marker. Static markers sit inside the
+     same 46px slot the chip would occupy so FIX / EXT-locked rows
+     line up with their deployable siblings. The static markers
+     deliberately drop the chip's bordered box — the LED stripe is
+     the family signature, and reusing it on a non-interactive
+     element would dilute the meaning. */
+  .ant__ctl {
     grid-column: 3;
-    box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    padding: 1px 0;
-    border: 1px solid var(--line);
+    min-width: 46px;
+  }
+  .ant__static {
     color: var(--fg-mute);
     font-family: var(--font-display);
     font-size: 9px;
-    letter-spacing: 0.14em;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-  }
-  .ant__status--on {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.08);
-    box-shadow: 0 0 4px rgba(126, 245, 184, 0.10) inset;
-  }
-  .ant__status--off {
-    color: var(--warn);
-    border-color: color-mix(in srgb, var(--warn) 50%, transparent);
-    background: color-mix(in srgb, var(--warn) 8%, transparent);
-  }
-  .ant__status--fixed {
-    color: var(--fg-mute);
-    border-color: var(--line);
-    background: transparent;
-  }
-
-  /* Deploy control. ALWAYS occupies the 46px control column,
-     whether it's an interactive button or a static placeholder.
-     The .ant__btn class drives the geometry; modifier classes
-     drive the colour/interactivity. EXT (accent) leans visually
-     forward — that's the action the player most often wants on
-     a freshly-launched vessel. RET sits in the muted register
-     because retracting an extended antenna is the rarer move. */
-  .ant__btn {
-    grid-column: 4;
-    box-sizing: border-box;
-    width: 46px;
-    height: 22px;
-    padding: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 10px;
     letter-spacing: 0.18em;
-    text-align: center;
-    cursor: pointer;
-    transition:
-      color 160ms ease,
-      border-color 160ms ease,
-      background 160ms ease,
-      box-shadow 160ms ease;
+    text-transform: uppercase;
+    opacity: 0.7;
   }
-  .ant__btn:hover {
+  /* "EXT" locked-open one-shot — keeps the accent colour so the eye
+     still reads "this antenna is up" at the same glance as the
+     deployable rows, but no border/box so it can't be misread as
+     a click target. */
+  .ant__static--locked {
     color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.06);
-  }
-  .ant__btn:active {
-    background: rgba(126, 245, 184, 0.14);
-  }
-  .ant__btn--ext {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    box-shadow: inset 0 0 0 1px rgba(126, 245, 184, 0.04);
-  }
-  .ant__btn--ret {
-    color: var(--fg-dim);
-    border-color: var(--line);
-  }
-  .ant__btn--placeholder {
-    color: var(--fg-mute);
-    border-color: transparent;
-    background: transparent;
-    cursor: default;
-    opacity: 0.55;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-  }
-  .ant__btn--placeholder:hover {
-    color: var(--fg-mute);
-    border-color: transparent;
-    background: transparent;
+    opacity: 0.85;
   }
 </style>

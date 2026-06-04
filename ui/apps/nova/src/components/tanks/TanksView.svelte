@@ -34,6 +34,7 @@
   import { onDestroy } from 'svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
+  import Chip from '../common/Chip.svelte';
   import { resourceMeta, resourceSortKey } from '../resource/resource-codes';
   import { siPrefix, fmtMag } from '../../util/units';
 
@@ -87,8 +88,10 @@
 
   interface Props {
     vesselId: string;
+    /** Bound out: true when the vessel has at least one tank. */
+    hasContent?: boolean;
   }
-  const { vesselId }: Props = $props();
+  let { vesselId, hasContent = $bindable(true) }: Props = $props();
 
   const parts = useNovaParts(() => vesselId);
 
@@ -198,6 +201,10 @@
       const [kb, nb] = resourceSortKey(b.resourceId);
       return ka !== kb ? ka - kb : na.localeCompare(nb);
     });
+  });
+
+  $effect(() => {
+    hasContent = partsWithTanks.length > 0;
   });
 
   // Stored / capacity pair, in the resource's SI-prefixed base unit.
@@ -333,26 +340,21 @@
       <span class="tnk__sub-sep">·</span>
       <span class="tnk__cool-tier">{tierLabel(slice.tier)}</span>
       {#if slice.maxStage > 0}
-        <button type="button" class="tnk__cool-btn"
-                class:tnk__cool-btn--on={slice.stage > 0}
-                aria-label="Cycle cryocooler stage"
-                title={slice.maxStage === 1
-                  ? 'Toggle cryocooler (OFF / ON)'
-                  : 'Cycle cryocooler (OFF / S1 / S2)'}
-                onclick={(e) => { e.stopPropagation(); cycleCoolingFor(p, resourceId); }}>
-          <span>{tankStageLabel(slice.stage, slice.maxStage)}</span>
-        </button>
+        <Chip
+          kind="stepper"
+          intent={slice.stage > 0 ? 'ok' : 'idle'}
+          size="sm"
+          label={tankStageLabel(slice.stage, slice.maxStage)}
+          minWidth="38px"
+          aria-label="Cycle cryocooler stage"
+          title={slice.maxStage === 1
+            ? 'Toggle cryocooler (OFF / ON)'
+            : 'Cycle cryocooler (OFF / S1 / S2)'}
+          onclick={(e) => { e.stopPropagation(); cycleCoolingFor(p, resourceId); }}
+        />
       {/if}
     </li>
   {/if}
-{/snippet}
-
-{#snippet emptyMsg(text: string)}
-  <p class="tnk__empty">
-    <span class="tnk__empty-rule"></span>
-    <span class="tnk__empty-text">{text}</span>
-    <span class="tnk__empty-rule"></span>
-  </p>
 {/snippet}
 
 {#snippet codeTile(name: string, lead: boolean = false)}
@@ -390,9 +392,6 @@
 
   {#if !byResource}
     <!-- ===== BY PART ============================================== -->
-    {#if partsWithTanks.length === 0}
-      {@render emptyMsg('NO TANKS')}
-    {:else}
       {#each partsWithTanks as p (p.struct.id)}
         {@const open = isPartExpanded(p.struct.id)}
         {@const aggs = partTankResources(p)}
@@ -464,12 +463,8 @@
           {/if}
         </div>
       {/each}
-    {/if}
   {:else}
     <!-- ===== BY RESOURCE ========================================== -->
-    {#if resourceGroups.length === 0}
-      {@render emptyMsg('NO TANKS')}
-    {:else}
       {#each resourceGroups as g (g.resourceId)}
         {@const open = isResExpanded(g.resourceId)}
         {@const m = resourceMeta(g.resourceId)}
@@ -564,7 +559,6 @@
           {/if}
         </div>
       {/each}
-    {/if}
   {/if}
 </section>
 
@@ -1088,60 +1082,10 @@
     letter-spacing: 0.14em;
     color: var(--fg);
   }
-  /* Inline stage toggle — same chip language as PWR/THM cooler-btn,
-     dropped into a sub-line so it sits flush with the cooling label.
-     Fixed width keeps OFF / ON / S1 / S2 the same footprint. */
-  .tnk__cool-btn {
+  /* The inline cooler chip needs a small left margin so it sits
+     clear of the "cooling · S1" label that precedes it. */
+  :global(.tnk__sub .nv-chip) {
     margin-left: 6px;
-    padding: 0 6px;
-    width: 38px;
-    text-align: center;
-    background: transparent;
-    border: 1px solid var(--line);
-    color: var(--fg-mute);
-    font-family: var(--font-display);
-    font-size: 9px;
-    letter-spacing: 0.12em;
-    cursor: pointer;
-    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
-  }
-  .tnk__cool-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.06);
-  }
-  .tnk__cool-btn--on {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.08);
-  }
-  .tnk__cool-btn--on:hover {
-    background: rgba(126, 245, 184, 0.16);
-    border-color: var(--accent);
-    box-shadow: 0 0 4px var(--accent-glow);
   }
 
-  /* Empty-state line — verbatim Power's pattern for visual rhyme. */
-  .tnk__empty {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 6px 0;
-    padding: 0 4px;
-  }
-  .tnk__empty-rule {
-    flex: 1 1 auto;
-    height: 1px;
-    background: linear-gradient(90deg,
-      transparent 0%,
-      rgba(126, 245, 184, 0.10) 50%,
-      transparent 100%);
-  }
-  .tnk__empty-text {
-    flex: 0 0 auto;
-    font-family: var(--font-display);
-    font-size: 9px;
-    color: var(--fg-dim);
-    letter-spacing: 0.24em;
-  }
 </style>

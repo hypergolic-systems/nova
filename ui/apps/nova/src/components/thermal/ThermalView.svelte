@@ -19,6 +19,8 @@
   import { onDestroy } from 'svelte';
   import ComponentIcon from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
+  import Subheading from '../common/Subheading.svelte';
+  import Chip from '../common/Chip.svelte';
   import { siPrefix, fmtMag } from '../../util/units';
   import { resourceMeta } from '../resource/resource-codes';
 
@@ -29,20 +31,14 @@
 
   interface Props {
     vesselId: string;
+    /** Bound out: true when the view has anything to render. Drives
+     *  the parent rack's section visibility. */
+    hasContent?: boolean;
   }
-  const { vesselId }: Props = $props();
+  let { vesselId, hasContent = $bindable(true) }: Props = $props();
 
   const vesselParts = useNovaParts(() => vesselId);
   const ksp = getKsp();
-
-  type NodeKey = 'producers' | 'radiators';
-  let expanded = $state<Record<NodeKey, boolean>>({
-    producers: true,
-    radiators: true,
-  });
-  function toggle(k: NodeKey): void {
-    expanded[k] = !expanded[k];
-  }
 
   function isRtgPart(p: NovaPartHandle): boolean {
     return !!p.state && p.state.rtg.length > 0;
@@ -245,6 +241,13 @@
     coolingMax: groups.radiators.reduce((a, p) => a + radiatorOf(p).max, 0),
   });
 
+  const hasProducers = $derived(
+    groups.rtgs.length > 0 || groups.ions.length > 0 || coolerRows.length > 0,
+  );
+  $effect(() => {
+    hasContent = hasProducers || groups.radiators.length > 0;
+  });
+
   function fmtRate(value: number): { mag: string; unit: string } {
     const abs = Math.abs(value);
     const p = siPrefix(abs);
@@ -284,21 +287,6 @@
   onDestroy(() => stageOps.setHighlightParts([]));
 </script>
 
-{#snippet chev(open: boolean)}
-  <svg class="thr__chev" class:thr__chev--open={open}
-       viewBox="0 0 8 8" aria-hidden="true">
-    <path d="M2.2 1.4 L5.8 4 L2.2 6.6" fill="none" stroke="currentColor"
-          stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-  </svg>
-{/snippet}
-
-{#snippet emptyMsg(text: string)}
-  <p class="thr__empty">
-    <span class="thr__empty-rule"></span>
-    <span class="thr__empty-text">{text}</span>
-    <span class="thr__empty-rule"></span>
-  </p>
-{/snippet}
 
 <!-- Cooler row — two-line stack matching the RTG layout. Primary line
      carries the heat load (amber, like RTG waste heat); secondary line
@@ -322,15 +310,17 @@
           {row.partTitle}<em class="thr__row-subname"
             style:color={tint}> · {row.resourceCode}</em>
         </span>
-        <button type="button" class="thr__deploy-btn thr__cooler-btn"
-                class:thr__cooler-btn--on={row.stage > 0}
-                aria-label="Cycle cryocooler stage"
-                title={row.maxStage === 1
-                  ? 'Toggle cryocooler (OFF / ON)'
-                  : 'Cycle cryocooler (OFF / S1 / S2)'}
-                onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}>
-          <span>{tankStageLabel(row.stage, row.maxStage)}</span>
-        </button>
+        <Chip
+          kind="stepper"
+          intent={row.stage > 0 ? 'ok' : 'idle'}
+          label={tankStageLabel(row.stage, row.maxStage)}
+          minWidth="44px"
+          aria-label="Cycle cryocooler stage"
+          title={row.maxStage === 1
+            ? 'Toggle cryocooler (OFF / ON)'
+            : 'Cycle cryocooler (OFF / S1 / S2)'}
+          onclick={(e) => { e.stopPropagation(); cycleTankCooler(row); }}
+        />
         <span class="thr__rate thr__rate--load thr__rate--col"
               class:thr__rate--zero={isZero(row.coolerHeatW)}
               title="Waste heat dumped to the cooling bus by this cryocooler">
@@ -357,41 +347,39 @@
 {#snippet radiatorControl(p: NovaPartHandle, r: { deployed: boolean; deployable: boolean; retractable: boolean })}
   {#if r.deployable}
     {#if !r.deployed}
-      <button type="button" class="thr__deploy-btn thr__deploy-btn--ext"
-              aria-label="Extend radiator"
-              title="Extend radiator"
-              onclick={(e) => { e.stopPropagation(); setRadiatorDeployed(p.struct.id, true); }}>
-        <span>EXT</span>
-      </button>
+      <Chip
+        kind="action"
+        intent="ok"
+        label="EXT"
+        aria-label="Extend radiator"
+        title="Extend radiator"
+        onclick={(e) => { e.stopPropagation(); setRadiatorDeployed(p.struct.id, true); }}
+      />
     {:else if r.retractable}
-      <button type="button" class="thr__deploy-btn thr__deploy-btn--ret"
-              aria-label="Retract radiator"
-              title="Retract radiator"
-              onclick={(e) => { e.stopPropagation(); setRadiatorDeployed(p.struct.id, false); }}>
-        <span>RET</span>
-      </button>
+      <Chip
+        kind="action"
+        intent="idle"
+        label="RET"
+        aria-label="Retract radiator"
+        title="Retract radiator"
+        onclick={(e) => { e.stopPropagation(); setRadiatorDeployed(p.struct.id, false); }}
+      />
     {/if}
   {/if}
 {/snippet}
 
 <section class="thr">
   <!-- Producers ---------------------------------------------------- -->
-  <div class="thr__node">
-    <button type="button" class="thr__node-head"
-            aria-expanded={expanded.producers}
-            onclick={() => toggle('producers')}>
-      {@render chev(expanded.producers)}
-      <span class="thr__node-title">PRODUCERS</span>
+  {#if hasProducers}
+  <Subheading title="Producers">
+    {#snippet summary()}
       <span class="thr__rate thr__rate--load"
             class:thr__rate--zero={isZero(totals.heatLoad)}>
         {heatLoadFmt.mag}<em>{heatLoadFmt.unit}</em>
       </span>
-    </button>
-    {#if expanded.producers}
-      {#if groups.rtgs.length === 0 && groups.ions.length === 0 && coolerRows.length === 0}
-        {@render emptyMsg('NO HEAT PRODUCERS')}
-      {:else}
-        <ul class="thr__rows">
+    {/snippet}
+
+      <ul class="thr__rows">
           {#each groups.rtgs as p (p.struct.id)}
             {@const t = rtgThermal(p)}
             {@const loadFmt = fmtRate(t.heatIn)}
@@ -534,28 +522,21 @@
             {@render coolerRow(row)}
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 
   <!-- Radiators ---------------------------------------------------- -->
-  <div class="thr__node">
-    <button type="button" class="thr__node-head"
-            aria-expanded={expanded.radiators}
-            onclick={() => toggle('radiators')}>
-      {@render chev(expanded.radiators)}
-      <span class="thr__node-title">RADIATORS</span>
+  {#if groups.radiators.length > 0}
+  <Subheading title="Radiators">
+    {#snippet summary()}
       <span class="thr__rate thr__rate--cool"
             class:thr__rate--zero={isZero(totals.cooling)}>
         <span class="thr__rate-cur">{coolingFmt.cMag}</span><span
           class="thr__rate-max">/{coolingFmt.mMag}</span><em>{coolingFmt.unit}</em>
       </span>
-    </button>
-    {#if expanded.radiators}
-      {#if groups.radiators.length === 0}
-        {@render emptyMsg('NO RADIATORS')}
-      {:else}
-        <ul class="thr__rows">
+    {/snippet}
+
+      <ul class="thr__rows">
           {#each groups.radiators as p (p.struct.id)}
             {@const r = radiatorOf(p)}
             {@const cFmt = fmtRate(r.current)}
@@ -578,9 +559,8 @@
             </li>
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 </section>
 
 <style>
@@ -589,36 +569,6 @@
     flex-direction: column;
     gap: 6px;
   }
-  .thr__node {
-    border: 1px solid var(--line);
-    background: var(--bg-elev);
-  }
-  .thr__node-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 4px 8px;
-    background: transparent;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    cursor: pointer;
-  }
-  .thr__node-title {
-    flex: 1 1 auto;
-    text-align: left;
-  }
-  .thr__chev {
-    width: 8px;
-    height: 8px;
-    color: var(--fg-mute);
-    transition: transform 160ms ease;
-  }
-  .thr__chev--open { transform: rotate(90deg); }
 
   .thr__rows {
     list-style: none;
@@ -735,52 +685,6 @@
   .thr__dtdt--down { color: var(--accent); }
   .thr__dtdt--zero { color: var(--fg-mute); }
 
-  /* Deploy buttons (radiator EXT/RET). Same visual language as the
-     PWR view's solar buttons but local to the THM tab. */
-  .thr__deploy-btn {
-    flex: 0 0 auto;
-    padding: 1px 6px;
-    background: transparent;
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    cursor: pointer;
-    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
-  }
-  .thr__deploy-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.06);
-  }
-  .thr__deploy-btn:active {
-    background: rgba(126, 245, 184, 0.14);
-  }
-  .thr__deploy-btn--ext {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-  }
-  .thr__deploy-btn--ret {
-    color: var(--fg-dim);
-  }
-
-  /* Cryocooler stage toggle. Fixed width so OFF / ON / S1 / S2 all
-     occupy the same footprint — the right-side rate column stays at a
-     constant horizontal position as the player cycles. */
-  .thr__cooler-btn {
-    color: var(--fg-mute);
-    border-color: var(--line);
-    width: 44px;
-    text-align: center;
-    flex: 0 0 auto;
-  }
-  .thr__cooler-btn--on {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.08);
-  }
-
   /* Rate cell when used in a cooler row — fixed minimum width and
      right-aligned so the button to its left lines up across rows
      regardless of digit count ("200 W" vs "1.5 kW"). */
@@ -811,25 +715,6 @@
     font-style: normal;
     color: var(--fg-mute);
     margin-left: 1px;
-  }
-
-  .thr__empty {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    padding: 8px 10px;
-    color: var(--fg-mute);
-    font-size: 10px;
-    letter-spacing: 0.14em;
-  }
-  .thr__empty-rule {
-    flex: 1 1 auto;
-    height: 1px;
-    background: var(--line-faint, rgba(126, 245, 184, 0.06));
-  }
-  .thr__empty-text {
-    flex: 0 0 auto;
   }
 
   /* Ion engine trip chip. Sits in the primary row line between the

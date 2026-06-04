@@ -18,6 +18,8 @@
   import { onDestroy, untrack } from 'svelte';
   import ComponentIcon, { type ComponentKind } from '../ComponentIcon.svelte';
   import SegmentGauge from '../SegmentGauge.svelte';
+  import Chip from '../common/Chip.svelte';
+  import Subheading from '../common/Subheading.svelte';
   import { siPrefix, fmtMag } from '../../util/units';
   import { resourceMeta } from '../resource/resource-codes';
 
@@ -41,8 +43,14 @@
   interface Props {
     parts: () => { readonly current: NovaPartHandle[] };
     mode?: 'flight' | 'editor';
+    /** Bound out: true when the view has hardware to render. */
+    hasContent?: boolean;
   }
-  const { parts, mode = 'flight' }: Props = $props();
+  let {
+    parts,
+    mode = 'flight',
+    hasContent = $bindable(true),
+  }: Props = $props();
   const isEditor = $derived(mode === 'editor');
 
   // Invoke the factory once at setup. `untrack` suppresses Svelte's
@@ -95,15 +103,18 @@
   const consumers  = $derived(vesselParts.current.filter(hasConsume));
   const storage    = $derived(vesselParts.current.filter(hasStore));
 
-  type NodeKey = 'gen' | 'gen_solar' | 'consume' | 'store';
-  let expanded = $state<Record<NodeKey, boolean>>({
-    gen: true,
-    gen_solar: true,
-    consume: true,
-    store: true,
+  $effect(() => {
+    hasContent = generators.length > 0
+              || consumers.length > 0
+              || storage.length > 0;
   });
-  function toggle(k: NodeKey): void {
-    expanded[k] = !expanded[k];
+
+  // The SOLAR sub-group inside Generation is the only interior fold —
+  // GEN / CONSUME / STORE are flat labelled groups now (Subheading),
+  // so the outer POWER accordion is the only top-level fold control.
+  let solarOpen = $state(true);
+  function toggleSolar(): void {
+    solarOpen = !solarOpen;
   }
 
   // Per-row expansion in the consumption section. Wheel rows expand
@@ -716,13 +727,6 @@
   </svg>
 {/snippet}
 
-{#snippet emptyMsg(text: string)}
-  <p class="pwr__empty">
-    <span class="pwr__empty-rule"></span>
-    <span class="pwr__empty-text">{text}</span>
-    <span class="pwr__empty-rule"></span>
-  </p>
-{/snippet}
 
 <!-- Ion engine row. Same shape as the flat consumer row, with one
      extra chip slot before the rate: a TRIP·{reason} badge visible
@@ -785,14 +789,15 @@
       </span>
     {/if}
     {#if hasTestLoad}
-      <button type="button"
-              class="pwr__deploy-btn pwr__test-load-btn"
-              class:pwr__test-load-btn--on={tlActive}
-              aria-label={tlActive ? 'Disable test load' : 'Enable test load'}
-              title={`Toggle ${tlRate} W debug load`}
-              onclick={(e) => { e.stopPropagation(); setCommandTestLoad(row.partId, !tlActive); }}>
-        <span>LOAD</span>
-      </button>
+      <Chip
+        kind="latch"
+        intent={tlActive ? 'warn' : 'idle'}
+        pressed={tlActive}
+        label="LOAD"
+        aria-label={tlActive ? 'Disable test load' : 'Enable test load'}
+        title={`Toggle ${tlRate} W debug load`}
+        onclick={(e) => { e.stopPropagation(); setCommandTestLoad(row.partId, !tlActive); }}
+      />
     {/if}
     <span class="pwr__row-rate"
           class:pwr__row-rate--neg={!isZero(row.busRate)}
@@ -859,15 +864,17 @@
             style:color={tint}> · {row.resourceCode}</em>
         </span>
         {#if !isEditor}
-          <button type="button" class="pwr__deploy-btn pwr__cooler-btn"
-                  class:pwr__cooler-btn--on={row.stage > 0}
-                  aria-label="Cycle cryocooler stage"
-                  title={row.maxStage === 1
-                    ? 'Toggle cryocooler (OFF / ON)'
-                    : 'Cycle cryocooler (OFF / S1 / S2)'}
-                  onclick={(e) => { e.stopPropagation(); cycleCoolerRow(row); }}>
-            <span>{tankStageLabel(row.stage, row.maxStage)}</span>
-          </button>
+          <Chip
+            kind="stepper"
+            intent={row.stage > 0 ? 'ok' : 'idle'}
+            label={tankStageLabel(row.stage, row.maxStage)}
+            minWidth="44px"
+            aria-label="Cycle cryocooler stage"
+            title={row.maxStage === 1
+              ? 'Toggle cryocooler (OFF / ON)'
+              : 'Cycle cryocooler (OFF / S1 / S2)'}
+            onclick={(e) => { e.stopPropagation(); cycleCoolerRow(row); }}
+          />
         {/if}
         <span class="pwr__row-rate pwr__row-rate--col"
               class:pwr__row-rate--neg={!isZero(row.coolerEcW)}
@@ -966,24 +973,31 @@
   {#if s}
     {@const busy = isPending(p)}
     {#if busy}
-      <span class="pwr__deploy-btn pwr__deploy-btn--busy"
-            aria-label="Solar panel moving">
-        <span>···</span>
-      </span>
+      <Chip
+        kind="action"
+        intent={s.deployed ? 'ok' : 'idle'}
+        pending
+        label="···"
+        aria-label="Solar panel moving"
+      />
     {:else if !s.deployed}
-      <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ext"
-              aria-label="Extend solar panel"
-              title="Extend solar panel"
-              onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, true); }}>
-        <span>EXT</span>
-      </button>
+      <Chip
+        kind="action"
+        intent="ok"
+        label="EXT"
+        aria-label="Extend solar panel"
+        title="Extend solar panel"
+        onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, true); }}
+      />
     {:else if s.deployed && s.retractable}
-      <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ret"
-              aria-label="Retract solar panel"
-              title="Retract solar panel"
-              onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, false); }}>
-        <span>RET</span>
-      </button>
+      <Chip
+        kind="action"
+        intent="idle"
+        label="RET"
+        aria-label="Retract solar panel"
+        title="Retract solar panel"
+        onclick={(e) => { e.stopPropagation(); setSolarDeployed(p.struct.id, false); }}
+      />
     {/if}
   {/if}
 {/snippet}
@@ -997,40 +1011,39 @@
      need power, deploy everything" intent. -->
 {#snippet solarBulkControl(parts: NovaPartHandle[])}
   {#if subgroupAnyRetracted(parts)}
-    <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ext pwr__deploy-btn--bulk"
-            aria-label="Extend all retracted solar panels"
-            title="Extend all retracted solar panels"
-            onclick={(e) => { e.stopPropagation(); bulkSetSolarDeployed(parts, true); }}>
-      <span>EXT ALL</span>
-    </button>
+    <Chip
+      kind="action"
+      intent="ok"
+      label="EXT ALL"
+      minWidth="56px"
+      aria-label="Extend all retracted solar panels"
+      title="Extend all retracted solar panels"
+      onclick={(e) => { e.stopPropagation(); bulkSetSolarDeployed(parts, true); }}
+    />
   {:else if subgroupAnyExtendedRetractable(parts)}
-    <button type="button" class="pwr__deploy-btn pwr__deploy-btn--ret pwr__deploy-btn--bulk"
-            aria-label="Retract all retractable solar panels"
-            title="Retract all retractable solar panels"
-            onclick={(e) => { e.stopPropagation(); bulkSetSolarDeployed(parts, false); }}>
-      <span>RET ALL</span>
-    </button>
+    <Chip
+      kind="action"
+      intent="idle"
+      label="RET ALL"
+      minWidth="56px"
+      aria-label="Retract all retractable solar panels"
+      title="Retract all retractable solar panels"
+      onclick={(e) => { e.stopPropagation(); bulkSetSolarDeployed(parts, false); }}
+    />
   {/if}
 {/snippet}
 
 <section class="pwr">
   <!-- Generation -------------------------------------------------- -->
-  <div class="pwr__node">
-    <button type="button" class="pwr__node-head"
-            aria-expanded={expanded.gen}
-            onclick={() => toggle('gen')}>
-      {@render chev(expanded.gen)}
-      <span class="pwr__node-title">GENERATION</span>
+  {#if generators.length > 0}
+  <Subheading title="GENERATION">
+    {#snippet summary()}
       <span class="pwr__total"
             class:pwr__total--zero={totals.gen <= 0}
             class:pwr__total--hot={totals.gen > 0}>
         {genFmt.mag}<em>{genFmt.unit}</em>
       </span>
-    </button>
-    {#if expanded.gen}
-      {#if generators.length === 0}
-        {@render emptyMsg('NO GENERATORS')}
-      {:else}
+    {/snippet}
         <ul class="pwr__rows">
           {#if genGroups.groupSolar}
             <li class="pwr__subgroup">
@@ -1039,9 +1052,9 @@
                    onmouseleave={highlightOff}
                    role="presentation">
                 <button type="button" class="pwr__subgroup-head"
-                        aria-expanded={expanded.gen_solar}
-                        onclick={() => toggle('gen_solar')}>
-                  {@render chev(expanded.gen_solar)}
+                        aria-expanded={solarOpen}
+                        onclick={toggleSolar}>
+                  {@render chev(solarOpen)}
                   <span class="pwr__row-icon pwr__row-icon--accent">
                     <ComponentIcon kind="solar" />
                   </span>
@@ -1060,7 +1073,7 @@
                 </button>
                 {#if !isEditor}{@render solarBulkControl(genGroups.solar)}{/if}
               </div>
-              {#if expanded.gen_solar}
+              {#if solarOpen}
                 <ul class="pwr__rows pwr__rows--nested">
                   {#each genGroups.solar as p (p.struct.id)}
                     {@const s = solarOf(p)}
@@ -1218,27 +1231,19 @@
             {/if}
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 
   <!-- Consumption ------------------------------------------------- -->
-  <div class="pwr__node">
-    <button type="button" class="pwr__node-head"
-            aria-expanded={expanded.consume}
-            onclick={() => toggle('consume')}>
-      {@render chev(expanded.consume)}
-      <span class="pwr__node-title">CONSUMPTION</span>
+  {#if consumerRows.length > 0 || coolerRows.length > 0}
+  <Subheading title="CONSUMPTION">
+    {#snippet summary()}
       <span class="pwr__total"
             class:pwr__total--zero={totals.consume <= 0}
             class:pwr__total--neg={totals.consume > 0}>
         {consumeFmt.mag}<em>{consumeFmt.unit}</em>
       </span>
-    </button>
-    {#if expanded.consume}
-      {#if consumerRows.length === 0 && coolerRows.length === 0}
-        {@render emptyMsg('NO CONSUMERS')}
-      {:else}
+    {/snippet}
         <ul class="pwr__rows">
           {#each consumerRows as row (row.key)}
             {#if !isEditor && row.kind === 'wheel' && row.wheel}
@@ -1255,9 +1260,8 @@
             {@render coolerRowMarkup(row)}
           {/each}
         </ul>
-      {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 
   <!-- Storage ----------------------------------------------------- -->
   <!-- In editor mode the section collapses to "what storage exists" —
@@ -1267,12 +1271,9 @@
        redundant ("100%") or zero. The section header still surfaces
        the vessel-wide capacity as a single number — that's the design
        fact worth seeing while balancing sources vs loads. -->
-  <div class="pwr__node">
-    <button type="button" class="pwr__node-head"
-            aria-expanded={expanded.store}
-            onclick={() => toggle('store')}>
-      {@render chev(expanded.store)}
-      <span class="pwr__node-title">STORAGE</span>
+  {#if storage.length > 0}
+  <Subheading title="STORAGE">
+    {#snippet summary()}
       {#if isEditor}
         <span class="pwr__total"
               class:pwr__total--zero={totals.capacity <= 0}
@@ -1287,20 +1288,16 @@
           <em>{storedFmt.unit} · {netStorageFmt.mag} {netStorageFmt.unit}</em>
         </span>
       {/if}
-    </button>
-    <!-- Aggregate gauge stays visible whether or not the children
-         are expanded — it's the at-a-glance "vessel power health"
-         line and shouldn't disappear behind a collapsed node. Skipped
-         in editor mode (always reads "full"). -->
-    {#if !isEditor && storage.length > 0}
-      <div class="pwr__node-gauge">
+    {/snippet}
+    <!-- Aggregate gauge — vessel-wide power-health line. Skipped in
+         editor mode (always reads "full" — batteries launch full and
+         no solver runs in editor). -->
+    {#if !isEditor}
+      <div class="pwr__store-gauge">
         <SegmentGauge fraction={batteryFraction(totals.stored, totals.capacity)} />
       </div>
     {/if}
-    {#if expanded.store}
-      {#if storage.length === 0}
-        {@render emptyMsg('NO BATTERIES')}
-      {:else if isEditor}
+      {#if isEditor}
         <ul class="pwr__rows">
           {#each storage as p (p.struct.id)}
             {@const cap = batteryCapacity(p)}
@@ -1355,8 +1352,8 @@
           {/each}
         </ul>
       {/if}
-    {/if}
-  </div>
+  </Subheading>
+  {/if}
 </section>
 
 <style>
@@ -1364,127 +1361,19 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    /* Reserve room on the left so the section indicator bars (the
-       ::before tab markers on each node head) sit just inside the
-       panel padding without clipping. */
-    padding-left: 4px;
-    margin-left: -4px;
   }
 
-  .pwr__node {
-    margin-top: 12px;
-  }
-  .pwr__node:first-child {
-    margin-top: 0;
-  }
-
-  /* The clickable header strips button chrome and re-adopts the
-     section-head visual rhythm, with the chevron leading. The
-     ::before pseudo is a left-edge indicator bar — dim while the
-     node is expanded (passive "this is open"), bright on hover or
-     focus (active "click me"). The :hover state also lifts a
-     right-trailing accent wash across the underline so the section
-     reads as a tab being entered, not just a button being pressed. */
-  .pwr__node-head {
-    appearance: none;
-    background: transparent;
-    border: none;
-    padding: 2px 4px 4px 4px;
-    margin: 0 0 4px;
-    width: 100%;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    position: relative;
-    font-family: var(--font-display);
-    letter-spacing: 0.22em;
-    border-bottom: 1px solid var(--line);
-    transition: border-color 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  /* The double-rule effect — a hairline a couple of pixels below the
-     primary border-bottom — recalls the etched lines on real flight
-     instruments. Stays at line color so it doesn't compete with
-     content; brightens slightly on hover. */
-  .pwr__node-head::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -3px;
-    height: 1px;
-    background: linear-gradient(90deg,
-      transparent 0%,
-      rgba(126, 245, 184, 0.06) 18%,
-      rgba(126, 245, 184, 0.06) 82%,
-      transparent 100%);
-    transition: background 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .pwr__node-head:hover::after,
-  .pwr__node-head:focus-visible::after {
-    background: linear-gradient(90deg,
-      transparent 0%,
-      rgba(126, 245, 184, 0.22) 18%,
-      rgba(126, 245, 184, 0.22) 82%,
-      transparent 100%);
+  /* Sibling Subheadings inside Power get a touch of breathing room so
+     GEN / CONSUME / STORE read as three labelled groups rather than
+     one continuous list. :global() because .sh is rendered by the
+     Subheading component and carries its own scope hash. */
+  .pwr :global(.sh ~ .sh) {
+    margin-top: 10px;
   }
 
-  /* Left-edge indicator bar. */
-  .pwr__node-head::before {
-    content: '';
-    position: absolute;
-    left: -4px;
-    top: 50%;
-    height: 70%;
-    width: 2px;
-    background: var(--accent);
-    opacity: 0;
-    transform: translateY(-50%) scaleY(0.4);
-    transform-origin: center;
-    transition:
-      opacity 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      transform 320ms cubic-bezier(0.16, 1, 0.3, 1),
-      box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .pwr__node-head[aria-expanded='true']::before {
-    opacity: 0.45;
-    transform: translateY(-50%) scaleY(1);
-    background: var(--accent-dim);
-  }
-  .pwr__node-head:hover::before,
-  .pwr__node-head:focus-visible::before {
-    opacity: 1;
-    transform: translateY(-50%) scaleY(1);
-    background: var(--accent);
-    box-shadow: 0 0 6px var(--accent-glow);
-  }
-
-  .pwr__node-head:hover .pwr__node-title,
-  .pwr__node-head:focus-visible .pwr__node-title {
-    color: var(--accent-soft);
-    text-shadow: 0 0 6px var(--accent-glow);
-  }
-  .pwr__node-head:focus-visible {
-    outline: none;
-  }
-  .pwr__node-head:hover {
-    border-bottom-color: var(--accent-dim);
-  }
-  .pwr__node-title {
-    flex: 1 1 auto;
-    font-size: 11px;
-    color: var(--fg-dim);
-    transition:
-      color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      text-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  /* Mechanical chevron — quart-out easing on rotation feels snappier
-     than the default ease, and a hint of scale on hover makes it
-     read as an actual control rather than passive decoration. */
+  /* Mechanical chevron — used by the SOLAR subgroup and the per-row
+     wheel head. The interior section labels (GEN/CONSUME/STORE) are
+     flat Subheadings now and don't carry a chev. */
   .pwr__chev {
     flex: 0 0 8px;
     width: 8px;
@@ -1498,28 +1387,24 @@
   .pwr__chev--open {
     transform: rotate(90deg);
   }
-  .pwr__node-head:hover .pwr__chev,
   .pwr__subgroup-head:hover .pwr__chev {
     color: var(--accent);
     filter: drop-shadow(0 0 3px var(--accent-glow));
   }
-  .pwr__node-head:hover .pwr__chev--open,
   .pwr__subgroup-head:hover .pwr__chev--open {
     transform: rotate(90deg) scale(1.18);
   }
-  .pwr__node-head:hover .pwr__chev:not(.pwr__chev--open),
   .pwr__subgroup-head:hover .pwr__chev:not(.pwr__chev--open) {
     transform: scale(1.18);
   }
 
-  .pwr__node-gauge {
-    margin: 4px 0 8px;
+  /* Storage aggregate gauge — slipped between the Subheading row and
+     the per-battery list. Vessel-wide power-health at a glance. */
+  .pwr__store-gauge {
+    margin: 2px 0 6px;
     padding: 0 2px;
   }
-  /* The aggregate gauge takes a touch more vertical weight — it's
-     the at-a-glance "vessel power health" line and benefits from
-     standing slightly taller than the per-row gauges underneath. */
-  .pwr__node-gauge :global(.sg) {
+  .pwr__store-gauge :global(.sg) {
     height: 12px;
   }
 
@@ -1920,10 +1805,14 @@
     outline: none;
     background: rgba(126, 245, 184, 0.05);
   }
+  /* SOLAR subgroup sits one register below the GENERATION Subheading
+     (9.5px). 9px keeps it visibly subordinate without becoming
+     unreadable — the chevron + leading icon are doing most of the
+     hierarchy-carrying work, the size just confirms it. */
   .pwr__subgroup-title {
     flex: 1 1 auto;
     font-family: var(--font-display);
-    font-size: 10px;
+    font-size: 9px;
     letter-spacing: 0.20em;
     color: var(--fg-dim);
     transition: color 220ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -1949,137 +1838,6 @@
     color: var(--fg-dim);
   }
 
-  /* Empty-state line: a tracked-out instrument annotation flanked by
-     hairline rules that fade to transparent at the edges. Reads as a
-     status callout, not a sentence. */
-  .pwr__empty {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 6px 0;
-    padding: 0 4px;
-  }
-  .pwr__empty-rule {
-    flex: 1 1 auto;
-    height: 1px;
-    background: linear-gradient(90deg,
-      transparent 0%,
-      rgba(126, 245, 184, 0.10) 50%,
-      transparent 100%);
-  }
-  .pwr__empty-text {
-    flex: 0 0 auto;
-    font-family: var(--font-display);
-    font-size: 9px;
-    color: var(--fg-dim);
-    letter-spacing: 0.24em;
-  }
-
-  /* Per-row solar deploy action. A bordered display-font label
-     ("EXT" / "RET") instead of an iconographic chevron — the chevron
-     was tiny enough that users didn't recognise it as a button. The
-     label sits to the right of the panel name, before the rate
-     readout, with letter-spacing matching the tab chips so it reads
-     as part of the same visual family. */
-  .pwr__deploy-btn {
-    appearance: none;
-    flex: 0 0 auto;
-    padding: 1px 6px;
-    margin: 0;
-    background: transparent;
-    border: 1px solid var(--accent-dim);
-    color: var(--accent);
-    font-family: var(--font-display);
-    font-size: 9px;
-    line-height: 12px;
-    letter-spacing: 0.16em;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 1px;
-    user-select: none;
-    transition:
-      color 200ms cubic-bezier(0.4, 0, 0.2, 1),
-      border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
-      background 200ms cubic-bezier(0.4, 0, 0.2, 1),
-      box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .pwr__deploy-btn:hover {
-    background: rgba(126, 245, 184, 0.10);
-    border-color: var(--accent);
-    box-shadow: 0 0 4px var(--accent-glow);
-    text-shadow: 0 0 4px var(--accent-glow);
-  }
-  .pwr__deploy-btn:active {
-    background: rgba(126, 245, 184, 0.20);
-  }
-  .pwr__deploy-btn:focus-visible {
-    outline: none;
-    border-color: var(--accent);
-  }
-  /* RET uses the warn palette so the two states read as distinct
-     directions (extending = lit-green, retracting = warning-amber)
-     rather than two interchangeable "click me" buttons. */
-  .pwr__deploy-btn--ret {
-    color: var(--warn);
-    border-color: color-mix(in srgb, var(--warn) 50%, transparent);
-  }
-  .pwr__deploy-btn--ret:hover {
-    background: rgba(240, 180, 41, 0.10);
-    border-color: var(--warn);
-    box-shadow: 0 0 4px var(--warn-glow);
-    text-shadow: 0 0 4px var(--warn-glow);
-  }
-  /* Busy: action sent, animation in flight. Dimmed letters + a slow
-     pulse on the border so the user sees the click registered even
-     before the topic state catches up. Span (not button) so it can't
-     be re-clicked while moving. */
-  .pwr__deploy-btn--busy {
-    color: var(--fg-mute);
-    border-color: var(--line);
-    cursor: default;
-    animation: pwr-deploy-busy 1.2s ease-in-out infinite;
-    text-shadow: none;
-  }
-  @keyframes pwr-deploy-busy {
-    0%, 100% { border-color: var(--line); }
-    50%      { border-color: var(--accent-dim); box-shadow: 0 0 4px var(--accent-glow); }
-  }
-  /* Bulk variant — wider so EXT ALL / RET ALL fit. Sits trailing the
-     subgroup head, separated by a small gap. */
-  .pwr__deploy-btn--bulk {
-    flex: 0 0 auto;
-    padding: 1px 8px;
-  }
-
-  /* Test load toggle — same chip-shape as EXT/RET so the row reads
-     consistently. Off state is dim accent (the load is latent); on
-     state borrows the warn palette to signal "this is draining the
-     bus on purpose." */
-  .pwr__test-load-btn {
-    color: var(--fg-mute);
-    border-color: var(--line);
-  }
-  .pwr__test-load-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.06);
-    box-shadow: none;
-    text-shadow: none;
-  }
-  .pwr__test-load-btn--on {
-    color: var(--warn);
-    border-color: color-mix(in srgb, var(--warn) 60%, transparent);
-    background: rgba(240, 180, 41, 0.06);
-  }
-  .pwr__test-load-btn--on:hover {
-    background: rgba(240, 180, 41, 0.16);
-    border-color: var(--warn);
-    box-shadow: 0 0 4px var(--warn-glow);
-    text-shadow: 0 0 4px var(--warn-glow);
-  }
-
   /* Landing-leg "in motion" badge. Sits between the row title and the
      rate column on the aggregated row when at least one leg is
      currently deploying/retracting. Borrows the warn palette so the
@@ -2092,32 +1850,6 @@
     margin-left: auto;
     margin-right: 0.6em;
     opacity: 0.85;
-  }
-
-  /* Cryocooler stage toggle. Fixed width so OFF / ON / S1 / S2 all
-     occupy the same footprint — the rate column to its right stays
-     at a constant horizontal position as the player cycles. */
-  .pwr__cooler-btn {
-    color: var(--fg-mute);
-    border-color: var(--line);
-    width: 44px;
-    text-align: center;
-    flex: 0 0 auto;
-  }
-  .pwr__cooler-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.06);
-  }
-  .pwr__cooler-btn--on {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-    background: rgba(126, 245, 184, 0.08);
-  }
-  .pwr__cooler-btn--on:hover {
-    background: rgba(126, 245, 184, 0.16);
-    border-color: var(--accent);
-    box-shadow: 0 0 4px var(--accent-glow);
   }
 
   /* Resource-code subname appended to a tank-cooler row title.
