@@ -27,17 +27,26 @@
 
   interface Props {
     children: Snippet;
+    /** Inset from the viewport top, in px. Flight docks below its
+     *  48-px FlightTopBar; the editor passes a larger value to clear
+     *  KSP's launch/save/load button row in the top-right. */
+    top?: number;
+    /** localStorage key prefix for width + collapsed state. Distinct
+     *  per scene so the editor rack's disposition is independent of
+     *  the flight rack's. Section open-state is persisted separately
+     *  by the panel that fills the rack. */
+    storageKey?: string;
   }
 
-  let { children }: Props = $props();
+  let { children, top = 48, storageKey = 'nova.rack' }: Props = $props();
 
   const DEFAULT_W = 320;
   const MIN_W = 280;
   /** Width of `.sr__col` — the strip that stays in-view when collapsed. */
   const TAB_W = 8;
   const DRAG_THRESHOLD = 4;
-  const STORAGE_W = 'nova.rack.w';
-  const STORAGE_C = 'nova.rack.collapsed';
+  const STORAGE_W = $derived(`${storageKey}.w`);
+  const STORAGE_C = $derived(`${storageKey}.collapsed`);
 
   let width = $state(DEFAULT_W);
   let collapsed = $state(false);
@@ -130,6 +139,7 @@
   class:sr--collapsed={collapsed}
   class:sr--dragging={dragging}
   style:width="{width}px"
+  style:top="{top}px"
   style:transform={transform}
   aria-label="Vessel rack"
 >
@@ -176,7 +186,7 @@
      than the body vanishing in place. */
   .sr {
     position: fixed;
-    top: 48px;
+    /* top inset set inline via style:top (default 48px) */
     right: 0;
     bottom: 0;
     z-index: 50;

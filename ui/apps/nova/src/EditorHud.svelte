@@ -30,7 +30,6 @@
   import { onDestroy } from 'svelte';
   import { getKsp } from '@dragonglass/telemetry/svelte';
   import { PawTopic } from '@dragonglass/telemetry/core';
-  import { StagingStack } from '@dragonglass/instruments';
   import { ContextMenu, type MenuItem } from '@dragonglass/instruments';
   import EditorVesselPanel from './components/editor/EditorVesselPanel.svelte';
   import PartInfoPopup from './components/editor/PartInfoPopup.svelte';
@@ -140,22 +139,3 @@
 {#if menu}
   <ContextMenu items={menu.items} x={menu.x} y={menu.y} onDismiss={() => (menu = null)} />
 {/if}
-
-<!-- Editor staging mirrors flight's StagingStack but anchored bottom-
-     right (KSP's editor convention has the stage list on the right
-     side of the screen — flipped from the bottom-left flight layout).
-     Nova declares the `editor/staging` capability in hud.ts to
-     suppress the stock stager so it doesn't paint on top. -->
-<div class="nova-editor-staging">
-  <StagingStack />
-</div>
-
-<style>
-  .nova-editor-staging {
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    z-index: 50;
-    pointer-events: auto;
-  }
-</style>

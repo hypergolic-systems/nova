@@ -34,8 +34,11 @@
     /** Part id from the most recent right-click PAW pulse. When this
      *  changes, the matching row scrolls into view and forces open. */
     focusPartId: string | null;
+    /** Reported to the rack so the TANKS accordion section hides when
+     *  the ship under construction has no tank parts. */
+    hasContent?: boolean;
   }
-  const { focusPartId }: Props = $props();
+  let { focusPartId, hasContent = $bindable(true) }: Props = $props();
 
   const ksp = getKsp();
   const editorParts = useNovaEditorParts();
@@ -46,6 +49,13 @@
   const tankParts = $derived(
     editorParts.current.filter((p) => (p.state?.tank.length ?? 0) > 0),
   );
+
+  // Feed the rack's vacant-hide: no tank parts → collapse the whole
+  // TANKS section out of the accordion flow rather than show a
+  // standing "NO TANKS" placeholder.
+  $effect(() => {
+    hasContent = tankParts.length > 0;
+  });
 
   // Slice list comes directly from the TankVolume component frame
   // on the wire — the tank's own buffers, not state.resources (which

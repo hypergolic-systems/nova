@@ -1,24 +1,30 @@
 <script lang="ts">
-  // Editor-scope analogue of VesselPanel. Same chrome — FloatingWindow,
-  // brand header, chip-style tab nav — but the tab inventory and views
-  // are deliberately decoupled from the in-flight panel. Flight tabs
-  // (PWR/THM/RES/PRP/RCS/ATT/SCI) describe a vessel in operation;
-  // editor tabs describe a vessel under construction (TANKS first;
-  // MASS/ΔV/STAGING/CREW slated). Sharing chrome keeps the visual
-  // rhythm; not sharing views keeps each scene's surface honest.
+  // Editor-scope analogue of the flight VesselPanel. Same chassis — a
+  // right-docked SideRack with a stack of multi-open accordion sections
+  // beneath a permanent ship-identity header — but the section
+  // inventory is decoupled from flight's. Flight sections describe a
+  // vessel in operation (PWR/THM/PRP/SCI/…); editor sections describe a
+  // vessel under construction.
   //
-  // TANKS and PWR are wired up; the rest render as disabled placeholders
-  // so the future surface is locked in without scaffolding empty views.
-  // The PWR tab reuses the flight PowerView renderer with an editor
-  // partsByTag factory — the per-part NovaPart/<id> wire works in the
-  // editor (NovaPartTopic.ResolveComponents reads from the live
-  // NovaPartModule.Components when there's no VirtualVessel), so the
-  // same generation/consumption/storage tree shows for the design
-  // under construction.
+  // Wired sections: TANKS (per-tank loadout editing), POWER (the flight
+  // PowerView in editor mode — the per-part NovaPart/<id> wire resolves
+  // against the live ShipConstruct), and STAGING (the same StagingStack
+  // instrument flight uses, folded into the rack instead of floating).
+  //
+  // Two layout deltas from the flight rack:
+  //   • Top inset clears KSP's launch/save/load button row in the
+  //     editor's top-right, where the flight rack only had to clear its
+  //     own 48-px FlightTopBar.
+  //   • A distinct localStorage prefix so the editor rack's width +
+  //     collapsed disposition is independent of the flight rack's.
 
-  import { FloatingWindow } from '@dragonglass/windows';
+  import { onMount } from 'svelte';
+  import { StagingStack } from '@dragonglass/instruments';
   import { useNovaEditorShipStructure } from '../../telemetry/use-nova-editor-ship-structure.svelte';
   import { useNovaEditorParts } from '../../telemetry/use-nova-parts.svelte';
+  import SideRack from '../SideRack.svelte';
+  import Accordion from '../common/Accordion.svelte';
+  import AccordionSection from '../common/AccordionSection.svelte';
   import TanksView from './TanksView.svelte';
   import PowerView from '../power/PowerView.svelte';
 
@@ -29,219 +35,171 @@
   }
   const { focusPartId }: Props = $props();
 
-  const MIN_W = 340;
-  const MIN_H = 320;
-  const EDGE_MARGIN = 16;
+  // Clears KSP's editor button row (New/Load/Save/Launch) anchored in
+  // the top-right. Larger than flight's 48-px FlightTopBar inset; tune
+  // against the live VAB if the rack tucks under or floats below the
+  // buttons.
+  const EDITOR_RACK_TOP = 56;
 
-  // Default position — left edge in the editor (StagingStack owns the
-  // right side, mirroring KSP's stock VAB convention). Differs from
-  // the flight VesselPanel's right-edge dock; the editor scene's
-  // visual rhythm is "stages on the right, vessel readout on the
-  // left", so muscle memory follows the scene's geometry, not the
-  // flight panel.
-  const initialW = MIN_W;
-  const initialH = Math.max(MIN_H, Math.round(window.innerHeight * 0.75));
-  const initialX = EDGE_MARGIN;
-  const initialY = Math.max(EDGE_MARGIN, Math.round((window.innerHeight - initialH) / 2));
+  type SectionId = 'tanks' | 'power' | 'staging';
 
-  // STAGING is intentionally not a tab here — it lives outside the
-  // panel as a free-floating instrument (mirroring flight, where
-  // StagingStack is its own surface separate from VesselPanel). See
-  // EditorHud.svelte's bottom-left mount.
-  type TabId = 'tanks' | 'pwr' | 'mass' | 'dv' | 'crew';
+  const STORAGE_KEY = 'nova.editor.rack.sections';
 
-  interface Tab {
-    id: TabId;
-    short: string;
-    label: string;
-    enabled: boolean;
-  }
+  // Default disposition: tanks + power open (the editor's two primary
+  // readouts), staging collapsed — it's empty for single-stage craft
+  // (StagingStack drops the active stage), so an open-by-default
+  // staging section would show a blank body on simple builds.
+  const DEFAULTS: Record<SectionId, boolean> = {
+    tanks: true,
+    power: true,
+    staging: false,
+  };
 
-  const tabs: Tab[] = [
-    { id: 'tanks',   short: 'TANKS',   label: 'Tank Volumes',  enabled: true  },
-    { id: 'pwr',     short: 'PWR',     label: 'Power',          enabled: true  },
-    { id: 'mass',    short: 'MASS',    label: 'Mass Breakdown', enabled: false },
-    { id: 'dv',      short: 'ΔV',      label: 'Delta-V',        enabled: false },
-    { id: 'crew',    short: 'CREW',    label: 'Crew',           enabled: false },
-  ];
+  let open = $state<Record<SectionId, boolean>>({ ...DEFAULTS });
+
+  // Per-section content presence, mirrored from each view's $bindable
+  // hasContent. Default true so sections render optimistically on the
+  // first frame before the view's $effect runs. Staging has no
+  // hasContent feed (StagingStack self-gates internally), so it's not
+  // tracked here — its section is always present.
+  let has = $state<Record<'tanks' | 'power', boolean>>({
+    tanks: true,
+    power: true,
+  });
+
+  onMount(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<Record<SectionId, boolean>>;
+      for (const k of Object.keys(DEFAULTS) as SectionId[]) {
+        if (typeof parsed[k] === 'boolean') open[k] = parsed[k] as boolean;
+      }
+    } catch {
+      /* corrupt storage — keep defaults silently */
+    }
+  });
+
+  $effect(() => {
+    const snapshot: Record<SectionId, boolean> = {
+      tanks: open.tanks,
+      power: open.power,
+      staging: open.staging,
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+      /* quota / disabled — ignore */
+    }
+  });
 
   const structureRef = useNovaEditorShipStructure();
   const shipName = $derived(structureRef.current?.name ?? '');
-
-  let activeTab = $state<TabId>('tanks');
-  let z = $state(100);
-
-  function raise(): void { z++; }
 </script>
 
-<FloatingWindow
-  defaultPos={{ x: initialX, y: initialY }}
-  defaultSize={{ w: initialW, h: initialH }}
-  minSize={{ w: MIN_W, h: MIN_H }}
-  {z}
-  onRaise={raise}
->
-  {#snippet header()}
-    <div class="evp__head">
-      <span class="evp__brand">◇ VESSEL · EDIT</span>
-      <span class="evp__head-spacer"></span>
-      <span class="evp__name">{shipName}</span>
-    </div>
-  {/snippet}
+<SideRack top={EDITOR_RACK_TOP} storageKey="nova.editor.rack">
+  <!-- IDENTITY — always-visible anchor above the accordion stack.
+       Brand differs from flight (`◇ VESSEL · EDIT`) so the rack
+       announces its scene context; the ship name comes from the
+       editor ship-structure topic, not per-vessel flight state. -->
+  <header class="evh">
+    <span class="evh__brand">◇ VESSEL · EDIT</span>
+    <span class="evh__name" title={shipName || 'Unnamed craft'}>
+      {shipName || '—'}
+    </span>
+  </header>
 
-  <nav class="evp__tabs" aria-label="Editor subsystems">
-    {#each tabs as t (t.id)}
-      <button
-        type="button"
-        class="evp__chip"
-        class:evp__chip--active={activeTab === t.id}
-        class:evp__chip--disabled={!t.enabled}
-        disabled={!t.enabled}
-        title={t.label}
-        onclick={() => t.enabled && (activeTab = t.id)}
-      >
-        <span class="evp__chip-short">{t.short}</span>
-      </button>
-    {/each}
-  </nav>
+  <Accordion>
+    <!-- TANKS — per-tank loadout editing. Auto-hides until the ship
+         has at least one tank part. -->
+    <AccordionSection
+      id="tanks" title="Tanks"
+      bind:open={open.tanks}
+      vacant={!has.tanks}
+    >
+      <TanksView {focusPartId} bind:hasContent={has.tanks} />
+    </AccordionSection>
 
-  <div class="evp__scroll">
-    {#if activeTab === 'tanks'}
-      <TanksView {focusPartId} />
-    {:else if activeTab === 'pwr'}
-      <PowerView mode="editor" parts={() => useNovaEditorParts()} />
-    {/if}
-  </div>
-</FloatingWindow>
+    <!-- POWER — generation/consumption/storage tree for the design
+         under construction. -->
+    <AccordionSection
+      id="power" title="Power"
+      bind:open={open.power}
+      vacant={!has.power}
+    >
+      <PowerView
+        mode="editor"
+        parts={() => useNovaEditorParts()}
+        bind:hasContent={has.power}
+      />
+    </AccordionSection>
+
+    <!-- STAGING — the flight StagingStack folded into the rack
+         (KSP's stock editor stager is suppressed via the
+         `editor/staging` capability in init.ts). Always present;
+         StagingStack renders nothing for craft with no queued
+         stages, so there's no separate vacant gate. -->
+    <AccordionSection id="staging" title="Staging" bind:open={open.staging}>
+      <div class="evh__staging">
+        <StagingStack />
+      </div>
+    </AccordionSection>
+  </Accordion>
+</SideRack>
 
 <style>
-  /* Reuse the same window chrome the flight VesselPanel established —
-     the FloatingWindow primitive scopes its own styles, so the :global
-     selectors reach in for the bg / border / header treatment. The
-     flight panel's own styles double-apply harmlessly when both panels
-     mount in the same scene; only one of FlightHud / EditorHud is
-     active at any time, so in practice this stays single-source. */
-
-  :global(.fw) {
-    background: var(--bg-panel-strong);
-    border: 1px solid var(--line-accent);
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    box-shadow: inset 0 0 0 1px rgba(126, 245, 184, 0.05);
-    backdrop-filter: blur(14px) saturate(125%);
-    -webkit-backdrop-filter: blur(14px) saturate(125%);
-  }
-  :global(.fw__header) {
-    min-height: 26px;
-    padding: 4px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  :global(.fw__body) {
-    padding: 0;
-    overflow: hidden;
+  /* Ship-identity header — mirrors the flight VesselHeader's etched
+     chassis-bay treatment, with an added brand line announcing the
+     editor scene. */
+  .evh {
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    gap: 3px;
+    padding: 11px 14px 10px 14px;
+    background:
+      linear-gradient(
+        to bottom,
+        rgba(126, 245, 184, 0.05) 0%,
+        rgba(126, 245, 184, 0.00) 100%
+      ),
+      linear-gradient(
+        to right,
+        transparent 0%,
+        var(--line-accent) 18%,
+        var(--line-accent) 82%,
+        transparent 100%
+      );
+    background-position: top left, bottom left;
+    background-size: 100% 100%, 100% 1px;
+    background-repeat: no-repeat;
   }
 
-  .evp__head {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-  /* Brand differs from flight (`◇ VESSEL · EDIT` vs `◇ VESSEL`) so the
-     panel announces its scene context directly in the header. */
-  .evp__brand {
+  .evh__brand {
     font-family: var(--font-display);
-    font-size: 13px;
+    font-size: 11px;
     letter-spacing: 0.18em;
     color: var(--accent);
     text-shadow: 0 0 6px var(--accent-glow);
-    flex: 0 0 auto;
   }
-  .evp__head-spacer { flex: 1 1 auto; }
-  .evp__name {
-    flex: 0 1 auto;
-    min-width: 0;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
+
+  .evh__name {
+    font-family: var(--font-display);
+    font-size: 16px;
+    line-height: 1.05;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    letter-spacing: 0.16em;
+    color: var(--fg-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .evp__tabs {
-    flex: 0 0 auto;
+  /* StagingStack authors at 120px @ zoom 0.67 (~80px effective) and
+     left-aligns inside the rack body. The flex wrapper keeps it from
+     stretching and gives the cards a little breathing room from the
+     section's left padding. */
+  .evh__staging {
     display: flex;
-    gap: 4px;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--line);
-    background: var(--bg-elev);
-  }
-  .evp__chip {
-    flex: 0 0 auto;
-    padding: 3px 8px;
-    background: transparent;
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-    font-family: var(--font-display);
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    cursor: pointer;
-    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
-  }
-  .evp__chip:hover:not(.evp__chip--disabled) {
-    color: var(--accent);
-    border-color: var(--accent-dim);
-  }
-  .evp__chip--active {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: rgba(126, 245, 184, 0.08);
-    text-shadow: 0 0 6px var(--accent-glow);
-  }
-  .evp__chip--disabled {
-    color: var(--fg-mute);
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-  .evp__chip-short { font-variant-numeric: tabular-nums; }
-
-  .evp__scroll {
-    flex: 1 1 0;
-    min-height: 0;
-    padding: 10px;
-    overflow-y: scroll;
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-  .evp__scroll::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  .evp__scroll::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.25);
-    border-left: 1px solid var(--line);
-  }
-  .evp__scroll::-webkit-scrollbar-thumb {
-    background: rgba(126, 245, 184, 0.18);
-    border: 1px solid transparent;
-    background-clip: padding-box;
-    transition: background 200ms ease;
-  }
-  .evp__scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(126, 245, 184, 0.42);
-    background-clip: padding-box;
-  }
-  .evp__scroll::-webkit-scrollbar-corner {
-    background: rgba(0, 0, 0, 0.25);
+    justify-content: flex-start;
   }
 </style>
